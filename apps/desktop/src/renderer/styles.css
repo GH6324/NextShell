@@ -3247,6 +3247,23 @@ body {
 
 /* ── Connection Manager Modal ────────────────────────────── */
 
+/* Two-panel layout */
+.mgr-connections-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 580px;
+  overflow: hidden;
+}
+
+/* Sidebar */
+.mgr-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
 /* Sidebar header */
 .mgr-sidebar-head {
   display: flex;
@@ -3620,7 +3637,7 @@ body {
 
 /* Sidebar footer */
 .mgr-sidebar-footer {
-  padding: 7px 12px;
+  padding: 8px 12px;
   border-top: 1px solid var(--border-dim);
   flex-shrink: 0;
   display: flex;

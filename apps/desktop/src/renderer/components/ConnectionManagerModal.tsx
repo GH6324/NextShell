@@ -1197,7 +1197,7 @@ export const ConnectionManagerModal = ({
       open={open}
       onCancel={onClose}
       footer={null}
-      width={900}
+      width={960}
       style={{ top: 48 }}
       styles={{
         header: { padding: "13px 18px", marginBottom: 0, borderBottom: "1px solid var(--border)" },
@@ -1236,10 +1236,10 @@ export const ConnectionManagerModal = ({
 
       {/* ── Connections tab ───────────────────── */}
       {activeTab === "connections" && (
-      <div className={mode !== "idle" ? "grid grid-cols-[230px_1fr] h-[540px] overflow-hidden" : "h-[540px] overflow-hidden"}>
+      <div className="mgr-connections-layout">
 
         {/* ── Sidebar ─────────────────────────── */}
-        <div className={`flex flex-col bg-[var(--bg-elevated)] overflow-hidden${mode !== "idle" ? " border-r border-[var(--border)]" : ""}`}>
+        <div className="mgr-sidebar">
 
           {/* Sidebar header */}
           <div className="mgr-sidebar-head">
@@ -1365,7 +1365,17 @@ export const ConnectionManagerModal = ({
         </div>
 
         {/* ── Right panel ─────────────────────── */}
-        {mode !== "idle" && (
+        {mode === "idle" ? (
+          <div className="mgr-empty-state">
+            <i className="ri-server-line mgr-empty-icon" aria-hidden="true" />
+            <div className="mgr-empty-title">选择或新建连接</div>
+            <div className="mgr-empty-hint">从左侧列表选择一个连接进行编辑，或点击下方按钮新建连接</div>
+            <button type="button" className="mgr-empty-new-btn" onClick={handleNew}>
+              <i className="ri-add-line" aria-hidden="true" />
+              新建连接
+            </button>
+          </div>
+        ) : (
           <div className="flex flex-col overflow-hidden">
 
             {/* Form header */}
