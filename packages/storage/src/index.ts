@@ -386,7 +386,12 @@ const parseAppPreferences = (value: string | null): AppPreferences => {
           parsed.terminal.lineHeight >= 1 &&
           parsed.terminal.lineHeight <= 2
             ? parsed.terminal.lineHeight
-            : fallback.terminal.lineHeight
+            : fallback.terminal.lineHeight,
+        fontFamily:
+          typeof parsed.terminal?.fontFamily === "string" &&
+          parsed.terminal.fontFamily.trim().length > 0
+            ? parsed.terminal.fontFamily.trim()
+            : fallback.terminal.fontFamily
       },
       ssh: {
         keepAliveEnabled:

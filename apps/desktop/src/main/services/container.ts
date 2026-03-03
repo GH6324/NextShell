@@ -707,6 +707,14 @@ const mergePreferences = (
     return value as number;
   };
 
+  const normalizeTerminalFontFamily = (value: string | undefined, fallback: string): string => {
+    if (typeof value !== "string") {
+      return fallback;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : fallback;
+  };
+
   const normalizeBackgroundOpacity = (value: number | undefined, fallback: number): number => {
     if (!Number.isFinite(value)) {
       return fallback;
@@ -768,6 +776,10 @@ const mergePreferences = (
       lineHeight: normalizeTerminalLineHeight(
         patch.terminal?.lineHeight,
         current.terminal.lineHeight
+      ),
+      fontFamily: normalizeTerminalFontFamily(
+        patch.terminal?.fontFamily,
+        current.terminal.fontFamily
       )
     },
     ssh: {

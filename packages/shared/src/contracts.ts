@@ -366,7 +366,8 @@ export const appPreferencesSchema = z.object({
     backgroundColor: terminalColorSchema.default(DEFAULT_APP_PREFERENCES.terminal.backgroundColor),
     foregroundColor: terminalColorSchema.default(DEFAULT_APP_PREFERENCES.terminal.foregroundColor),
     fontSize: z.coerce.number().int().min(10).max(24).default(DEFAULT_APP_PREFERENCES.terminal.fontSize),
-    lineHeight: z.coerce.number().min(1).max(2).default(DEFAULT_APP_PREFERENCES.terminal.lineHeight)
+    lineHeight: z.coerce.number().min(1).max(2).default(DEFAULT_APP_PREFERENCES.terminal.lineHeight),
+    fontFamily: z.string().trim().min(1).default(DEFAULT_APP_PREFERENCES.terminal.fontFamily)
   }).default(DEFAULT_APP_PREFERENCES.terminal),
   ssh: z.object({
     keepAliveEnabled: z.boolean().default(DEFAULT_APP_PREFERENCES.ssh.keepAliveEnabled),
@@ -422,7 +423,8 @@ export const appPreferencesPatchSchema = z.object({
     backgroundColor: terminalColorSchema.optional(),
     foregroundColor: terminalColorSchema.optional(),
     fontSize: z.coerce.number().int().min(10).max(24).optional(),
-    lineHeight: z.coerce.number().min(1).max(2).optional()
+    lineHeight: z.coerce.number().min(1).max(2).optional(),
+    fontFamily: z.string().trim().min(1).optional()
   }).optional(),
   ssh: z.object({
     keepAliveEnabled: z.boolean().optional(),

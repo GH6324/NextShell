@@ -474,7 +474,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       cursorBlink: true,
       fontSize: terminalPreferences.fontSize,
       lineHeight: terminalPreferences.lineHeight,
-      fontFamily: "JetBrains Mono, Menlo, Monaco, monospace",
+      fontFamily: terminalPreferences.fontFamily,
       theme: {
         background: terminalBg,
         foreground: terminalPreferences.foregroundColor,
@@ -682,6 +682,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     };
     terminal.options.fontSize = terminalPreferences.fontSize;
     terminal.options.lineHeight = terminalPreferences.lineHeight;
+    terminal.options.fontFamily = terminalPreferences.fontFamily;
 
     fitRef.current?.fit();
     const sessionId = sessionIdRef.current;
@@ -698,7 +699,8 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     terminalPreferences.backgroundColor,
     terminalPreferences.foregroundColor,
     terminalPreferences.fontSize,
-    terminalPreferences.lineHeight
+    terminalPreferences.lineHeight,
+    terminalPreferences.fontFamily
   ]);
 
   useEffect(() => {

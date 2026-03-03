@@ -306,6 +306,7 @@ export interface AppPreferences {
     foregroundColor: string;
     fontSize: number;
     lineHeight: number;
+    fontFamily: string;
   };
   ssh: {
     /** 是否对所有连接启用 keepalive（发送空包） */
@@ -378,6 +379,7 @@ export interface AppPreferencesPatch {
     foregroundColor?: string;
     fontSize?: number;
     lineHeight?: number;
+    fontFamily?: string;
   };
   ssh?: {
     keepAliveEnabled?: boolean;
@@ -518,7 +520,8 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
     backgroundColor: "#000000",
     foregroundColor: "#d8eaff",
     fontSize: 14,
-    lineHeight: 1.2
+    lineHeight: 1.2,
+    fontFamily: "JetBrains Mono, Menlo, Monaco, monospace"
   },
   ssh: {
     keepAliveEnabled: true,

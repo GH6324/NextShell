@@ -23,6 +23,10 @@ import type { BackupArchiveMeta, WindowAppearance } from "@nextshell/core";
 import { SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS } from "@nextshell/shared";
 import type { DebugLogEntry, UpdateCheckResult } from "@nextshell/shared";
 import { formatErrorMessage } from "../utils/errorMessage";
+import {
+  canonicalizeFontFamily,
+  getTerminalFontOptions
+} from "../utils/terminalFonts";
 
 interface SettingsCenterModalProps {
   open: boolean;
@@ -65,6 +69,7 @@ const EDITOR_PRESETS: Array<{ label: string; value: string }> = [
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const CUSTOM_THEME_PRESET = "custom";
+const CUSTOM_FONT_PRESET = "__terminal_font_custom__";
 const TERMINAL_THEME_PRESETS = [
   { label: "默认", value: "default", backgroundColor: "#000000", foregroundColor: "#d8eaff" },
   { label: "Dracula", value: "dracula", backgroundColor: "#282a36", foregroundColor: "#f8f8f2" },
@@ -443,6 +448,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
           terminalThemePreset={terminalThemePreset}
           terminalFontSize={preferences.terminal.fontSize}
           terminalLineHeight={preferences.terminal.lineHeight}
+          terminalFontFamily={preferences.terminal.fontFamily}
           appBackgroundImagePath={appBackgroundImagePath}
           appBackgroundOpacity={preferences.window.backgroundOpacity}
           setTerminalBackgroundColor={setTerminalBackgroundColor}
@@ -1090,7 +1096,7 @@ const TERMINAL_DEBOUNCE_MS = 3000;
 
 const TerminalSection = ({
   loading, terminalBackgroundColor, terminalForegroundColor,
-  terminalThemePreset, terminalFontSize, terminalLineHeight,
+  terminalThemePreset, terminalFontSize, terminalLineHeight, terminalFontFamily,
   appBackgroundImagePath, appBackgroundOpacity,
   setTerminalBackgroundColor, setTerminalForegroundColor,
   setTerminalThemePreset, setAppBackgroundImagePath,
@@ -1102,6 +1108,7 @@ const TerminalSection = ({
   terminalThemePreset: string;
   terminalFontSize: number;
   terminalLineHeight: number;
+  terminalFontFamily: string;
   appBackgroundImagePath: string;
   appBackgroundOpacity: number;
   setTerminalBackgroundColor: (v: string) => void;
@@ -1153,6 +1160,38 @@ const TerminalSection = ({
   const debouncedSaveTerminal = useCallback((patch: Record<string, unknown>) => {
     debouncedSave("terminal", patch);
   }, [debouncedSave]);
+
+  const terminalFontOptions = useMemo(
+    () => getTerminalFontOptions(window.nextshell.platform),
+    []
+  );
+  const [terminalFontFamilyInput, setTerminalFontFamilyInput] = useState(terminalFontFamily);
+  const lastValidTerminalFontFamilyRef = useRef(terminalFontFamily);
+
+  useEffect(() => {
+    setTerminalFontFamilyInput(terminalFontFamily);
+    lastValidTerminalFontFamilyRef.current = terminalFontFamily;
+  }, [terminalFontFamily]);
+
+  const selectedTerminalFontPreset = useMemo(() => {
+    const normalizedInput = canonicalizeFontFamily(terminalFontFamilyInput);
+    const preset = terminalFontOptions.find(
+      (option) => canonicalizeFontFamily(option.value) === normalizedInput
+    );
+    return preset?.value ?? CUSTOM_FONT_PRESET;
+  }, [terminalFontFamilyInput, terminalFontOptions]);
+
+  const applyTerminalFontFamily = useCallback(() => {
+    const trimmed = terminalFontFamilyInput.trim();
+    if (!trimmed) {
+      setTerminalFontFamilyInput(lastValidTerminalFontFamilyRef.current);
+      msg.warning("终端字体不能为空，已恢复为上一次有效值。");
+      return;
+    }
+    lastValidTerminalFontFamilyRef.current = trimmed;
+    setTerminalFontFamilyInput(trimmed);
+    debouncedSaveTerminal({ fontFamily: trimmed });
+  }, [debouncedSaveTerminal, msg, terminalFontFamilyInput]);
 
   return (
   <>
@@ -1311,7 +1350,36 @@ const TerminalSection = ({
       </SettingsRow>
     </SettingsCard>
 
-    <SettingsCard title="终端排版" description="字号和行距设置（修改后 3 秒生效）">
+    <SettingsCard title="终端排版" description="字体、字号和行距设置（修改后 3 秒生效）">
+      <SettingsRow label="常用字体">
+        <Select
+          style={{ width: "100%" }}
+          value={selectedTerminalFontPreset}
+          disabled={loading}
+          options={[
+            ...terminalFontOptions,
+            { label: "自定义", value: CUSTOM_FONT_PRESET },
+          ]}
+          onChange={(value) => {
+            if (value === CUSTOM_FONT_PRESET) {
+              return;
+            }
+            lastValidTerminalFontFamilyRef.current = value;
+            setTerminalFontFamilyInput(value);
+            debouncedSaveTerminal({ fontFamily: value });
+          }}
+        />
+      </SettingsRow>
+      <SettingsRow label="自定义字体栈" hint="支持 CSS font-family，失焦后保存">
+        <Input
+          value={terminalFontFamilyInput}
+          disabled={loading}
+          onChange={(e) => setTerminalFontFamilyInput(e.target.value)}
+          onBlur={applyTerminalFontFamily}
+          onPressEnter={() => applyTerminalFontFamily()}
+          placeholder="'JetBrains Mono', Menlo, Monaco, monospace"
+        />
+      </SettingsRow>
       <SettingsRow label="终端字号">
         <InputNumber
           style={{ width: "100%" }}
