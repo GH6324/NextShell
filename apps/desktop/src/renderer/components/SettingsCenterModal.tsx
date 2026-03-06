@@ -19,6 +19,7 @@ import {
   Tooltip,
   Typography
 } from "antd";
+import { AuditRetentionDaysInput } from "./AuditRetentionDaysInput";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import type { BackupArchiveMeta, WindowAppearance } from "@nextshell/core";
 import { SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS } from "@nextshell/shared";
@@ -2044,17 +2045,13 @@ const SecuritySection = ({
 
   <SettingsCard title="审计日志" description="设置操作日志的自动清理策略">
     <SettingsRow label="日志保留天数" hint="设为 0 表示永不清理">
-      <InputNumber
-        min={0} max={365} precision={0}
+      <AuditRetentionDaysInput
         value={auditRetentionDays}
         disabled={loading}
-        onChange={(v) => {
-          if (typeof v === "number" && v >= 0 && v <= 365) {
-            setAuditRetentionDays(v);
-            save({ audit: { retentionDays: v } });
-          }
+        onChange={(value) => {
+          setAuditRetentionDays(value);
+          save({ audit: { retentionDays: value } });
         }}
-        addonAfter="天"
       />
     </SettingsRow>
     <div className="stg-note">
