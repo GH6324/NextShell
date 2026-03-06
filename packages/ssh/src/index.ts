@@ -355,28 +355,74 @@ export class SshConnection {
     });
   }
 
-  async exec(command: string): Promise<ExecResult> {
+  async exec(command: string, options?: { signal?: AbortSignal }): Promise<ExecResult> {
     await this.readyPromise;
 
     return new Promise((resolve, reject) => {
+      const signal = options?.signal;
+      if (signal?.aborted) {
+        reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        return;
+      }
+
       this.client.exec(command, (error, channel) => {
         if (error || !channel) {
           reject(error ?? new Error("Failed to execute command"));
           return;
         }
 
+        if (signal?.aborted) {
+          channel.close();
+          channel.removeAllListeners();
+          reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+          return;
+        }
+
+        let settled = false;
+
+        const onAbort = () => {
+          if (settled) return;
+          settled = true;
+          channel.removeAllListeners();
+          channel.close();
+          reject(signal!.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        };
+
+        signal?.addEventListener("abort", onAbort, { once: true });
+
         let stdout = "";
         let stderr = "";
+        const MAX_OUTPUT = 10 * 1024 * 1024;
+        let stdoutTruncated = false;
+        let stderrTruncated = false;
 
         channel.on("data", (chunk: Buffer | string) => {
-          stdout += chunk.toString();
+          if (!stdoutTruncated) {
+            stdout += chunk.toString();
+            if (stdout.length > MAX_OUTPUT) {
+              stdout = stdout.slice(0, MAX_OUTPUT);
+              stdoutTruncated = true;
+            }
+          }
         });
 
         channel.stderr.on("data", (chunk: Buffer | string) => {
-          stderr += chunk.toString();
+          if (!stderrTruncated) {
+            stderr += chunk.toString();
+            if (stderr.length > MAX_OUTPUT) {
+              stderr = stderr.slice(0, MAX_OUTPUT);
+              stderrTruncated = true;
+            }
+          }
         });
 
         channel.once("close", (exitCode?: number) => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", onAbort);
+          if (stdoutTruncated || stderrTruncated) {
+            stderr += "\n[output truncated: exceeded 10MB limit]";
+          }
           resolve({
             stdout,
             stderr,
@@ -384,7 +430,12 @@ export class SshConnection {
           });
         });
 
-        channel.once("error", reject);
+        channel.once("error", (err: Error) => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", onAbort);
+          reject(err);
+        });
       });
     });
   }

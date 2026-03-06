@@ -67,7 +67,6 @@ import type {
   SavedCommandRemoveInput,
   SavedCommandUpsertInput,
   SettingsUpdateInput,
-  SessionDataEvent,
   SessionStatusEvent,
   TemplateParamsListInput,
   TemplateParamsClearInput,
@@ -990,11 +989,67 @@ export const createServiceContainer = (
     };
   };
 
-  const sendSessionData = (sender: WebContents, payload: SessionDataEvent): void => {
-    if (!sender.isDestroyed()) {
-      sender.send(IPCChannel.SessionData, payload);
-    }
-  };
+  const sessionDataThrottle = (() => {
+    const FLUSH_INTERVAL_MS = 16;
+    const IMMEDIATE_THRESHOLD = 64 * 1024;
+    const buffers = new Map<string, { data: string; sender: WebContents }>();
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const flushAll = () => {
+      for (const [sessionId, entry] of buffers) {
+        if (entry.data.length > 0 && !entry.sender.isDestroyed()) {
+          entry.sender.send(IPCChannel.SessionData, { sessionId, data: entry.data });
+          entry.data = "";
+        }
+      }
+    };
+
+    const ensureTimer = () => {
+      if (!timer) {
+        timer = setInterval(() => {
+          flushAll();
+          if (buffers.size === 0 && timer) {
+            clearInterval(timer);
+            timer = null;
+          }
+        }, FLUSH_INTERVAL_MS);
+      }
+    };
+
+    return {
+      push(sessionId: string, data: string, sender: WebContents) {
+        let entry = buffers.get(sessionId);
+        if (!entry) {
+          entry = { data: "", sender };
+          buffers.set(sessionId, entry);
+        }
+        entry.data += data;
+        if (entry.data.length >= IMMEDIATE_THRESHOLD) {
+          if (!sender.isDestroyed()) {
+            sender.send(IPCChannel.SessionData, { sessionId, data: entry.data });
+          }
+          entry.data = "";
+        } else {
+          ensureTimer();
+        }
+      },
+      flush(sessionId: string) {
+        const entry = buffers.get(sessionId);
+        if (entry && entry.data.length > 0 && !entry.sender.isDestroyed()) {
+          entry.sender.send(IPCChannel.SessionData, { sessionId, data: entry.data });
+          entry.data = "";
+        }
+      },
+      dispose(sessionId: string) {
+        this.flush(sessionId);
+        buffers.delete(sessionId);
+        if (buffers.size === 0 && timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+      }
+    };
+  })();
 
   const sendSessionStatus = (sender: WebContents, payload: SessionStatusEvent): void => {
     if (!sender.isDestroyed()) {
@@ -2745,22 +2800,19 @@ export const createServiceContainer = (
       shell.on("data", (chunk: Buffer | string) => {
         const active = activeSessions.get(descriptor.id);
         const encoding = active?.terminalEncoding ?? profile.terminalEncoding;
-        sendSessionData(sender, {
-          sessionId: descriptor.id,
-          data: decodeTerminalData(chunk, encoding)
-        });
+        sessionDataThrottle.push(descriptor.id, decodeTerminalData(chunk, encoding), sender);
       });
 
       shell.stderr.on("data", (chunk: Buffer | string) => {
         const active = activeSessions.get(descriptor.id);
         const encoding = active?.terminalEncoding ?? profile.terminalEncoding;
-        sendSessionData(sender, {
-          sessionId: descriptor.id,
-          data: decodeTerminalData(chunk, encoding)
-        });
+        sessionDataThrottle.push(descriptor.id, decodeTerminalData(chunk, encoding), sender);
       });
 
       shell.on("close", () => {
+        shell.removeAllListeners();
+        shell.stderr.removeAllListeners();
+        sessionDataThrottle.dispose(descriptor.id);
         const active = activeSessions.get(descriptor.id);
         if (active) {
           activeSessions.delete(descriptor.id);
@@ -2773,6 +2825,13 @@ export const createServiceContainer = (
       });
 
       shell.on("error", (error: unknown) => {
+        shell.removeAllListeners();
+        shell.stderr.removeAllListeners();
+        sessionDataThrottle.dispose(descriptor.id);
+        const active = activeSessions.get(descriptor.id);
+        if (active) {
+          activeSessions.delete(descriptor.id);
+        }
         updateSessionStatus(descriptor.id, "failed", normalizeError(error));
       });
 
@@ -2880,6 +2939,11 @@ export const createServiceContainer = (
     }
 
     logger.info("[Session] closing", { sessionId, connectionId: active.connectionId });
+    sessionDataThrottle.dispose(sessionId);
+    active.channel.removeAllListeners();
+    if (active.channel.stderr) {
+      active.channel.stderr.removeAllListeners();
+    }
     active.channel.end();
     activeSessions.delete(sessionId);
     sendSessionStatus(active.sender, {

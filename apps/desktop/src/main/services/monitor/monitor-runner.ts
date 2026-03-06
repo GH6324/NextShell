@@ -27,17 +27,11 @@ export const runTimedExec = async (
   timeoutMs: number
 ): Promise<TimedExecResult> => {
   const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new MonitorExecTimeoutError()), timeoutMs);
 
-  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const result = await Promise.race([
-      connection.exec(command),
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => {
-          reject(new MonitorExecTimeoutError());
-        }, timeoutMs);
-      })
-    ]);
+    const result = await connection.exec(command, { signal: controller.signal });
 
     return {
       stdout: result.stdout,
@@ -45,9 +39,16 @@ export const runTimedExec = async (
       exitCode: result.exitCode,
       durationMs: Date.now() - startedAt
     };
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
+  } catch (error) {
+    if (error instanceof MonitorExecTimeoutError) {
+      throw error;
     }
+    const reason = controller.signal.reason;
+    if (reason instanceof MonitorExecTimeoutError) {
+      throw reason;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
 };
