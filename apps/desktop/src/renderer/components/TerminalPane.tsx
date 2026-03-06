@@ -23,6 +23,7 @@ import {
 } from "../utils/sessionOutputBuffer";
 import { formatErrorMessage } from "../utils/errorMessage";
 import { usePreferencesStore } from "../store/usePreferencesStore";
+import { shouldReconnectOnInput } from "../utils/terminal-reconnect";
 import {
   buildTerminalAuthIntro,
   buildTerminalAuthRetryNotice,
@@ -38,6 +39,7 @@ interface TerminalPaneProps {
   connection?: ConnectionProfile;
   session?: SessionDescriptor;
   sessionIds: string[];
+  onReconnectSession: (sessionId: string) => Promise<void> | void;
   onRetrySessionAuth: (
     sessionId: string,
     authOverride: SessionAuthOverrideInput
@@ -112,7 +114,7 @@ const statusMessage = (
   }
 
   if (status === "disconnected") {
-    return "SSH 会话已断开。";
+    return "SSH 会话已断开。按回车键尝试重连。";
   }
 
   if (status === "failed") {
@@ -150,6 +152,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   connection,
   session,
   sessionIds,
+  onReconnectSession,
   onRetrySessionAuth,
   onRequestSearchMode
 }, ref) => {
@@ -167,16 +170,23 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   const frozenSessionIdRef = useRef<string | undefined>(undefined);
   const terminalOptionsRef = useRef<FrozenTerminalOptions>(DEFAULT_TERMINAL_OPTIONS);
   const onRequestSearchModeRef = useRef<TerminalPaneProps["onRequestSearchMode"]>(onRequestSearchMode);
+  const onReconnectSessionRef = useRef<TerminalPaneProps["onReconnectSession"]>(onReconnectSession);
   const onRetrySessionAuthRef = useRef<TerminalPaneProps["onRetrySessionAuth"]>(onRetrySessionAuth);
   const findNextRef = useRef<() => void>(() => {});
   const findPreviousRef = useRef<() => void>(() => {});
   const authStateBySessionRef = useRef<Map<string, TerminalAuthState>>(new Map());
+  const sessionStatusBySessionRef = useRef<Map<string, SessionDescriptor["status"]>>(new Map());
+  const reconnectPendingSessionIdsRef = useRef<Set<string>>(new Set());
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     onRequestSearchModeRef.current = onRequestSearchMode;
   }, [onRequestSearchMode]);
+
+  useEffect(() => {
+    onReconnectSessionRef.current = onReconnectSession;
+  }, [onReconnectSession]);
 
   useEffect(() => {
     onRetrySessionAuthRef.current = onRetrySessionAuth;
@@ -279,6 +289,25 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     },
     [connection?.authType, writeLocalOutput]
   );
+
+  const tryReconnectOnEnter = useCallback((targetSessionId: string, data: string): boolean => {
+    const status = sessionStatusBySessionRef.current.get(targetSessionId);
+    if (!shouldReconnectOnInput(status, data)) {
+      return false;
+    }
+
+    if (reconnectPendingSessionIdsRef.current.has(targetSessionId)) {
+      return true;
+    }
+
+    reconnectPendingSessionIdsRef.current.add(targetSessionId);
+    Promise.resolve(onReconnectSessionRef.current(targetSessionId))
+      .catch(swallowSessionActionError)
+      .finally(() => {
+        reconnectPendingSessionIdsRef.current.delete(targetSessionId);
+      });
+    return true;
+  }, []);
 
   const replaySessionOutput = useCallback((targetSessionId: string) => {
     const terminal = terminalRef.current;
@@ -462,6 +491,18 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
         authStateBySessionRef.current.delete(sessionId);
       }
     }
+
+    for (const sessionId of Array.from(sessionStatusBySessionRef.current.keys())) {
+      if (!knownSessionIds.has(sessionId)) {
+        sessionStatusBySessionRef.current.delete(sessionId);
+      }
+    }
+
+    for (const sessionId of Array.from(reconnectPendingSessionIdsRef.current)) {
+      if (!knownSessionIds.has(sessionId)) {
+        reconnectPendingSessionIdsRef.current.delete(sessionId);
+      }
+    }
   }, [sessionIds]);
 
   useEffect(() => {
@@ -612,6 +653,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
         return;
       }
 
+      if (tryReconnectOnEnter(sessionId, data)) {
+        return;
+      }
+
       runSessionAction(window.nextshell.session.write({
         sessionId,
         data
@@ -665,7 +710,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       fitRef.current = null;
       searchAddonRef.current = null;
     };
-  }, [handleLocalAuthInput]);
+  }, [handleLocalAuthInput, tryReconnectOnEnter]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -720,6 +765,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
         return;
       }
 
+      sessionStatusBySessionRef.current.set(event.sessionId, event.status);
       if (event.status === "connected" || event.status === "disconnected") {
         authStateBySessionRef.current.delete(event.sessionId);
       }
@@ -764,6 +810,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     const previousSessionId = sessionIdRef.current;
     const currentSessionId = session?.id;
     sessionIdRef.current = currentSessionId;
+    if (currentSessionId && session?.status) {
+      sessionStatusBySessionRef.current.set(currentSessionId, session.status);
+    }
 
     if (previousSessionId !== currentSessionId) {
       if (!currentSessionId) {

@@ -444,7 +444,7 @@ export const WorkspaceLayout = ({
                                                             {session.title}
                                                         </span>
                                                         {isTerminal &&
-                                                        session.status !== "connected" ? (
+                                                        session.status === "disconnected" ? (
                                                             <span
                                                                 className="tab-action tab-reconnect"
                                                                 title="重新连接"
@@ -539,6 +539,7 @@ export const WorkspaceLayout = ({
                                                 session={activeTerminalSession}
                                                 connection={activeTerminalConnection}
                                                 sessionIds={terminalSessionIds}
+                                                onReconnectSession={onReconnectSession}
                                                 onRetrySessionAuth={onRetrySessionAuth}
                                                 onRequestSearchMode={
                                                     handleRequestTerminalSearchMode

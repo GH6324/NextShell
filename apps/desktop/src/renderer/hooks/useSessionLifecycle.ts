@@ -436,19 +436,63 @@ export function useSessionLifecycle() {
       if (!target) {
         return;
       }
-      const keepCancellation =
-        target.status === "connecting" || inFlightAuthRetryBySessionRef.current.has(sessionId);
-
-      cancelSessionGeneration(sessionId);
-      removeSession(sessionId);
-      if (!keepCancellation) {
-        clearSessionTracking(sessionId);
+      if (target.status !== "disconnected") {
+        return;
       }
-      closeSessionSilently(sessionId);
+      if (inFlightAuthRetryBySessionRef.current.has(sessionId)) {
+        return;
+      }
+      if (!beginConnecting(target.connectionId)) {
+        return;
+      }
 
-      await startSession(target.connectionId);
+      setActiveConnection(target.connectionId);
+      setActiveSession(target.id);
+      setSessionStatus(target.id, "connecting", null);
+
+      const sessionGeneration = nextSessionGeneration(target.id);
+
+      try {
+        const openedSession = await window.nextshell.session.open({
+          connectionId: target.connectionId,
+          sessionId: target.id
+        });
+
+        if (!canApplySessionResult(target.id, sessionGeneration)) {
+          closeSessionSilently(target.id);
+          return;
+        }
+
+        finalizeRetriedSession(openedSession, target.title);
+      } catch (error) {
+        if (!canApplySessionResult(target.id, sessionGeneration)) {
+          return;
+        }
+
+        const normalized = normalizeOpenError(error, "打开 SSH 会话失败");
+        setSessionStatus(target.id, "failed", normalized.reason);
+      } finally {
+        endConnecting(target.connectionId);
+        const hasSession = useWorkspaceStore
+          .getState()
+          .sessions.some((session) => session.id === target.id);
+        if (!hasSession) {
+          clearSessionTracking(target.id);
+        }
+      }
     },
-    [cancelSessionGeneration, clearSessionTracking, closeSessionSilently, removeSession, startSession]
+    [
+      beginConnecting,
+      canApplySessionResult,
+      clearSessionTracking,
+      closeSessionSilently,
+      endConnecting,
+      finalizeRetriedSession,
+      nextSessionGeneration,
+      setActiveConnection,
+      setActiveSession,
+      setSessionStatus
+    ]
   );
 
   useEffect(() => {
