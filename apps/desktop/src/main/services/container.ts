@@ -2491,6 +2491,7 @@ export const createServiceContainer = (
 
     child.on("error", (err) => {
       sendEvent({ type: "error", message: err.message });
+      child.removeAllListeners();
       if (activeTracerouteProcess === child) {
         activeTracerouteProcess = null;
       }
@@ -2505,6 +2506,7 @@ export const createServiceContainer = (
         sendEvent({ type: "data", line: stderrBuffer });
       }
       sendEvent({ type: "done", exitCode: code });
+      child.removeAllListeners();
       if (activeTracerouteProcess === child) {
         activeTracerouteProcess = null;
       }
@@ -2515,6 +2517,7 @@ export const createServiceContainer = (
 
   const tracerouteStop = (): { ok: true } => {
     if (activeTracerouteProcess) {
+      activeTracerouteProcess.removeAllListeners();
       activeTracerouteProcess.kill();
       activeTracerouteProcess = null;
     }
@@ -3068,6 +3071,9 @@ export const createServiceContainer = (
 
   const enableDebugLog = (sender: WebContents): { ok: true } => {
     debugSenders.add(sender);
+    sender.once("destroyed", () => {
+      debugSenders.delete(sender);
+    });
     return { ok: true };
   };
 

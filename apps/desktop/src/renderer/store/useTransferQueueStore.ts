@@ -162,7 +162,7 @@ export const useTransferQueueStore = create<TransferQueueState>((set, get) => ({
   getTask: (taskId) => get().tasks.find((item) => item.id === taskId),
   clearFinished: () => {
     set((state) => ({
-      tasks: state.tasks.filter((task) => task.status !== "success")
+      tasks: state.tasks.filter((task) => task.status === "queued" || task.status === "running")
     }));
   },
   removeTask: (taskId) => {
