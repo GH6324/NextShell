@@ -69,6 +69,8 @@ const compareCommandHistoryForEviction = (
 const AUDIT_FLUSH_INTERVAL_MS = 30_000;
 /** 审计日志队列超过此数量时立即刷盘 */
 const AUDIT_FLUSH_THRESHOLD = 50;
+/** 审计日志内存缓冲上限，超出时丢弃最旧项 */
+const AUDIT_BUFFER_CAPACITY = 1_000;
 /** 审计日志达到阈值后的异步 flush 延迟 (ms) */
 const AUDIT_FLUSH_SOON_DELAY_MS = 10;
 /** 命令历史写入 debounce 延迟 (ms) */
@@ -484,6 +486,9 @@ export class CachedConnectionRepository implements ConnectionRepository {
       metadata: payload.metadata,
       createdAt: new Date().toISOString()
     };
+    if (this.auditBuf.length >= AUDIT_BUFFER_CAPACITY) {
+      this.auditBuf.shift();
+    }
     this.auditBuf.push(payload);
     if (this.auditBuf.length >= AUDIT_FLUSH_THRESHOLD) {
       this.scheduleAuditLogFlushSoon();
@@ -492,8 +497,6 @@ export class CachedConnectionRepository implements ConnectionRepository {
   }
 
   listAuditLogs(limit?: number): AuditLogRecord[] {
-    // 读取前先落盘，确保结果包含最近的缓冲记录
-    this.flushAuditLogs();
     return this.inner.listAuditLogs(limit);
   }
 

@@ -8,18 +8,22 @@ const assert = (condition: boolean, message: string): void => {
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const AUDIT_BUFFER_CAPACITY = 1000;
 
 const createRepositoryStub = (): ConnectionRepository & {
   appendCalls: Array<{ action: string }>;
   batchCalls: Array<Array<{ action: string }>>;
+  listCalls: number[];
   appendAuditLogs: (payloads: Array<{ action: string }>) => void;
 } => {
   const appendCalls: Array<{ action: string }> = [];
   const batchCalls: Array<Array<{ action: string }>> = [];
+  const listCalls: number[] = [];
 
   return {
     appendCalls,
     batchCalls,
+    listCalls,
     list: () => [],
     save: () => {},
     remove: () => {},
@@ -40,7 +44,10 @@ const createRepositoryStub = (): ConnectionRepository & {
     appendAuditLogs: (payloads: Array<{ action: string }>) => {
       batchCalls.push(payloads);
     },
-    listAuditLogs: () => [],
+    listAuditLogs: (limit) => {
+      listCalls.push(limit ?? 100);
+      return [];
+    },
     clearAuditLogs: () => 0,
     purgeExpiredAuditLogs: () => 0,
     listMigrations: () => [],
@@ -103,6 +110,143 @@ const createRepositoryStub = (): ConnectionRepository & {
 
     assert(inner.batchCalls.length === 1, "close should flush queued audit logs in one batch");
     assert(inner.batchCalls[0]?.length === 50, "batch should contain every queued audit log");
+  } finally {
+    repository.close();
+  }
+})();
+
+(() => {
+  const inner = createRepositoryStub();
+  const repository = new CachedConnectionRepository(inner);
+
+  try {
+    for (let index = 0; index < AUDIT_BUFFER_CAPACITY + 5; index += 1) {
+      repository.appendAuditLog({
+        action: `overflow-audit-${index}`,
+        level: "info",
+        message: `overflow-message-${index}`
+      });
+    }
+
+    repository.close();
+
+    assert(inner.batchCalls.length === 1, "overflow close should flush one bounded audit batch");
+    assert(
+      inner.batchCalls[0]?.length === AUDIT_BUFFER_CAPACITY,
+      "overflow flush should keep at most the bounded audit batch size"
+    );
+    assert(
+      inner.batchCalls[0]?.[0]?.action === "overflow-audit-5",
+      "overflow flush should drop the oldest audit payloads first"
+    );
+    assert(
+      inner.batchCalls[0]?.[AUDIT_BUFFER_CAPACITY - 1]?.action === "overflow-audit-1004",
+      "overflow flush should retain the newest audit payloads"
+    );
+  } finally {
+    try {
+      repository.close();
+    } catch {
+      // ignore duplicate cleanup failures in overflow test
+    }
+  }
+})();
+
+(() => {
+  let failFlush = true;
+  const inner = {
+    ...createRepositoryStub(),
+    appendAuditLog: () => {
+      throw new Error("bounded retry test should use batch writer");
+    },
+    appendAuditLogs: (payloads: Array<{ action: string }>) => {
+      inner.batchCalls.push(payloads);
+      if (failFlush) {
+        throw new Error("persistent audit flush failure");
+      }
+    }
+  };
+  const repository = new CachedConnectionRepository(inner);
+
+  try {
+    for (let index = 0; index < AUDIT_BUFFER_CAPACITY + 100; index += 1) {
+      repository.appendAuditLog({
+        action: `retry-audit-${index}`,
+        level: "info",
+        message: `retry-message-${index}`
+      });
+    }
+
+    let firstError: unknown;
+    try {
+      repository.flush();
+    } catch (error) {
+      firstError = error;
+    }
+
+    assert(firstError instanceof Error, "bounded retry flush should surface the batch failure");
+    assert(
+      inner.batchCalls[0]?.length === AUDIT_BUFFER_CAPACITY,
+      "bounded retry flush should never attempt more than the audit buffer capacity"
+    );
+
+    failFlush = false;
+    repository.flush();
+
+    assert(inner.batchCalls.length === 2, "bounded retry flush should retry the queued audit batch once");
+    assert(
+      inner.batchCalls[1]?.length === AUDIT_BUFFER_CAPACITY,
+      "bounded retry flush should keep the queued audit batch bounded on retry"
+    );
+    assert(
+      inner.batchCalls[1]?.[0]?.action === "retry-audit-100",
+      "bounded retry flush should keep only the newest audit payloads after failures"
+    );
+    assert(
+      inner.batchCalls[1]?.[AUDIT_BUFFER_CAPACITY - 1]?.action === "retry-audit-1099",
+      "bounded retry flush should retain the newest audit payload on retry"
+    );
+  } finally {
+    try {
+      repository.close();
+    } catch {
+      // ignore duplicate cleanup failures in bounded retry test
+    }
+  }
+})();
+
+(() => {
+  const persistedRecords = [
+    {
+      id: "persisted-audit-1",
+      action: "persisted.audit",
+      level: "info" as const,
+      message: "persisted",
+      createdAt: new Date().toISOString()
+    }
+  ];
+  const inner = {
+    ...createRepositoryStub(),
+    listAuditLogs: (limit?: number) => {
+      inner.listCalls.push(limit ?? 100);
+      return persistedRecords;
+    }
+  };
+  const repository = new CachedConnectionRepository(inner);
+
+  try {
+    repository.appendAuditLog({
+      action: "buffered-audit",
+      level: "info",
+      message: "buffered"
+    });
+
+    const records = repository.listAuditLogs(5);
+
+    assert(records === persistedRecords, "listAuditLogs should return persisted audit records from the inner repository");
+    assert(inner.listCalls.length === 1 && inner.listCalls[0] === 5, "listAuditLogs should delegate the requested limit");
+    assert(inner.appendCalls.length === 0, "listAuditLogs should not synchronously write audit logs one-by-one");
+    assert(inner.batchCalls.length === 0, "listAuditLogs should not flush queued audit logs before reading");
   } finally {
     repository.close();
   }
