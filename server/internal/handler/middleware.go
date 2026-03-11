@@ -2,7 +2,10 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
+
+	"github.com/hynor/nshellserver/internal/db"
 )
 
 type contextKey string
@@ -22,8 +25,17 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		authScope := authFailureScope(username, clientIP(r.RemoteAddr))
+
+		if h.RateLimiter.IsLockedOut(authScope) {
+			w.Header().Set("Retry-After", "900")
+			writeError(w, http.StatusTooManyRequests, "too many auth failures, try again later")
+			return
+		}
+
 		if err := h.Store.EnsureWorkspace(username, password); err != nil {
-			if err.Error() == "invalid password" {
+			if errors.Is(err, db.ErrInvalidPassword) || errors.Is(err, db.ErrWorkspacePasswordTooShort) {
+				h.RateLimiter.RecordAuthFailure(authScope)
 				writeError(w, http.StatusUnauthorized, "invalid credentials")
 			} else {
 				writeError(w, http.StatusInternalServerError, "auth error")
@@ -37,6 +49,10 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 }
 
 const maxRequestBody = 10 << 20 // 10 MB
+
+func authFailureScope(workspace, ip string) string {
+	return workspace + "|" + ip
+}
 
 func BodyLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

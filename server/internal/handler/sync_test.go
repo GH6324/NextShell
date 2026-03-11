@@ -104,7 +104,7 @@ func newTestHandler(t *testing.T) *Handler {
 	})
 
 	store := db.NewStore(database)
-	if err := store.EnsureWorkspace("alice", "secret"); err != nil {
+	if err := store.EnsureWorkspace("alice", strongWorkspacePassword); err != nil {
 		t.Fatalf("ensure workspace: %v", err)
 	}
 	return New(store)

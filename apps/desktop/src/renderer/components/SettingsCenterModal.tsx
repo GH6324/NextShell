@@ -24,7 +24,7 @@ import { AuditRetentionDaysInput } from "./AuditRetentionDaysInput";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import type { BackupArchiveMeta, WindowAppearance } from "@nextshell/core";
 import { SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS } from "@nextshell/shared";
-import type { DebugLogEntry, UpdateCheckResult } from "@nextshell/shared";
+import type { CloudSyncConflictItem, CloudSyncConfigureInput, DebugLogEntry, UpdateCheckResult } from "@nextshell/shared";
 import { resolveBackupSectionAccess } from "./settingsCenterBackupAccess";
 import { formatErrorMessage } from "../utils/errorMessage";
 import {
@@ -308,24 +308,6 @@ type CloudSyncStatusView = {
   conflictCount: number;
 };
 
-type CloudSyncConflictItemView = {
-  resourceType: "connection" | "sshKey" | "proxy";
-  resourceId: string;
-  displayName: string;
-  localUpdatedAt: string | null;
-  serverUpdatedAt: string | null;
-  serverDeleted: boolean;
-  hasPendingLocalChange: boolean;
-};
-
-type CloudSyncConfigureInput = {
-  apiBaseUrl: string;
-  workspaceName: string;
-  workspacePassword: string;
-  pullIntervalSec: number;
-  ignoreTlsErrors: boolean;
-};
-
 type CloudSyncApi = {
   configure?: (input: CloudSyncConfigureInput) => Promise<unknown>;
   disable?: () => Promise<unknown>;
@@ -449,7 +431,7 @@ const normalizeCloudSyncStatus = (
   };
 };
 
-const normalizeCloudSyncConflicts = (value: unknown): CloudSyncConflictItemView[] => {
+const normalizeCloudSyncConflicts = (value: unknown): CloudSyncConflictItem[] => {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -571,7 +553,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
   const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncStatusView>(DEFAULT_CLOUD_SYNC_STATUS);
   const [cloudSyncStatusLoading, setCloudSyncStatusLoading] = useState(false);
   const [cloudSyncBusyAction, setCloudSyncBusyAction] = useState<"configure" | "disable" | "sync" | null>(null);
-  const [cloudSyncConflicts, setCloudSyncConflicts] = useState<CloudSyncConflictItemView[]>([]);
+  const [cloudSyncConflicts, setCloudSyncConflicts] = useState<CloudSyncConflictItem[]>([]);
   const [cloudSyncConflictsLoading, setCloudSyncConflictsLoading] = useState(false);
   const [cloudSyncConflictBusyKey, setCloudSyncConflictBusyKey] = useState<string | null>(null);
   const [cloudSyncApiBaseUrl, setCloudSyncApiBaseUrl] = useState("");
@@ -1065,7 +1047,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
   }, [message, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
 
   const handleResolveCloudSyncConflict = useCallback(async (
-    resourceType: CloudSyncConflictItemView["resourceType"],
+    resourceType: CloudSyncConflictItem["resourceType"],
     resourceId: string,
     strategy: "overwrite_local" | "keep_local"
   ): Promise<void> => {
@@ -2337,7 +2319,7 @@ const CloudSyncSection = ({
   status: CloudSyncStatusView;
   loading: boolean;
   busyAction: "configure" | "disable" | "sync" | null;
-  conflicts: CloudSyncConflictItemView[];
+  conflicts: CloudSyncConflictItem[];
   conflictsLoading: boolean;
   conflictBusyKey: string | null;
   apiBaseUrl: string;
@@ -2354,7 +2336,7 @@ const CloudSyncSection = ({
   onDisable: () => void;
   onSyncNow: () => void;
   onResolveConflict: (
-    resourceType: CloudSyncConflictItemView["resourceType"],
+    resourceType: CloudSyncConflictItem["resourceType"],
     resourceId: string,
     strategy: "overwrite_local" | "keep_local"
   ) => void;

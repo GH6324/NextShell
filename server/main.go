@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/hynor/nshellserver/internal/config"
 	"github.com/hynor/nshellserver/internal/db"
 	"github.com/hynor/nshellserver/internal/handler"
@@ -35,6 +36,8 @@ func main() {
 	h := handler.New(store)
 
 	r := chi.NewRouter()
+	r.Use(middleware.Compress(5))
+	r.Use(h.RateLimiter.Middleware)
 	r.Use(handler.BodyLimitMiddleware)
 
 	r.Route("/api/v1/sync", func(r chi.Router) {

@@ -3,10 +3,16 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+)
+
+var (
+	ErrInvalidPassword           = errors.New("invalid password")
+	ErrWorkspacePasswordTooShort = errors.New("workspace password must be at least 8 characters")
 )
 
 type Store struct {
@@ -22,30 +28,37 @@ func NewStore(db *sql.DB) *Store {
 // EnsureWorkspace creates the workspace if it doesn't exist, or verifies the password if it does.
 // Returns the workspace name or an error.
 func (s *Store) EnsureWorkspace(name, password string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("bcrypt hash: %w", err)
-	}
-
-	// Try insert; ignore if already exists.
-	_, err = s.db.Exec(
-		`INSERT OR IGNORE INTO workspaces (workspace_name, password_hash) VALUES (?, ?)`,
-		name, string(hash),
-	)
-	if err != nil {
-		return fmt.Errorf("insert workspace: %w", err)
-	}
-
-	// Fetch stored hash and verify.
+	// Check if workspace already exists.
 	var storedHash string
-	if err := s.db.QueryRow(
+	err := s.db.QueryRow(
 		`SELECT password_hash FROM workspaces WHERE workspace_name = ?`, name,
-	).Scan(&storedHash); err != nil {
+	).Scan(&storedHash)
+
+	if err == sql.ErrNoRows {
+		// New workspace — enforce minimum password length.
+		if len(password) < 8 {
+			return ErrWorkspacePasswordTooShort
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("bcrypt hash: %w", err)
+		}
+		_, err = s.db.Exec(
+			`INSERT INTO workspaces (workspace_name, password_hash) VALUES (?, ?)`,
+			name, string(hash),
+		)
+		if err != nil {
+			return fmt.Errorf("insert workspace: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("fetch workspace: %w", err)
 	}
 
+	// Existing workspace — verify password.
 	if err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(password)); err != nil {
-		return fmt.Errorf("invalid password")
+		return ErrInvalidPassword
 	}
 	return nil
 }
@@ -411,7 +424,9 @@ func (s resourceState) NextRevision() int64 {
 }
 
 func validateResourceRevision(resourceType, resourceID string, current resourceState, baseRevision *int64, force bool) *ResourceConflict {
-	_ = force
+	if force && baseRevision != nil {
+		return nil
+	}
 	if revisionsMatchCurrent(current, baseRevision) {
 		return nil
 	}

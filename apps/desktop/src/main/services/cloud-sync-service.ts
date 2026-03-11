@@ -598,6 +598,15 @@ export class CloudSyncService {
     this.ensureTimer(prefs.pullIntervalSec);
 
     if (!this.hasWorkspacePassword) {
+      const keytarProbe = new KeytarPasswordCache(this.options.keytarServiceName, "cloud-sync:availability");
+      if (!keytarProbe.isAvailable()) {
+        this.stopTimer();
+        this.options.savePreferencesPatch({
+          cloudSync: { enabled: false }
+        }, { reconfigureCloudSync: false });
+        this.transition("disabled", "系统钥匙串不可用，云同步已自动关闭。请在钥匙串恢复后重新启用。");
+        return;
+      }
       this.transition("error", "未找到云同步 workspace 密码，请重新配置。");
       return;
     }
@@ -643,6 +652,7 @@ export class CloudSyncService {
   }
 
   private async runPullInternal(credentials: CloudSyncCredentials): Promise<void> {
+    const pullStartedAt = new Date().toISOString();
     const response = await this.postJson(
       credentials,
       "/api/v1/sync/pull",
@@ -652,15 +662,16 @@ export class CloudSyncService {
       pullResponseSchema
     );
 
-    this.currentVersion = response.version;
     await this.persistLastSyncAt(response.serverTime);
 
     if (response.unchanged || !response.snapshot) {
+      this.currentVersion = response.version;
       this.transition("idle", null);
       return;
     }
 
-    await this.applySnapshot(response.snapshot, credentials.workspacePassword);
+    await this.applySnapshot(response.snapshot, credentials, pullStartedAt);
+    this.currentVersion = response.version;
     const event = cloudSyncAppliedEventSchema.parse({
       appliedAt: response.serverTime,
       version: response.version
@@ -718,7 +729,7 @@ export class CloudSyncService {
         currentItem.lastAttemptAt = new Date().toISOString();
         currentItem.lastError = normalizeErrorMessage(error, "待同步队列补发失败");
         this.persistPendingQueueState();
-        throw new Error(currentItem.lastError);
+        continue;
       }
     }
   }
@@ -835,8 +846,10 @@ export class CloudSyncService {
 
   private async applySnapshot(
     snapshot: NonNullable<z.infer<typeof pullResponseSchema>["snapshot"]>,
-    workspacePassword: string
+    credentials: CloudSyncCredentials,
+    pullStartedAt: string
   ): Promise<void> {
+    const { workspacePassword, apiBaseUrl, workspaceName } = credentials;
     const remoteConnectionIds = new Set(snapshot.connections.map((item) => item.payload.id));
     const remoteSshKeyIds = new Set(snapshot.sshKeys.map((item) => item.payload.id));
     const remoteProxyIds = new Set(snapshot.proxies.map((item) => item.payload.id));
@@ -845,22 +858,52 @@ export class CloudSyncService {
     const deletedProxyIds = new Set(snapshot.deleted.proxies.map((item) => item.id));
 
     for (const sshKey of snapshot.sshKeys) {
+      const local = this.options.listSshKeys().find((k) => k.id === sshKey.payload.id);
+      if (local && local.updatedAt > pullStartedAt) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "sshKey", sshKey.payload.id, "upsert");
+        continue;
+      }
       await this.applyRemoteSshKeySnapshotItem(sshKey, workspacePassword);
     }
     for (const proxy of snapshot.proxies) {
+      const local = this.options.listProxies().find((p) => p.id === proxy.payload.id);
+      if (local && local.updatedAt > pullStartedAt) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "proxy", proxy.payload.id, "upsert");
+        continue;
+      }
       await this.applyRemoteProxySnapshotItem(proxy, workspacePassword);
     }
     for (const connection of snapshot.connections) {
+      const local = this.options.listConnections().find((c) => c.id === connection.payload.id);
+      if (local && local.updatedAt > pullStartedAt) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "connection", connection.payload.id, "upsert");
+        continue;
+      }
       await this.applyRemoteConnectionSnapshotItem(connection, workspacePassword);
     }
 
     for (const tombstone of snapshot.deleted.connections) {
+      const local = this.options.listConnections().find((connection) => connection.id === tombstone.id);
+      if (local && local.updatedAt > pullStartedAt) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "connection", tombstone.id, "upsert");
+        continue;
+      }
       await this.applyRemoteConnectionDelete(tombstone);
     }
     for (const tombstone of snapshot.deleted.proxies) {
+      const local = this.options.listProxies().find((proxy) => proxy.id === tombstone.id);
+      if (local && local.updatedAt > pullStartedAt) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "proxy", tombstone.id, "upsert");
+        continue;
+      }
       await this.applyRemoteProxyDelete(tombstone);
     }
     for (const tombstone of snapshot.deleted.sshKeys) {
+      const local = this.options.listSshKeys().find((sshKey) => sshKey.id === tombstone.id);
+      if (local && local.updatedAt > pullStartedAt) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "sshKey", tombstone.id, "upsert");
+        continue;
+      }
       await this.applyRemoteSshKeyDelete(tombstone);
     }
 

@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+const strongWorkspacePassword = "secret-123"
+
 func int64Ptr(value int64) *int64 {
 	return &value
 }
@@ -18,7 +20,7 @@ func TestStoreRejectsStaleConnectionUpsert(t *testing.T) {
 	defer database.Close()
 
 	store := NewStore(database)
-	if err := store.EnsureWorkspace("alice", "secret"); err != nil {
+	if err := store.EnsureWorkspace("alice", strongWorkspacePassword); err != nil {
 		t.Fatalf("ensure workspace: %v", err)
 	}
 
@@ -45,6 +47,54 @@ func TestStoreRejectsStaleConnectionUpsert(t *testing.T) {
 	}
 }
 
+func TestStoreForceUpsertOverridesStaleRevision(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "sync.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	store := NewStore(database)
+	if err := store.EnsureWorkspace("alice", strongWorkspacePassword); err != nil {
+		t.Fatalf("ensure workspace: %v", err)
+	}
+
+	firstPayload := json.RawMessage(`{"id":"conn-1","name":"prod-a"}`)
+	secondPayload := json.RawMessage(`{"id":"conn-1","name":"prod-b"}`)
+
+	_, firstResourceRevision, _, conflict, err := store.UpsertConnection("alice", "conn-1", firstPayload, nil, false)
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if conflict != nil {
+		t.Fatalf("first upsert should not conflict")
+	}
+
+	_, secondResourceRevision, _, conflict, err := store.UpsertConnection("alice", "conn-1", secondPayload, int64Ptr(firstResourceRevision-1), true)
+	if err != nil {
+		t.Fatalf("force upsert: %v", err)
+	}
+	if conflict != nil {
+		t.Fatalf("force upsert should not conflict")
+	}
+	if secondResourceRevision != firstResourceRevision+1 {
+		t.Fatalf("expected resource revision %d after force upsert, got %d", firstResourceRevision+1, secondResourceRevision)
+	}
+}
+
+func TestStoreRejectsShortWorkspacePassword(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "sync.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	store := NewStore(database)
+	if err := store.EnsureWorkspace("alice", "short"); err == nil {
+		t.Fatalf("expected short workspace password to be rejected")
+	}
+}
+
 func TestPullSnapshotIncludesResourceAndTombstoneRevisions(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "sync.db"))
 	if err != nil {
@@ -53,7 +103,7 @@ func TestPullSnapshotIncludesResourceAndTombstoneRevisions(t *testing.T) {
 	defer database.Close()
 
 	store := NewStore(database)
-	if err := store.EnsureWorkspace("alice", "secret"); err != nil {
+	if err := store.EnsureWorkspace("alice", strongWorkspacePassword); err != nil {
 		t.Fatalf("ensure workspace: %v", err)
 	}
 

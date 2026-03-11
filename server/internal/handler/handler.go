@@ -8,11 +8,12 @@ import (
 )
 
 type Handler struct {
-	Store *db.Store
+	Store       *db.Store
+	RateLimiter *RateLimiter
 }
 
 func New(store *db.Store) *Handler {
-	return &Handler{Store: store}
+	return &Handler{Store: store, RateLimiter: NewRateLimiter()}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
