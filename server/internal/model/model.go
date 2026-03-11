@@ -5,9 +5,9 @@ import "encoding/json"
 // ---------- Common ----------
 
 type ErrorResponse struct {
-	OK      bool   `json:"ok"`
-	Error   string `json:"error"`
-	Code    int    `json:"-"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
+	Code  int    `json:"-"`
 }
 
 // ---------- Workspace Status ----------
@@ -37,50 +37,83 @@ type PullResponse struct {
 }
 
 type Snapshot struct {
-	Connections []json.RawMessage `json:"connections"`
-	SSHKeys     []json.RawMessage `json:"sshKeys"`
-	Proxies     []json.RawMessage `json:"proxies"`
-	Deleted     DeletedIDs        `json:"deleted"`
+	Connections []ResourceSnapshot `json:"connections"`
+	SSHKeys     []ResourceSnapshot `json:"sshKeys"`
+	Proxies     []ResourceSnapshot `json:"proxies"`
+	Deleted     DeletedResources   `json:"deleted"`
 }
 
-type DeletedIDs struct {
-	Connections []string `json:"connections"`
-	SSHKeys     []string `json:"sshKeys"`
-	Proxies     []string `json:"proxies"`
+type ResourceSnapshot struct {
+	Payload   json.RawMessage `json:"payload"`
+	Revision  int64           `json:"revision"`
+	UpdatedAt string          `json:"updatedAt"`
+}
+
+type DeletedResource struct {
+	ID        string `json:"id"`
+	Revision  int64  `json:"revision"`
+	DeletedAt string `json:"deletedAt"`
+}
+
+type DeletedResources struct {
+	Connections []DeletedResource `json:"connections"`
+	SSHKeys     []DeletedResource `json:"sshKeys"`
+	Proxies     []DeletedResource `json:"proxies"`
 }
 
 // ---------- Upsert ----------
 
 type UpsertConnectionRequest struct {
-	BaseVersion int64           `json:"baseVersion"`
-	Connection  json.RawMessage `json:"connection"`
+	BaseRevision *int64          `json:"baseRevision"`
+	Force        bool            `json:"force"`
+	Connection   json.RawMessage `json:"connection"`
 }
 
 type UpsertSSHKeyRequest struct {
-	BaseVersion int64           `json:"baseVersion"`
-	SSHKey      json.RawMessage `json:"sshKey"`
+	BaseRevision *int64          `json:"baseRevision"`
+	Force        bool            `json:"force"`
+	SSHKey       json.RawMessage `json:"sshKey"`
 }
 
 type UpsertProxyRequest struct {
-	BaseVersion int64           `json:"baseVersion"`
-	Proxy       json.RawMessage `json:"proxy"`
+	BaseRevision *int64          `json:"baseRevision"`
+	Force        bool            `json:"force"`
+	Proxy        json.RawMessage `json:"proxy"`
 }
 
 type UpsertResponse struct {
-	OK        bool   `json:"ok"`
-	Version   int64  `json:"version"`
-	UpdatedAt string `json:"updatedAt"`
+	OK               bool   `json:"ok"`
+	WorkspaceVersion int64  `json:"workspaceVersion"`
+	ResourceRevision int64  `json:"resourceRevision"`
+	UpdatedAt        string `json:"updatedAt"`
 }
 
 // ---------- Delete ----------
 
 type DeleteRequest struct {
-	BaseVersion int64  `json:"baseVersion"`
-	ID          string `json:"id"`
+	BaseRevision *int64 `json:"baseRevision"`
+	Force        bool   `json:"force"`
+	ID           string `json:"id"`
 }
 
 type DeleteResponse struct {
-	OK        bool   `json:"ok"`
-	Version   int64  `json:"version"`
-	DeletedAt string `json:"deletedAt"`
+	OK               bool   `json:"ok"`
+	WorkspaceVersion int64  `json:"workspaceVersion"`
+	ResourceRevision int64  `json:"resourceRevision"`
+	DeletedAt        string `json:"deletedAt"`
+}
+
+type ConflictResponse struct {
+	OK       bool                 `json:"ok"`
+	Error    string               `json:"error"`
+	Conflict ResourceConflictInfo `json:"conflict"`
+}
+
+type ResourceConflictInfo struct {
+	ResourceType    string          `json:"resourceType"`
+	ResourceID      string          `json:"resourceId"`
+	ServerRevision  int64           `json:"serverRevision"`
+	ServerUpdatedAt string          `json:"serverUpdatedAt"`
+	ServerDeleted   bool            `json:"serverDeleted"`
+	ServerPayload   json.RawMessage `json:"serverPayload,omitempty"`
 }

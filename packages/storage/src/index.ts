@@ -6,6 +6,7 @@ import type Database from "better-sqlite3";
 export { CachedConnectionRepository, CachedSshKeyRepository, CachedProxyRepository } from "./cached-repository";
 import type {
   AppPreferences,
+  CloudSyncResourceSyncState,
   AuditLogRecord,
   CommandHistoryEntry,
   CommandTemplateParam,
@@ -115,6 +116,17 @@ interface AppSettingRow {
   key: string;
   value_json: string;
   updated_at: string;
+}
+
+interface CloudSyncResourceStateRow {
+  resource_type: "connection" | "sshKey" | "proxy";
+  resource_id: string;
+  server_revision: number | null;
+  conflict_remote_revision: number | null;
+  conflict_remote_payload_json: string | null;
+  conflict_remote_updated_at: string | null;
+  conflict_remote_deleted: number;
+  conflict_detected_at: string | null;
 }
 
 interface MigrationDefinition {
@@ -291,6 +303,17 @@ const rowToAuditLog = (row: AuditLogRow): AuditLogRecord => {
   };
 };
 
+const rowToCloudSyncResourceState = (row: CloudSyncResourceStateRow): CloudSyncResourceSyncState => ({
+  resourceType: row.resource_type,
+  resourceId: row.resource_id,
+  serverRevision: typeof row.server_revision === "number" ? row.server_revision : undefined,
+  conflictRemoteRevision: typeof row.conflict_remote_revision === "number" ? row.conflict_remote_revision : undefined,
+  conflictRemotePayloadJson: row.conflict_remote_payload_json ?? undefined,
+  conflictRemoteUpdatedAt: row.conflict_remote_updated_at ?? undefined,
+  conflictRemoteDeleted: row.conflict_remote_deleted === 1,
+  conflictDetectedAt: row.conflict_detected_at ?? undefined
+});
+
 const cloneDefaultPreferences = (): AppPreferences => {
   return {
     transfer: { ...DEFAULT_APP_PREFERENCES_VALUE.transfer },
@@ -299,6 +322,7 @@ const cloneDefaultPreferences = (): AppPreferences => {
     terminal: { ...DEFAULT_APP_PREFERENCES_VALUE.terminal },
     ssh: { ...DEFAULT_APP_PREFERENCES_VALUE.ssh },
     backup: { ...DEFAULT_APP_PREFERENCES_VALUE.backup },
+    cloudSync: { ...DEFAULT_APP_PREFERENCES_VALUE.cloudSync },
     window: { ...DEFAULT_APP_PREFERENCES_VALUE.window },
     traceroute: { ...DEFAULT_APP_PREFERENCES_VALUE.traceroute },
     audit: { ...DEFAULT_APP_PREFERENCES_VALUE.audit }
@@ -458,6 +482,35 @@ const parseAppPreferences = (value: string | null): AppPreferences => {
           typeof parsed.backup?.lastBackupAt === "string"
             ? parsed.backup.lastBackupAt
             : fallback.backup.lastBackupAt
+      },
+      cloudSync: {
+        enabled:
+          typeof parsed.cloudSync?.enabled === "boolean"
+            ? parsed.cloudSync.enabled
+            : fallback.cloudSync.enabled,
+        apiBaseUrl:
+          typeof parsed.cloudSync?.apiBaseUrl === "string"
+            ? parsed.cloudSync.apiBaseUrl.trim()
+            : fallback.cloudSync.apiBaseUrl,
+        workspaceName:
+          typeof parsed.cloudSync?.workspaceName === "string"
+            ? parsed.cloudSync.workspaceName.trim()
+            : fallback.cloudSync.workspaceName,
+        pullIntervalSec:
+          typeof parsed.cloudSync?.pullIntervalSec === "number" &&
+          Number.isInteger(parsed.cloudSync.pullIntervalSec) &&
+          parsed.cloudSync.pullIntervalSec >= 10 &&
+          parsed.cloudSync.pullIntervalSec <= 86_400
+            ? parsed.cloudSync.pullIntervalSec
+            : fallback.cloudSync.pullIntervalSec,
+        ignoreTlsErrors:
+          typeof parsed.cloudSync?.ignoreTlsErrors === "boolean"
+            ? parsed.cloudSync.ignoreTlsErrors
+            : fallback.cloudSync.ignoreTlsErrors,
+        lastSyncAt:
+          typeof parsed.cloudSync?.lastSyncAt === "string"
+            ? parsed.cloudSync.lastSyncAt
+            : fallback.cloudSync.lastSyncAt
       },
       window: {
         appearance:
@@ -859,6 +912,27 @@ const migrations: MigrationDefinition[] = [
       ensureColumn(db, "connections", "keepalive_enabled", "keepalive_enabled INTEGER");
       ensureColumn(db, "connections", "keepalive_interval_sec", "keepalive_interval_sec INTEGER");
     }
+  },
+  {
+    version: 17,
+    name: "create_cloud_sync_resource_state_table",
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cloud_sync_resource_state (
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          server_revision INTEGER,
+          conflict_remote_revision INTEGER,
+          conflict_remote_payload_json TEXT,
+          conflict_remote_updated_at TEXT,
+          conflict_remote_deleted INTEGER NOT NULL DEFAULT 0,
+          conflict_detected_at TEXT,
+          PRIMARY KEY (resource_type, resource_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cloud_sync_resource_state_conflict
+          ON cloud_sync_resource_state(conflict_remote_revision DESC, conflict_detected_at DESC);
+      `);
+    }
   }
 ];
 
@@ -905,6 +979,13 @@ export interface ConnectionRepository {
   removeSavedCommand: (id: string) => void;
   getAppPreferences: () => AppPreferences;
   saveAppPreferences: (preferences: AppPreferences) => AppPreferences;
+  getJsonSetting: <T = unknown>(key: string) => T | undefined;
+  saveJsonSetting: (key: string, value: unknown) => void;
+  removeSetting: (key: string) => void;
+  listCloudSyncResourceStates: () => CloudSyncResourceSyncState[];
+  getCloudSyncResourceState: (resourceType: CloudSyncResourceSyncState["resourceType"], resourceId: string) => CloudSyncResourceSyncState | undefined;
+  saveCloudSyncResourceState: (state: CloudSyncResourceSyncState) => void;
+  removeCloudSyncResourceState: (resourceType: CloudSyncResourceSyncState["resourceType"], resourceId: string) => void;
   getMasterKeyMeta: () => MasterKeyMeta | undefined;
   saveMasterKeyMeta: (meta: MasterKeyMeta) => void;
   getDeviceKey: () => string | undefined;
@@ -1538,6 +1619,137 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
     });
 
     return normalized;
+  }
+
+  getJsonSetting<T = unknown>(key: string): T | undefined {
+    const row = this.db.prepare(
+      "SELECT value_json FROM app_settings WHERE key = ?"
+    ).get(key) as { value_json: string } | undefined;
+
+    if (!row?.value_json) {
+      return undefined;
+    }
+
+    try {
+      return JSON.parse(row.value_json) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  saveJsonSetting(key: string, value: unknown): void {
+    const now = new Date().toISOString();
+    this.db.prepare(
+      `
+        INSERT INTO app_settings (key, value_json, updated_at)
+        VALUES (@key, @value_json, @updated_at)
+        ON CONFLICT(key) DO UPDATE SET
+          value_json = excluded.value_json,
+          updated_at = excluded.updated_at
+      `
+    ).run({
+      key,
+      value_json: JSON.stringify(value),
+      updated_at: now
+    });
+  }
+
+  removeSetting(key: string): void {
+    this.db.prepare("DELETE FROM app_settings WHERE key = ?").run(key);
+  }
+
+  listCloudSyncResourceStates(): CloudSyncResourceSyncState[] {
+    const rows = this.db.prepare(
+      `
+        SELECT
+          resource_type,
+          resource_id,
+          server_revision,
+          conflict_remote_revision,
+          conflict_remote_payload_json,
+          conflict_remote_updated_at,
+          conflict_remote_deleted,
+          conflict_detected_at
+        FROM cloud_sync_resource_state
+        ORDER BY resource_type ASC, resource_id ASC
+      `
+    ).all() as CloudSyncResourceStateRow[];
+
+    return rows.map(rowToCloudSyncResourceState);
+  }
+
+  getCloudSyncResourceState(
+    resourceType: CloudSyncResourceSyncState["resourceType"],
+    resourceId: string
+  ): CloudSyncResourceSyncState | undefined {
+    const row = this.db.prepare(
+      `
+        SELECT
+          resource_type,
+          resource_id,
+          server_revision,
+          conflict_remote_revision,
+          conflict_remote_payload_json,
+          conflict_remote_updated_at,
+          conflict_remote_deleted,
+          conflict_detected_at
+        FROM cloud_sync_resource_state
+        WHERE resource_type = ? AND resource_id = ?
+      `
+    ).get(resourceType, resourceId) as CloudSyncResourceStateRow | undefined;
+
+    return row ? rowToCloudSyncResourceState(row) : undefined;
+  }
+
+  saveCloudSyncResourceState(state: CloudSyncResourceSyncState): void {
+    this.db.prepare(
+      `
+        INSERT INTO cloud_sync_resource_state (
+          resource_type,
+          resource_id,
+          server_revision,
+          conflict_remote_revision,
+          conflict_remote_payload_json,
+          conflict_remote_updated_at,
+          conflict_remote_deleted,
+          conflict_detected_at
+        ) VALUES (
+          @resource_type,
+          @resource_id,
+          @server_revision,
+          @conflict_remote_revision,
+          @conflict_remote_payload_json,
+          @conflict_remote_updated_at,
+          @conflict_remote_deleted,
+          @conflict_detected_at
+        )
+        ON CONFLICT(resource_type, resource_id) DO UPDATE SET
+          server_revision = excluded.server_revision,
+          conflict_remote_revision = excluded.conflict_remote_revision,
+          conflict_remote_payload_json = excluded.conflict_remote_payload_json,
+          conflict_remote_updated_at = excluded.conflict_remote_updated_at,
+          conflict_remote_deleted = excluded.conflict_remote_deleted,
+          conflict_detected_at = excluded.conflict_detected_at
+      `
+    ).run({
+      resource_type: state.resourceType,
+      resource_id: state.resourceId,
+      server_revision: state.serverRevision ?? null,
+      conflict_remote_revision: state.conflictRemoteRevision ?? null,
+      conflict_remote_payload_json: state.conflictRemotePayloadJson ?? null,
+      conflict_remote_updated_at: state.conflictRemoteUpdatedAt ?? null,
+      conflict_remote_deleted: state.conflictRemoteDeleted ? 1 : 0,
+      conflict_detected_at: state.conflictDetectedAt ?? null
+    });
+  }
+
+  removeCloudSyncResourceState(
+    resourceType: CloudSyncResourceSyncState["resourceType"],
+    resourceId: string
+  ): void {
+    this.db.prepare(
+      "DELETE FROM cloud_sync_resource_state WHERE resource_type = ? AND resource_id = ?"
+    ).run(resourceType, resourceId);
   }
 
   getMasterKeyMeta(): MasterKeyMeta | undefined {

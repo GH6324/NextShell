@@ -104,6 +104,13 @@ export const mergePreferences = (
     return value as number;
   };
 
+  const normalizeCloudSyncPullIntervalSec = (value: number | undefined, fallback: number): number => {
+    if (!Number.isInteger(value) || (value ?? 0) < 10 || (value ?? 0) > 86_400) {
+      return fallback;
+    }
+    return value as number;
+  };
+
   return {
     transfer: {
       uploadDefaultDir:
@@ -187,6 +194,24 @@ export const mergePreferences = (
       rememberPassword: patch.backup?.rememberPassword ?? current.backup.rememberPassword,
       lastBackupAt:
         patch.backup?.lastBackupAt !== undefined ? patch.backup.lastBackupAt : current.backup.lastBackupAt
+    },
+    cloudSync: {
+      enabled: patch.cloudSync?.enabled ?? current.cloudSync.enabled,
+      apiBaseUrl:
+        patch.cloudSync?.apiBaseUrl !== undefined
+          ? patch.cloudSync.apiBaseUrl.trim()
+          : current.cloudSync.apiBaseUrl,
+      workspaceName:
+        patch.cloudSync?.workspaceName !== undefined
+          ? patch.cloudSync.workspaceName.trim()
+          : current.cloudSync.workspaceName,
+      pullIntervalSec: normalizeCloudSyncPullIntervalSec(
+        patch.cloudSync?.pullIntervalSec,
+        current.cloudSync.pullIntervalSec
+      ),
+      ignoreTlsErrors: patch.cloudSync?.ignoreTlsErrors ?? current.cloudSync.ignoreTlsErrors,
+      lastSyncAt:
+        patch.cloudSync?.lastSyncAt !== undefined ? patch.cloudSync.lastSyncAt : current.cloudSync.lastSyncAt
     },
     window: {
       appearance: normalizeWindowAppearance(

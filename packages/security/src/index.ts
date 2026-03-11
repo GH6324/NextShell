@@ -180,6 +180,17 @@ export interface EncryptResult {
   tagB64: string;
 }
 
+export interface WorkspaceSecretEnvelope {
+  v: 1;
+  alg: typeof ALGORITHM;
+  kdf: "scrypt";
+  salt: string;
+  iv: string;
+  aad?: string;
+  ciphertext: string;
+  tag: string;
+}
+
 export const encryptAesGcm = (
   plaintext: string,
   key: Buffer,
@@ -249,6 +260,43 @@ export const decryptBackupPayload = async (data: Buffer, password: string): Prom
   decipher.setAuthTag(tag);
   const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return decrypted;
+};
+
+export const encryptWorkspaceSecret = async (
+  secret: string,
+  workspacePassword: string,
+  aad?: string
+): Promise<WorkspaceSecretEnvelope> => {
+  const salt = randomBytes(SALT_LENGTH);
+  const key = await deriveKey(workspacePassword, salt);
+  const encrypted = encryptAesGcm(secret, key, aad);
+
+  return {
+    v: 1,
+    alg: ALGORITHM,
+    kdf: "scrypt",
+    salt: salt.toString("base64"),
+    iv: encrypted.ivB64,
+    aad,
+    ciphertext: encrypted.ciphertextB64,
+    tag: encrypted.tagB64
+  };
+};
+
+export const decryptWorkspaceSecret = async (
+  envelope: WorkspaceSecretEnvelope,
+  workspacePassword: string
+): Promise<string> => {
+  if (envelope.v !== 1) {
+    throw new Error(`Unsupported workspace secret version: ${String(envelope.v)}`);
+  }
+  if (envelope.alg !== ALGORITHM || envelope.kdf !== "scrypt") {
+    throw new Error("Unsupported workspace secret envelope");
+  }
+
+  const salt = Buffer.from(envelope.salt, "base64");
+  const key = await deriveKey(workspacePassword, salt);
+  return decryptAesGcm(envelope.ciphertext, envelope.iv, envelope.tag, key, envelope.aad);
 };
 
 // ─── Credential Vault (interface) ───────────────────────────────────────────
@@ -321,9 +369,13 @@ const KEYTAR_ACCOUNT = "backup-password";
 
 export class KeytarPasswordCache {
   private readonly keytar: KeytarModule | undefined;
+  private readonly service: string;
+  private readonly account: string;
 
-  constructor() {
+  constructor(service = KEYTAR_SERVICE, account = KEYTAR_ACCOUNT) {
     this.keytar = loadKeytar();
+    this.service = service;
+    this.account = account;
   }
 
   isAvailable(): boolean {
@@ -334,14 +386,14 @@ export class KeytarPasswordCache {
     if (!this.keytar) {
       return;
     }
-    await this.keytar.setPassword(KEYTAR_SERVICE, KEYTAR_ACCOUNT, password);
+    await this.keytar.setPassword(this.service, this.account, password);
   }
 
   async recall(): Promise<string | undefined> {
     if (!this.keytar) {
       return undefined;
     }
-    const value = await this.keytar.getPassword(KEYTAR_SERVICE, KEYTAR_ACCOUNT);
+    const value = await this.keytar.getPassword(this.service, this.account);
     return value ?? undefined;
   }
 
@@ -350,7 +402,7 @@ export class KeytarPasswordCache {
       return;
     }
     try {
-      await this.keytar.deletePassword(KEYTAR_SERVICE, KEYTAR_ACCOUNT);
+      await this.keytar.deletePassword(this.service, this.account);
     } catch {
       // ignore if not found
     }

@@ -37,9 +37,15 @@ export const backspaceModeSchema = z.enum(["ascii-backspace", "ascii-delete"]);
 export const deleteModeSchema = z.enum(["vt220-delete", "ascii-delete", "ascii-backspace"]);
 export const backupConflictPolicySchema = z.enum(["skip", "force"]);
 export const restoreConflictPolicySchema = z.enum(["skip_older", "force"]);
+export const cloudSyncStateSchema = z.enum(["disabled", "idle", "syncing", "error"]);
+export const cloudSyncResourceTypeSchema = z.enum(["connection", "sshKey", "proxy"]);
+export const cloudSyncConflictStrategySchema = z.enum(["overwrite_local", "keep_local"]);
 export const windowAppearanceSchema = z.enum(["system", "light", "dark"]);
 export const localShellModeSchema = z.enum(["preset", "custom"]);
 export const localShellPresetSchema = z.enum(["system", "powershell", "cmd", "zsh", "sh", "bash"]);
+const httpsUrlSchema = z.string().trim().url().refine((value) => value.startsWith("https://"), {
+  message: "apiBaseUrl must use https://"
+});
 
 export const connectionListQuerySchema = z.object({
   keyword: z.string().trim().optional(),
@@ -435,6 +441,14 @@ export const appPreferencesSchema = z.object({
     rememberPassword: z.boolean().default(DEFAULT_APP_PREFERENCES.backup.rememberPassword),
     lastBackupAt: z.string().nullable().default(DEFAULT_APP_PREFERENCES.backup.lastBackupAt)
   }).default(DEFAULT_APP_PREFERENCES.backup),
+  cloudSync: z.object({
+    enabled: z.boolean().default(DEFAULT_APP_PREFERENCES.cloudSync.enabled),
+    apiBaseUrl: z.string().default(DEFAULT_APP_PREFERENCES.cloudSync.apiBaseUrl),
+    workspaceName: z.string().default(DEFAULT_APP_PREFERENCES.cloudSync.workspaceName),
+    pullIntervalSec: z.coerce.number().int().min(10).max(86_400).default(DEFAULT_APP_PREFERENCES.cloudSync.pullIntervalSec),
+    ignoreTlsErrors: z.boolean().default(DEFAULT_APP_PREFERENCES.cloudSync.ignoreTlsErrors),
+    lastSyncAt: z.string().nullable().default(DEFAULT_APP_PREFERENCES.cloudSync.lastSyncAt)
+  }).default(DEFAULT_APP_PREFERENCES.cloudSync),
   window: z.object({
     appearance: windowAppearanceSchema.default(DEFAULT_APP_PREFERENCES.window.appearance),
     minimizeToTray: z.boolean().default(DEFAULT_APP_PREFERENCES.window.minimizeToTray),
@@ -507,6 +521,14 @@ export const appPreferencesPatchSchema = z.object({
     defaultRestoreConflictPolicy: restoreConflictPolicySchema.optional(),
     rememberPassword: z.boolean().optional(),
     lastBackupAt: z.string().nullable().optional()
+  }).optional(),
+  cloudSync: z.object({
+    enabled: z.boolean().optional(),
+    apiBaseUrl: z.string().optional(),
+    workspaceName: z.string().optional(),
+    pullIntervalSec: z.coerce.number().int().min(10).max(86_400).optional(),
+    ignoreTlsErrors: z.boolean().optional(),
+    lastSyncAt: z.string().nullable().optional()
   }).optional(),
   window: z.object({
     appearance: windowAppearanceSchema.optional(),
@@ -601,6 +623,60 @@ export const backupPasswordUnlockSchema = z.object({
 export const backupPasswordClearRememberedSchema = z.object({});
 
 export const backupPasswordStatusSchema = z.object({});
+
+export const cloudSyncConfigureSchema = z.object({
+  apiBaseUrl: httpsUrlSchema,
+  workspaceName: z.string().trim().min(1, "workspaceName is required"),
+  workspacePassword: z.string().min(1, "workspacePassword is required"),
+  pullIntervalSec: z.coerce.number().int().min(10).max(86_400).default(DEFAULT_APP_PREFERENCES.cloudSync.pullIntervalSec),
+  ignoreTlsErrors: z.boolean().default(DEFAULT_APP_PREFERENCES.cloudSync.ignoreTlsErrors)
+});
+
+export const cloudSyncDisableSchema = z.object({});
+
+export const cloudSyncStatusSchema = z.object({
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  state: cloudSyncStateSchema,
+  apiBaseUrl: z.string(),
+  workspaceName: z.string(),
+  pullIntervalSec: z.coerce.number().int().min(10).max(86_400),
+  ignoreTlsErrors: z.boolean().default(DEFAULT_APP_PREFERENCES.cloudSync.ignoreTlsErrors),
+  lastSyncAt: z.string().nullable(),
+  lastError: z.string().nullable().default(null),
+  keytarAvailable: z.boolean(),
+  hasWorkspacePassword: z.boolean(),
+  currentVersion: z.coerce.number().int().min(0).nullable().default(null),
+  pendingCount: z.coerce.number().int().min(0).default(0),
+  conflictCount: z.coerce.number().int().min(0).default(0)
+});
+
+export const cloudSyncStatusQuerySchema = z.object({});
+
+export const cloudSyncSyncNowSchema = z.object({});
+
+export const cloudSyncConflictItemSchema = z.object({
+  resourceType: cloudSyncResourceTypeSchema,
+  resourceId: z.string().uuid(),
+  displayName: z.string().min(1),
+  localUpdatedAt: z.string().nullable().default(null),
+  serverUpdatedAt: z.string().nullable().default(null),
+  serverDeleted: z.boolean().default(false),
+  hasPendingLocalChange: z.boolean().default(false)
+});
+
+export const cloudSyncListConflictsSchema = z.object({});
+
+export const cloudSyncResolveConflictSchema = z.object({
+  resourceType: cloudSyncResourceTypeSchema,
+  resourceId: z.string().uuid(),
+  strategy: cloudSyncConflictStrategySchema
+});
+
+export const cloudSyncAppliedEventSchema = z.object({
+  appliedAt: z.string().min(1),
+  version: z.coerce.number().int().min(0)
+});
 
 export const masterPasswordSetSchema = backupPasswordSetSchema;
 export const masterPasswordUnlockSchema = backupPasswordUnlockSchema;
@@ -788,6 +864,16 @@ export type BackupPasswordSetInput = z.infer<typeof backupPasswordSetSchema>;
 export type BackupPasswordUnlockInput = z.infer<typeof backupPasswordUnlockSchema>;
 export type BackupPasswordClearRememberedInput = z.infer<typeof backupPasswordClearRememberedSchema>;
 export type BackupPasswordStatusInput = z.infer<typeof backupPasswordStatusSchema>;
+export type CloudSyncConfigureInput = z.infer<typeof cloudSyncConfigureSchema>;
+export type CloudSyncDisableInput = z.infer<typeof cloudSyncDisableSchema>;
+export type CloudSyncStatus = z.infer<typeof cloudSyncStatusSchema>;
+export type CloudSyncStatusQueryInput = z.infer<typeof cloudSyncStatusQuerySchema>;
+export type CloudSyncSyncNowInput = z.infer<typeof cloudSyncSyncNowSchema>;
+export type CloudSyncConflictItem = z.infer<typeof cloudSyncConflictItemSchema>;
+export type CloudSyncListConflictsInput = z.infer<typeof cloudSyncListConflictsSchema>;
+export type CloudSyncResolveConflictInput = z.infer<typeof cloudSyncResolveConflictSchema>;
+export type CloudSyncStatusEvent = CloudSyncStatus;
+export type CloudSyncAppliedEvent = z.infer<typeof cloudSyncAppliedEventSchema>;
 export type MasterPasswordSetInput = z.infer<typeof masterPasswordSetSchema>;
 export type MasterPasswordUnlockInput = z.infer<typeof masterPasswordUnlockSchema>;
 export type MasterPasswordClearRememberedInput = z.infer<typeof masterPasswordClearRememberedSchema>;

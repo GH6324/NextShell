@@ -36,6 +36,13 @@ const isLocalSession = (session?: SessionDescriptor): boolean =>
 const getSessionConnectionId = (session?: SessionDescriptor): string | undefined =>
   (session as LocalAwareSessionDescriptor | undefined)?.connectionId;
 
+type CloudSyncApi = {
+  onApplied?: (listener: (_event: unknown) => void) => (() => void) | void;
+};
+
+const getCloudSyncApi = (): CloudSyncApi | undefined =>
+  (window.nextshell as typeof window.nextshell & { cloudSync?: CloudSyncApi }).cloudSync;
+
 export const App = () => {
   const {
     connections,
@@ -99,6 +106,10 @@ export const App = () => {
       message.error(`加载代理失败：${formatErrorMessage(error, "请稍后重试")}`);
     }
   }, [setProxies]);
+
+  const refreshSyncResources = useCallback(async () => {
+    await Promise.all([loadConnections(), loadSshKeys(), loadProxies()]);
+  }, [loadConnections, loadProxies, loadSshKeys]);
 
   const {
     connectingIds,
@@ -212,10 +223,10 @@ export const App = () => {
 
   // Initialize app
   useEffect(() => {
-    Promise.all([loadConnections(), loadSshKeys(), loadProxies(), initializePreferences()]).finally(() => {
+    Promise.all([refreshSyncResources(), initializePreferences()]).finally(() => {
       setAppReady(true);
     });
-  }, [loadConnections, loadSshKeys, loadProxies, initializePreferences]);
+  }, [refreshSyncResources, initializePreferences]);
 
   // Transfer status events
   useEffect(() => {
@@ -224,6 +235,23 @@ export const App = () => {
     });
     return () => { unsubscribe(); };
   }, [applyTransferEvent]);
+
+  useEffect(() => {
+    const cloudSync = getCloudSyncApi();
+    if (!cloudSync?.onApplied) {
+      return;
+    }
+
+    const unsubscribe = cloudSync.onApplied(() => {
+      void refreshSyncResources();
+    });
+
+    return () => {
+      if (typeof unsubscribe === "function") {
+        unsubscribe();
+      }
+    };
+  }, [refreshSyncResources]);
 
   const connectActiveConnection = useCallback(async () => {
     if (!activeConnectionId) {

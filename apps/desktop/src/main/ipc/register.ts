@@ -67,6 +67,12 @@ import {
   backupPasswordUnlockSchema,
   backupPasswordClearRememberedSchema,
   backupPasswordStatusSchema,
+  cloudSyncConfigureSchema,
+  cloudSyncDisableSchema,
+  cloudSyncListConflictsSchema,
+  cloudSyncResolveConflictSchema,
+  cloudSyncStatusQuerySchema,
+  cloudSyncSyncNowSchema,
   masterPasswordSetSchema,
   masterPasswordUnlockSchema,
   masterPasswordChangeSchema,
@@ -517,6 +523,36 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
   ipcMain.handle(IPCChannel.BackupPasswordStatus, (_event, payload) => {
     parsePayload(backupPasswordStatusSchema, payload ?? {}, "密码状态查询");
     return services.masterPasswordStatus();
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncConfigure, (_event, payload) => {
+    const input = parsePayload(cloudSyncConfigureSchema, payload, "云同步配置");
+    return services.cloudSyncConfigure(input);
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncDisable, (_event, payload) => {
+    parsePayload(cloudSyncDisableSchema, payload ?? {}, "停用云同步");
+    return services.cloudSyncDisable();
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncStatus, (_event, payload) => {
+    parsePayload(cloudSyncStatusQuerySchema, payload ?? {}, "云同步状态");
+    return services.cloudSyncStatus();
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncSyncNow, (_event, payload) => {
+    parsePayload(cloudSyncSyncNowSchema, payload ?? {}, "立即云同步");
+    return services.cloudSyncSyncNow();
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncListConflicts, (_event, payload) => {
+    parsePayload(cloudSyncListConflictsSchema, payload ?? {}, "云同步冲突列表");
+    return services.cloudSyncListConflicts();
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncResolveConflict, (_event, payload) => {
+    const input = parsePayload(cloudSyncResolveConflictSchema, payload, "云同步冲突处理");
+    return services.cloudSyncResolveConflict(input);
   });
 
   // ─── Template Params ──────────────────────────────────────────────────────

@@ -44,6 +44,7 @@ type SettingsSection =
   | "command"
   | "terminal"
   | "network"
+  | "cloudSync"
   | "backup"
   | "security"
   | "about";
@@ -55,6 +56,7 @@ const SECTIONS: Array<{ key: SettingsSection; label: string; icon: string }> = [
   { key: "command", label: "命令中心", icon: "ri-terminal-box-line" },
   { key: "terminal", label: "终端主题", icon: "ri-palette-line" },
   { key: "network", label: "网络工具", icon: "ri-route-line" },
+  { key: "cloudSync", label: "云同步", icon: "ri-repeat-2-line" },
   { key: "backup", label: "云存档", icon: "ri-cloud-line" },
   { key: "security", label: "安全与审计", icon: "ri-shield-keyhole-line" },
   { key: "about", label: "关于", icon: "ri-information-line" },
@@ -290,6 +292,221 @@ const SettingsSwitchRow = ({
   </div>
 );
 
+type CloudSyncRuntimeState = "disabled" | "idle" | "syncing" | "error" | string;
+
+type CloudSyncStatusView = {
+  enabled: boolean;
+  state: CloudSyncRuntimeState;
+  apiBaseUrl: string;
+  workspaceName: string;
+  pullIntervalSec: number;
+  ignoreTlsErrors: boolean;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  keytarAvailable: boolean | null;
+  pendingCount: number;
+  conflictCount: number;
+};
+
+type CloudSyncConflictItemView = {
+  resourceType: "connection" | "sshKey" | "proxy";
+  resourceId: string;
+  displayName: string;
+  localUpdatedAt: string | null;
+  serverUpdatedAt: string | null;
+  serverDeleted: boolean;
+  hasPendingLocalChange: boolean;
+};
+
+type CloudSyncConfigureInput = {
+  apiBaseUrl: string;
+  workspaceName: string;
+  workspacePassword: string;
+  pullIntervalSec: number;
+  ignoreTlsErrors: boolean;
+};
+
+type CloudSyncApi = {
+  configure?: (input: CloudSyncConfigureInput) => Promise<unknown>;
+  disable?: () => Promise<unknown>;
+  status?: () => Promise<unknown>;
+  syncNow?: () => Promise<unknown>;
+  listConflicts?: () => Promise<unknown>;
+  resolveConflict?: (input: {
+    resourceType: "connection" | "sshKey" | "proxy";
+    resourceId: string;
+    strategy: "overwrite_local" | "keep_local";
+  }) => Promise<unknown>;
+  onStatus?: (listener: (event: unknown) => void) => (() => void) | void;
+  onApplied?: (listener: (event: unknown) => void) => (() => void) | void;
+};
+
+const DEFAULT_CLOUD_SYNC_STATUS: CloudSyncStatusView = {
+  enabled: false,
+  state: "disabled",
+  apiBaseUrl: "",
+  workspaceName: "",
+  pullIntervalSec: 60,
+  ignoreTlsErrors: false,
+  lastSyncAt: null,
+  lastError: null,
+  keytarAvailable: null,
+  pendingCount: 0,
+  conflictCount: 0
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const getCloudSyncApi = (): CloudSyncApi | undefined =>
+  (window.nextshell as typeof window.nextshell & { cloudSync?: CloudSyncApi }).cloudSync;
+
+const readCloudSyncError = (value: unknown): string | null => {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (isRecord(value) && typeof value.message === "string") {
+    const trimmed = value.message.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+};
+
+const normalizeCloudSyncStatus = (
+  value: unknown,
+  fallback: CloudSyncStatusView = DEFAULT_CLOUD_SYNC_STATUS
+): CloudSyncStatusView => {
+  const payload =
+    isRecord(value) && "status" in value
+      ? value.status
+      : value;
+
+  if (!isRecord(payload)) {
+    return fallback;
+  }
+
+  const capabilities = isRecord(payload.capabilities) ? payload.capabilities : undefined;
+  const nextEnabled =
+    typeof payload.enabled === "boolean"
+      ? payload.enabled
+      : fallback.enabled;
+  const nextState =
+    typeof payload.state === "string"
+      ? payload.state
+      : typeof payload.status === "string"
+        ? payload.status
+        : nextEnabled
+          ? "idle"
+          : "disabled";
+
+  return {
+    enabled: nextEnabled,
+    state: nextState,
+    apiBaseUrl:
+      typeof payload.apiBaseUrl === "string"
+        ? payload.apiBaseUrl
+        : fallback.apiBaseUrl,
+    workspaceName:
+      typeof payload.workspaceName === "string"
+        ? payload.workspaceName
+        : fallback.workspaceName,
+    pullIntervalSec:
+      typeof payload.pullIntervalSec === "number" && Number.isFinite(payload.pullIntervalSec)
+        ? payload.pullIntervalSec
+        : fallback.pullIntervalSec,
+    ignoreTlsErrors:
+      typeof payload.ignoreTlsErrors === "boolean"
+        ? payload.ignoreTlsErrors
+        : fallback.ignoreTlsErrors,
+    lastSyncAt:
+      typeof payload.lastSyncAt === "string"
+        ? payload.lastSyncAt
+        : payload.lastSyncAt === null
+          ? null
+          : fallback.lastSyncAt,
+    lastError:
+      readCloudSyncError(payload.lastError) ??
+      readCloudSyncError(payload.error) ??
+      fallback.lastError,
+    keytarAvailable:
+      typeof payload.keytarAvailable === "boolean"
+        ? payload.keytarAvailable
+        : typeof capabilities?.keytarAvailable === "boolean"
+          ? capabilities.keytarAvailable
+          : fallback.keytarAvailable,
+    pendingCount:
+      typeof payload.pendingCount === "number" && Number.isFinite(payload.pendingCount)
+        ? Math.max(0, Math.round(payload.pendingCount))
+        : fallback.pendingCount,
+    conflictCount:
+      typeof payload.conflictCount === "number" && Number.isFinite(payload.conflictCount)
+        ? Math.max(0, Math.round(payload.conflictCount))
+        : fallback.conflictCount
+  };
+};
+
+const normalizeCloudSyncConflicts = (value: unknown): CloudSyncConflictItemView[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+    const resourceType = entry.resourceType;
+    const resourceId = entry.resourceId;
+    const displayName = entry.displayName;
+    if (
+      (resourceType !== "connection" && resourceType !== "sshKey" && resourceType !== "proxy") ||
+      typeof resourceId !== "string" ||
+      typeof displayName !== "string"
+    ) {
+      return [];
+    }
+
+    return [{
+      resourceType,
+      resourceId,
+      displayName,
+      localUpdatedAt: typeof entry.localUpdatedAt === "string" ? entry.localUpdatedAt : null,
+      serverUpdatedAt: typeof entry.serverUpdatedAt === "string" ? entry.serverUpdatedAt : null,
+      serverDeleted: Boolean(entry.serverDeleted),
+      hasPendingLocalChange: Boolean(entry.hasPendingLocalChange)
+    }];
+  });
+};
+
+const formatCloudSyncState = (state: CloudSyncRuntimeState): { color: string; label: string } => {
+  switch (state) {
+    case "syncing":
+      return { color: "processing", label: "同步中" };
+    case "error":
+      return { color: "error", label: "异常" };
+    case "disabled":
+      return { color: "default", label: "未启用" };
+    case "idle":
+      return { color: "success", label: "运行中" };
+    default:
+      return { color: "default", label: state || "未知" };
+  }
+};
+
+const formatCloudSyncTime = (value: string | null): string => {
+  if (!value) {
+    return "尚未同步";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+};
+
 export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps) => {
   const { message, modal } = AntdApp.useApp();
   const preferences = usePreferencesStore((s) => s.preferences);
@@ -351,6 +568,17 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
   const [archiveListVisible, setArchiveListVisible] = useState(false);
   const [archiveListLoading, setArchiveListLoading] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncStatusView>(DEFAULT_CLOUD_SYNC_STATUS);
+  const [cloudSyncStatusLoading, setCloudSyncStatusLoading] = useState(false);
+  const [cloudSyncBusyAction, setCloudSyncBusyAction] = useState<"configure" | "disable" | "sync" | null>(null);
+  const [cloudSyncConflicts, setCloudSyncConflicts] = useState<CloudSyncConflictItemView[]>([]);
+  const [cloudSyncConflictsLoading, setCloudSyncConflictsLoading] = useState(false);
+  const [cloudSyncConflictBusyKey, setCloudSyncConflictBusyKey] = useState<string | null>(null);
+  const [cloudSyncApiBaseUrl, setCloudSyncApiBaseUrl] = useState("");
+  const [cloudSyncWorkspaceName, setCloudSyncWorkspaceName] = useState("");
+  const [cloudSyncWorkspacePassword, setCloudSyncWorkspacePassword] = useState("");
+  const [cloudSyncPullIntervalSec, setCloudSyncPullIntervalSec] = useState(60);
+  const [cloudSyncIgnoreTlsErrors, setCloudSyncIgnoreTlsErrors] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -389,6 +617,87 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     setChangeAckRisk(false);
   }, [open, preferences]);
 
+  const syncCloudSyncFormFromStatus = useCallback((status: CloudSyncStatusView) => {
+    setCloudSyncApiBaseUrl(status.apiBaseUrl);
+    setCloudSyncWorkspaceName(status.workspaceName);
+    setCloudSyncWorkspacePassword("");
+    setCloudSyncPullIntervalSec(
+      status.pullIntervalSec > 0 ? Math.round(status.pullIntervalSec) : DEFAULT_CLOUD_SYNC_STATUS.pullIntervalSec
+    );
+    setCloudSyncIgnoreTlsErrors(status.ignoreTlsErrors);
+  }, []);
+
+  const refreshCloudSyncStatus = useCallback(
+    async (options?: { syncForm?: boolean; silent?: boolean }) => {
+      const cloudSync = getCloudSyncApi();
+      if (!cloudSync?.status) {
+        const unsupportedStatus = {
+          ...DEFAULT_CLOUD_SYNC_STATUS,
+          lastError: "当前构建尚未提供 cloudSync API。"
+        };
+        setCloudSyncStatus(unsupportedStatus);
+        if (options?.syncForm) {
+          syncCloudSyncFormFromStatus(unsupportedStatus);
+        }
+        return unsupportedStatus;
+      }
+
+      setCloudSyncStatusLoading(true);
+      try {
+        const result = await cloudSync.status();
+        let nextStatus = DEFAULT_CLOUD_SYNC_STATUS;
+        setCloudSyncStatus((prev) => {
+          nextStatus = normalizeCloudSyncStatus(result, prev);
+          return nextStatus;
+        });
+        if (options?.syncForm) {
+          syncCloudSyncFormFromStatus(nextStatus);
+        }
+        return nextStatus;
+      } catch (error) {
+        const lastError = formatErrorMessage(error, "请稍后重试");
+        setCloudSyncStatus((prev) => ({
+          ...prev,
+          state: prev.enabled ? "error" : prev.state,
+          lastError
+        }));
+        if (!options?.silent) {
+          message.error(`读取云同步状态失败：${lastError}`);
+        }
+        return null;
+      } finally {
+        setCloudSyncStatusLoading(false);
+      }
+    },
+    [message, syncCloudSyncFormFromStatus]
+  );
+
+  const refreshCloudSyncConflicts = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const cloudSync = getCloudSyncApi();
+      if (!cloudSync?.listConflicts) {
+        setCloudSyncConflicts([]);
+        return [];
+      }
+
+      setCloudSyncConflictsLoading(true);
+      try {
+        const result = await cloudSync.listConflicts();
+        const normalized = normalizeCloudSyncConflicts(result);
+        setCloudSyncConflicts(normalized);
+        return normalized;
+      } catch (error) {
+        if (!options?.silent) {
+          message.error(`读取云同步冲突失败：${formatErrorMessage(error, "请稍后重试")}`);
+        }
+        return [];
+      } finally {
+        setCloudSyncConflictsLoading(false);
+      }
+    },
+    [message]
+  );
+
   useEffect(() => {
     const next = resolvePresetByColors(terminalBackgroundColor, terminalForegroundColor);
     setTerminalThemePreset((cur) => (cur === next ? cur : next));
@@ -408,6 +717,43 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
       }
     })();
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    void Promise.all([
+      refreshCloudSyncStatus({ syncForm: true, silent: true }),
+      refreshCloudSyncConflicts({ silent: true })
+    ]);
+  }, [open, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const cloudSync = getCloudSyncApi();
+    if (!cloudSync) {
+      return;
+    }
+
+    const offStatus = cloudSync.onStatus?.((event) => {
+      setCloudSyncStatus((prev) => normalizeCloudSyncStatus(event, prev));
+    });
+    const offApplied = cloudSync.onApplied?.(() => {
+      void Promise.all([
+        refreshCloudSyncStatus({ silent: true }),
+        refreshCloudSyncConflicts({ silent: true })
+      ]);
+    });
+
+    return () => {
+      if (typeof offStatus === "function") {
+        offStatus();
+      }
+      if (typeof offApplied === "function") {
+        offApplied();
+      }
+    };
+  }, [open, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
 
   const refreshPasswordStatus = useCallback(async () => {
     try {
@@ -598,6 +944,135 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     });
   }, [message, modal]);
 
+  const handleConfigureCloudSync = useCallback(async (): Promise<void> => {
+    const cloudSync = getCloudSyncApi();
+    if (!cloudSync?.configure) {
+      message.error("当前构建尚未提供 cloudSync.configure 接口。");
+      return;
+    }
+
+    const apiBaseUrl = cloudSyncApiBaseUrl.trim();
+    const workspaceName = cloudSyncWorkspaceName.trim();
+    const workspacePassword = cloudSyncWorkspacePassword;
+    const pullIntervalSec = Math.max(10, Math.round(cloudSyncPullIntervalSec || 0));
+    const ignoreTlsErrors = cloudSyncIgnoreTlsErrors;
+
+    if (!apiBaseUrl) {
+      message.warning("请输入 API 地址。");
+      return;
+    }
+    if (!workspaceName) {
+      message.warning("请输入 workspace 名称。");
+      return;
+    }
+    if (!workspacePassword) {
+      message.warning("请输入 workspace 密码。");
+      return;
+    }
+
+    setCloudSyncBusyAction("configure");
+    try {
+      await cloudSync.configure({
+        apiBaseUrl,
+        workspaceName,
+        workspacePassword,
+        pullIntervalSec,
+        ignoreTlsErrors
+      });
+      message.success("云同步已启用。");
+      setCloudSyncWorkspacePassword("");
+      await Promise.all([
+        refreshCloudSyncStatus({ syncForm: true, silent: true }),
+        refreshCloudSyncConflicts({ silent: true })
+      ]);
+    } catch (error) {
+      message.error(`启用云同步失败：${formatErrorMessage(error, "请检查云同步配置")}`);
+    } finally {
+      setCloudSyncBusyAction(null);
+    }
+  }, [
+    cloudSyncApiBaseUrl,
+    cloudSyncIgnoreTlsErrors,
+    cloudSyncPullIntervalSec,
+    cloudSyncWorkspaceName,
+    cloudSyncWorkspacePassword,
+    message,
+    refreshCloudSyncConflicts,
+    refreshCloudSyncStatus
+  ]);
+
+  const handleDisableCloudSync = useCallback(async (): Promise<void> => {
+    const cloudSync = getCloudSyncApi();
+    if (!cloudSync?.disable) {
+      message.error("当前构建尚未提供 cloudSync.disable 接口。");
+      return;
+    }
+
+    setCloudSyncBusyAction("disable");
+    try {
+      await cloudSync.disable();
+      message.success("云同步已停用。");
+      setCloudSyncWorkspacePassword("");
+      await Promise.all([
+        refreshCloudSyncStatus({ syncForm: true, silent: true }),
+        refreshCloudSyncConflicts({ silent: true })
+      ]);
+    } catch (error) {
+      message.error(`停用云同步失败：${formatErrorMessage(error, "请稍后重试")}`);
+    } finally {
+      setCloudSyncBusyAction(null);
+    }
+  }, [message, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
+
+  const handleCloudSyncNow = useCallback(async (): Promise<void> => {
+    const cloudSync = getCloudSyncApi();
+    if (!cloudSync?.syncNow) {
+      message.error("当前构建尚未提供 cloudSync.syncNow 接口。");
+      return;
+    }
+
+    setCloudSyncBusyAction("sync");
+    try {
+      await cloudSync.syncNow();
+      message.success("已触发云同步。");
+      await Promise.all([
+        refreshCloudSyncStatus({ silent: true }),
+        refreshCloudSyncConflicts({ silent: true })
+      ]);
+    } catch (error) {
+      message.error(`立即同步失败：${formatErrorMessage(error, "请稍后重试")}`);
+    } finally {
+      setCloudSyncBusyAction(null);
+    }
+  }, [message, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
+
+  const handleResolveCloudSyncConflict = useCallback(async (
+    resourceType: CloudSyncConflictItemView["resourceType"],
+    resourceId: string,
+    strategy: "overwrite_local" | "keep_local"
+  ): Promise<void> => {
+    const cloudSync = getCloudSyncApi();
+    if (!cloudSync?.resolveConflict) {
+      message.error("当前构建尚未提供 cloudSync.resolveConflict 接口。");
+      return;
+    }
+
+    const busyKey = `${resourceType}:${resourceId}:${strategy}`;
+    setCloudSyncConflictBusyKey(busyKey);
+    try {
+      await cloudSync.resolveConflict({ resourceType, resourceId, strategy });
+      message.success(strategy === "overwrite_local" ? "已使用远端版本覆盖本地。" : "已保留本地版本并重新推送。");
+      await Promise.all([
+        refreshCloudSyncStatus({ silent: true }),
+        refreshCloudSyncConflicts({ silent: true })
+      ]);
+    } catch (error) {
+      message.error(`处理冲突失败：${formatErrorMessage(error, "请稍后重试")}`);
+    } finally {
+      setCloudSyncConflictBusyKey(null);
+    }
+  }, [message, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
+
   // ─── Memoized section content ───────────────────────────────────────
   const sectionContent = useMemo(() => {
     switch (activeSection) {
@@ -707,6 +1182,33 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
           message={message}
         />;
 
+      case "cloudSync":
+        return <CloudSyncSection
+          apiAvailable={Boolean(getCloudSyncApi())}
+          status={cloudSyncStatus}
+          loading={cloudSyncStatusLoading}
+          busyAction={cloudSyncBusyAction}
+          conflicts={cloudSyncConflicts}
+          conflictsLoading={cloudSyncConflictsLoading}
+          conflictBusyKey={cloudSyncConflictBusyKey}
+          apiBaseUrl={cloudSyncApiBaseUrl}
+          workspaceName={cloudSyncWorkspaceName}
+          workspacePassword={cloudSyncWorkspacePassword}
+          pullIntervalSec={cloudSyncPullIntervalSec}
+          ignoreTlsErrors={cloudSyncIgnoreTlsErrors}
+          setApiBaseUrl={setCloudSyncApiBaseUrl}
+          setWorkspaceName={setCloudSyncWorkspaceName}
+          setWorkspacePassword={setCloudSyncWorkspacePassword}
+          setPullIntervalSec={setCloudSyncPullIntervalSec}
+          setIgnoreTlsErrors={setCloudSyncIgnoreTlsErrors}
+          onConfigure={() => void handleConfigureCloudSync()}
+          onDisable={() => void handleDisableCloudSync()}
+          onSyncNow={() => void handleCloudSyncNow()}
+          onResolveConflict={(resourceType, resourceId, strategy) =>
+            void handleResolveCloudSyncConflict(resourceType, resourceId, strategy)
+          }
+        />;
+
       case "backup":
         return <BackupSection
           loading={loading}
@@ -743,11 +1245,14 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     uploadDefaultDir, downloadDefaultDir, editorMode, editorCommand,
     terminalBackgroundColor, terminalForegroundColor, terminalThemePreset, localShell,
     appBackgroundImagePath, nexttracePath,
+    cloudSyncStatus, cloudSyncStatusLoading, cloudSyncBusyAction, cloudSyncConflicts, cloudSyncConflictsLoading, cloudSyncConflictBusyKey,
+    cloudSyncApiBaseUrl, cloudSyncWorkspaceName, cloudSyncWorkspacePassword, cloudSyncPullIntervalSec, cloudSyncIgnoreTlsErrors,
     backupRemotePath, rclonePath, backupConflictPolicy, restoreConflictPolicy,
     pwdStatus, pwdStatusKnown, pwdStatusLoading, pwdInput, pwdConfirm, pwdBusy,
     changeOldPwd, changeNewPwd, changeConfirmPwd, changeAckRisk, changeBusy,
     backupRunning, archiveList, archiveListVisible, archiveListLoading, restoring,
     save, pickDirectory, message, modal,
+    handleConfigureCloudSync, handleDisableCloudSync, handleCloudSyncNow, handleResolveCloudSyncConflict
   ]);
 
   return (
@@ -1784,6 +2289,279 @@ const TerminalSection = ({
       ) : null}
     </SettingsCard>
   </>
+  );
+};
+
+const CloudSyncSection = ({
+  apiAvailable,
+  status,
+  loading,
+  busyAction,
+  conflicts,
+  conflictsLoading,
+  conflictBusyKey,
+  apiBaseUrl,
+  workspaceName,
+  workspacePassword,
+  pullIntervalSec,
+  ignoreTlsErrors,
+  setApiBaseUrl,
+  setWorkspaceName,
+  setWorkspacePassword,
+  setPullIntervalSec,
+  setIgnoreTlsErrors,
+  onConfigure,
+  onDisable,
+  onSyncNow,
+  onResolveConflict
+}: {
+  apiAvailable: boolean;
+  status: CloudSyncStatusView;
+  loading: boolean;
+  busyAction: "configure" | "disable" | "sync" | null;
+  conflicts: CloudSyncConflictItemView[];
+  conflictsLoading: boolean;
+  conflictBusyKey: string | null;
+  apiBaseUrl: string;
+  workspaceName: string;
+  workspacePassword: string;
+  pullIntervalSec: number;
+  ignoreTlsErrors: boolean;
+  setApiBaseUrl: (value: string) => void;
+  setWorkspaceName: (value: string) => void;
+  setWorkspacePassword: (value: string) => void;
+  setPullIntervalSec: (value: number) => void;
+  setIgnoreTlsErrors: (value: boolean) => void;
+  onConfigure: () => void;
+  onDisable: () => void;
+  onSyncNow: () => void;
+  onResolveConflict: (
+    resourceType: CloudSyncConflictItemView["resourceType"],
+    resourceId: string,
+    strategy: "overwrite_local" | "keep_local"
+  ) => void;
+}) => {
+  const runtime = formatCloudSyncState(status.state);
+  const controlsDisabled = loading || busyAction !== null || !apiAvailable;
+  const configureDisabled =
+    controlsDisabled ||
+    status.keytarAvailable === false ||
+    apiBaseUrl.trim().length === 0 ||
+    workspaceName.trim().length === 0 ||
+    workspacePassword.length === 0;
+
+  return (
+    <>
+      <SettingsCard title="工作区配置" description="通过 HTTPS API 与远端工作区共享服务器、密钥和代理配置">
+        {!apiAvailable ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="当前构建尚未提供 cloudSync API"
+            description="renderer 已按约定接线；主进程和 preload 暴露该命名空间后，这个分区会自动生效。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+
+        {status.keytarAvailable === false ? (
+          <Alert
+            type="error"
+            showIcon
+            message="系统钥匙串不可用"
+            description="workspace 密码不会写入 settings。请先确保 keytar 可用，再启用云同步。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+
+        <SettingsRow label="API 地址" hint="例如 https://sync.example.com">
+          <Input
+            value={apiBaseUrl}
+            disabled={controlsDisabled}
+            onChange={(event) => setApiBaseUrl(event.target.value)}
+            placeholder="https://your-sync-server"
+          />
+        </SettingsRow>
+
+        <SettingsRow label="Workspace 名称" hint="同一 workspace 会在多台设备间共享同步域">
+          <Input
+            value={workspaceName}
+            disabled={controlsDisabled}
+            onChange={(event) => setWorkspaceName(event.target.value)}
+            placeholder="例如 personal"
+          />
+        </SettingsRow>
+
+        <SettingsRow label="Workspace 密码" hint="只提交给 cloudSync.configure，不会写入 settings.update">
+          <Input.Password
+            value={workspacePassword}
+            disabled={controlsDisabled}
+            onChange={(event) => setWorkspacePassword(event.target.value)}
+            placeholder="输入后仅用于启用或更新云同步"
+          />
+        </SettingsRow>
+
+        <SettingsRow label="拉取周期（秒）" hint="后台按固定周期拉取远端快照并覆盖本地同步域">
+          <InputNumber
+            style={{ width: "100%" }}
+            min={10}
+            precision={0}
+            value={pullIntervalSec}
+            disabled={controlsDisabled}
+            onChange={(value) => {
+              if (typeof value !== "number" || !Number.isFinite(value)) {
+                return;
+              }
+              setPullIntervalSec(Math.max(10, Math.round(value)));
+            }}
+          />
+        </SettingsRow>
+
+        <SettingsRow label="忽略 TLS 校验" hint="仅对当前云同步工作区生效，适用于自签名证书">
+          <Switch
+            checked={ignoreTlsErrors}
+            disabled={controlsDisabled}
+            onChange={setIgnoreTlsErrors}
+          />
+        </SettingsRow>
+
+        <Space wrap style={{ marginTop: 8 }}>
+          <Button
+            type="primary"
+            loading={busyAction === "configure"}
+            disabled={configureDisabled}
+            onClick={onConfigure}
+          >
+            保存并启用
+          </Button>
+          <Button
+            danger
+            loading={busyAction === "disable"}
+            disabled={controlsDisabled || !status.enabled}
+            onClick={onDisable}
+          >
+            停用云同步
+          </Button>
+          <Button
+            loading={busyAction === "sync" || status.state === "syncing"}
+            disabled={controlsDisabled || !status.enabled}
+            onClick={onSyncNow}
+          >
+            立即同步
+          </Button>
+        </Space>
+      </SettingsCard>
+
+      <SettingsCard title="同步状态" description="远端工作区为准，首次启用或定时拉取时会覆盖本地同步域">
+        {loading ? (
+          <Skeleton active paragraph={{ rows: 4 }} />
+        ) : (
+          <>
+            <SettingsRow label="启用状态">
+              <Space size={8}>
+                <Badge status={status.enabled ? "success" : "default"} />
+                <Typography.Text>{status.enabled ? "已启用" : "未启用"}</Typography.Text>
+              </Space>
+            </SettingsRow>
+
+            <SettingsRow label="运行状态">
+              <Tag color={runtime.color}>{runtime.label}</Tag>
+            </SettingsRow>
+
+            <SettingsRow label="钥匙串能力">
+              <Typography.Text>
+                {status.keytarAvailable === null
+                  ? "未知"
+                  : status.keytarAvailable
+                    ? "可用"
+                    : "不可用"}
+              </Typography.Text>
+            </SettingsRow>
+
+            <SettingsRow label="上次同步时间">
+              <Typography.Text>{formatCloudSyncTime(status.lastSyncAt)}</Typography.Text>
+            </SettingsRow>
+
+            <SettingsRow label="当前工作区">
+              <Typography.Text>{status.workspaceName || "未配置"}</Typography.Text>
+            </SettingsRow>
+
+            <SettingsRow label="待同步队列">
+              <Typography.Text>{status.pendingCount}</Typography.Text>
+            </SettingsRow>
+
+            <SettingsRow label="冲突数量">
+              <Typography.Text>{status.conflictCount}</Typography.Text>
+            </SettingsRow>
+
+            <SettingsRow label="TLS 校验">
+              <Typography.Text>{status.ignoreTlsErrors ? "已忽略证书校验" : "严格校验"}</Typography.Text>
+            </SettingsRow>
+          </>
+        )}
+
+        {status.lastError ? (
+          <Alert
+            style={{ marginTop: 16 }}
+            type="error"
+            showIcon
+            message="最近错误"
+            description={status.lastError}
+          />
+        ) : (
+          <div className="stg-note" style={{ marginTop: 16 }}>
+            云同步独立于云存档运行，仅覆盖服务器、 SSH 密钥和代理三个同步域。
+          </div>
+        )}
+      </SettingsCard>
+
+      <SettingsCard title="冲突处理" description="检测到同一资源的远端更新时，不会自动覆盖本地待同步修改">
+        {conflictsLoading ? (
+          <Skeleton active paragraph={{ rows: 3 }} />
+        ) : conflicts.length === 0 ? (
+          <div className="stg-note">当前没有待处理的云同步冲突。</div>
+        ) : (
+          <List
+            dataSource={conflicts}
+            renderItem={(item) => {
+              const overwriteBusy = conflictBusyKey === `${item.resourceType}:${item.resourceId}:overwrite_local`;
+              const keepBusy = conflictBusyKey === `${item.resourceType}:${item.resourceId}:keep_local`;
+              return (
+                <List.Item
+                  actions={[
+                    <Button
+                      key="overwrite"
+                      size="small"
+                      loading={overwriteBusy}
+                      onClick={() => onResolveConflict(item.resourceType, item.resourceId, "overwrite_local")}
+                    >
+                      覆盖本地
+                    </Button>,
+                    <Button
+                      key="keep"
+                      type="primary"
+                      size="small"
+                      loading={keepBusy}
+                      onClick={() => onResolveConflict(item.resourceType, item.resourceId, "keep_local")}
+                    >
+                      保留本地
+                    </Button>
+                  ]}
+                >
+                  <List.Item.Meta
+                    title={`${item.displayName} · ${item.resourceType}`}
+                    description={[
+                      item.serverDeleted ? "远端已删除该资源" : `远端更新时间：${formatCloudSyncTime(item.serverUpdatedAt)}`,
+                      `本地更新时间：${formatCloudSyncTime(item.localUpdatedAt)}`,
+                      item.hasPendingLocalChange ? "本地有待同步修改" : "本地无待同步修改"
+                    ].join(" ｜ ")}
+                  />
+                </List.Item>
+              );
+            }}
+          />
+        )}
+      </SettingsCard>
+    </>
   );
 };
 

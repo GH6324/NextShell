@@ -292,6 +292,18 @@ export interface SavedCommand {
 export type BackupConflictPolicy = "skip" | "force";
 export type RestoreConflictPolicy = "skip_older" | "force";
 export type WindowAppearance = "system" | "light" | "dark";
+export type CloudSyncResourceType = "connection" | "sshKey" | "proxy";
+
+export interface CloudSyncResourceSyncState {
+  resourceType: CloudSyncResourceType;
+  resourceId: string;
+  serverRevision?: number;
+  conflictRemoteRevision?: number;
+  conflictRemotePayloadJson?: string;
+  conflictRemoteUpdatedAt?: string;
+  conflictRemoteDeleted: boolean;
+  conflictDetectedAt?: string;
+}
 
 export interface AppPreferences {
   transfer: {
@@ -333,6 +345,14 @@ export interface AppPreferences {
     defaultRestoreConflictPolicy: RestoreConflictPolicy;
     rememberPassword: boolean;
     lastBackupAt: string | null;
+  };
+  cloudSync: {
+    enabled: boolean;
+    apiBaseUrl: string;
+    workspaceName: string;
+    pullIntervalSec: number;
+    ignoreTlsErrors: boolean;
+    lastSyncAt: string | null;
   };
   window: {
     appearance: WindowAppearance;
@@ -414,6 +434,14 @@ export interface AppPreferencesPatch {
     defaultRestoreConflictPolicy?: RestoreConflictPolicy;
     rememberPassword?: boolean;
     lastBackupAt?: string | null;
+  };
+  cloudSync?: {
+    enabled?: boolean;
+    apiBaseUrl?: string;
+    workspaceName?: string;
+    pullIntervalSec?: number;
+    ignoreTlsErrors?: boolean;
+    lastSyncAt?: string | null;
   };
   window?: {
     appearance?: WindowAppearance;
@@ -564,6 +592,14 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
     defaultRestoreConflictPolicy: "skip_older",
     rememberPassword: true,
     lastBackupAt: null
+  },
+  cloudSync: {
+    enabled: false,
+    apiBaseUrl: "",
+    workspaceName: "",
+    pullIntervalSec: 60,
+    ignoreTlsErrors: false,
+    lastSyncAt: null
   },
   window: {
     appearance: "system",

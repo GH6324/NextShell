@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  CloudSyncAppliedEvent,
+  CloudSyncStatus,
   DebugLogEntry,
   SessionDataEvent,
   SessionStatusEvent,
@@ -223,6 +225,32 @@ const api: NextShellApi = {
     unlockPassword: (payload) => masterPasswordApi.unlockPassword(payload),
     clearRemembered: () => masterPasswordApi.clearRemembered(),
     passwordStatus: () => masterPasswordApi.passwordStatus()
+  },
+  cloudSync: {
+    configure: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncConfigure, payload),
+    disable: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncDisable, payload ?? {}),
+    status: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncStatus, payload ?? {}),
+    syncNow: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncSyncNow, payload ?? {}),
+    listConflicts: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncListConflicts, payload ?? {}),
+    resolveConflict: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncResolveConflict, payload),
+    onStatus: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: CloudSyncStatus) => {
+        listener(payload);
+      };
+      ipcRenderer.on(IPCChannel.CloudSyncStatusEvent, handler);
+      return () => {
+        ipcRenderer.off(IPCChannel.CloudSyncStatusEvent, handler);
+      };
+    },
+    onApplied: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: CloudSyncAppliedEvent) => {
+        listener(payload);
+      };
+      ipcRenderer.on(IPCChannel.CloudSyncAppliedEvent, handler);
+      return () => {
+        ipcRenderer.off(IPCChannel.CloudSyncAppliedEvent, handler);
+      };
+    }
   },
   masterPassword: masterPasswordApi,
   templateParams: {

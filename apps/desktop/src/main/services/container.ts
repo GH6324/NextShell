@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import * as iconv from "iconv-lite";
-import { BrowserWindow, dialog, shell } from "electron";
+import { BrowserWindow, dialog, shell, session as electronSession } from "electron";
 import type { OpenDialogOptions, WebContents } from "electron";
 import { spawn as spawnPty, type IPty } from "node-pty";
 import type {
@@ -54,6 +54,10 @@ import type {
   DialogOpenDirectoryInput,
   DialogOpenFilesInput,
   DialogOpenPathInput,
+  CloudSyncConflictItem,
+  CloudSyncConfigureInput,
+  CloudSyncResolveConflictInput,
+  CloudSyncStatus,
   CommandBatchExecInput,
   ConnectionExportInput,
   ConnectionExportBatchInput,
@@ -112,6 +116,13 @@ import {
 import { RemoteEditManager } from "./remote-edit-manager";
 import { mergePreferences } from "./preferences";
 import { BackupService, applyPendingRestore } from "./backup-service";
+import {
+  CloudSyncService,
+  CLOUD_SYNC_PENDING_QUEUE_SETTING_KEY,
+  type CloudSyncApplyConnectionInput,
+  type CloudSyncApplyProxyInput,
+  type CloudSyncApplySshKeyInput
+} from "./cloud-sync-service";
 import { changeMasterPassword } from "./master-password-change";
 import { resolveAuditRuntime } from "./audit-runtime";
 import {
@@ -254,6 +265,12 @@ export interface ServiceContainer {
   tracerouteStop: () => { ok: true };
   getAppPreferences: () => AppPreferences;
   updateAppPreferences: (patch: SettingsUpdateInput) => AppPreferences;
+  cloudSyncConfigure: (input: CloudSyncConfigureInput) => Promise<CloudSyncStatus>;
+  cloudSyncDisable: () => Promise<{ ok: true }>;
+  cloudSyncStatus: () => Promise<CloudSyncStatus>;
+  cloudSyncSyncNow: () => Promise<{ ok: true }>;
+  cloudSyncListConflicts: () => Promise<CloudSyncConflictItem[]>;
+  cloudSyncResolveConflict: (input: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
   openFilesDialog: (
     sender: WebContents,
     input: DialogOpenFilesInput
@@ -815,7 +832,8 @@ export const createServiceContainer = (
   const vault = new EncryptedSecretVault(connections.getSecretStore(), Buffer.from(deviceKeyHex, "hex"));
 
   // ─── Master Password (backup/export/reveal authorization) ─────────────────
-  const keytarCache = new KeytarPasswordCache();
+  const keytarServiceName = options.keytarServiceName ?? "NextShell";
+  const keytarCache = new KeytarPasswordCache(keytarServiceName);
   let masterPassword: string | undefined;
 
   const tryRecallMasterPassword = async (): Promise<void> => {
@@ -855,6 +873,15 @@ export const createServiceContainer = (
       return;
     }
     appendAuditLogDirect(payload);
+  };
+
+  const broadcastToAllWindows = (channel: string, payload: unknown): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (window.isDestroyed()) {
+        continue;
+      }
+      window.webContents.send(channel, payload);
+    }
   };
 
   // ─── Audit log auto-purge ──────────────────────────────────────────────
@@ -1871,11 +1898,85 @@ export const createServiceContainer = (
     getConnection: ensureConnection
   });
 
+  let cloudSyncService: CloudSyncService | undefined;
+  const cloudSyncNetworkSession = electronSession.fromPartition("persist:nextshell-cloud-sync");
+
+  const configureCloudSyncTlsVerification = (apiBaseUrl: string, ignoreTlsErrors: boolean): void => {
+    if (!ignoreTlsErrors) {
+      cloudSyncNetworkSession.setCertificateVerifyProc(null);
+      return;
+    }
+
+    const allowedOrigin = new URL(apiBaseUrl).origin;
+    cloudSyncNetworkSession.setCertificateVerifyProc((request, callback) => {
+      try {
+        const requestUrl = (request as { requestURL?: string }).requestURL;
+        if (!requestUrl) {
+          callback(-2);
+          return;
+        }
+        const requestOrigin = new URL(requestUrl).origin;
+        callback(requestOrigin === allowedOrigin ? 0 : -2);
+      } catch {
+        callback(-2);
+      }
+    });
+  };
+
+  const cloudSyncRequestJson = async <T>(
+    request: {
+      apiBaseUrl: string;
+      workspaceName: string;
+      workspacePassword: string;
+      pathname: string;
+      payload: unknown;
+      ignoreTlsErrors: boolean;
+    },
+    schema: { parse: (value: unknown) => T }
+  ): Promise<T> => {
+    configureCloudSyncTlsVerification(request.apiBaseUrl, request.ignoreTlsErrors);
+
+    const response = await cloudSyncNetworkSession.fetch(`${request.apiBaseUrl}${request.pathname}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Basic ${Buffer.from(`${request.workspaceName}:${request.workspacePassword}`, "utf8").toString("base64")}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(request.payload)
+    });
+
+    if (!response.ok) {
+      const bodyText = await response.text();
+      if (response.status === 409 && bodyText.trim()) {
+        throw new Error(bodyText);
+      }
+      let message: string | undefined;
+      if (bodyText.trim()) {
+        try {
+          const parsed = JSON.parse(bodyText) as { error?: unknown };
+          if (typeof parsed.error === "string" && parsed.error.trim()) {
+            message = parsed.error;
+          }
+        } catch {
+          message = bodyText.trim();
+        }
+        message ??= bodyText.trim();
+      }
+      throw new Error(message ?? `HTTP ${response.status}`);
+    }
+
+    return schema.parse(await response.json());
+  };
+
   const getAppPreferences = (): AppPreferences => {
     return connections.getAppPreferences();
   };
 
-  const updateAppPreferences = (patch: SettingsUpdateInput): AppPreferences => {
+  const saveAppPreferencesPatch = (
+    patch: SettingsUpdateInput,
+    options?: { reconfigureCloudSync?: boolean }
+  ): AppPreferences => {
     const current = connections.getAppPreferences();
     const merged = mergePreferences(current, patch);
     const saved = connections.saveAppPreferences(merged);
@@ -1888,7 +1989,15 @@ export const createServiceContainer = (
       purgeExpiredAuditLogs();
     }
 
+    if (options?.reconfigureCloudSync !== false) {
+      void cloudSyncService?.refreshFromPreferences({ triggerPull: false });
+    }
+
     return saved;
+  };
+
+  const updateAppPreferences = (patch: SettingsUpdateInput): AppPreferences => {
+    return saveAppPreferencesPatch(patch);
   };
 
   const openFilesDialog = async (
@@ -2092,7 +2201,69 @@ export const createServiceContainer = (
         deleteMode: profile.deleteMode
       }
     });
+
+    void cloudSyncService?.pushConnectionUpsert(profile);
     return profile;
+  };
+
+  const applyConnectionFromCloudSync = async (input: CloudSyncApplyConnectionInput): Promise<void> => {
+    const current = connections.getById(input.id);
+    const needsPasswordCredential = input.authType === "password" || input.authType === "interactive";
+
+    if (input.authType === "privateKey" && !input.sshKeyId) {
+      throw new Error("Cloud sync connection is missing sshKeyId for private key auth.");
+    }
+    if (input.sshKeyId && !sshKeyRepo.getById(input.sshKeyId)) {
+      throw new Error(`Cloud sync referenced SSH key not found: ${input.sshKeyId}`);
+    }
+    if (input.proxyId && !proxyRepo.getById(input.proxyId)) {
+      throw new Error(`Cloud sync referenced proxy not found: ${input.proxyId}`);
+    }
+
+    let credentialRef = current?.credentialRef;
+    if (!needsPasswordCredential && credentialRef) {
+      await vault.deleteCredential(credentialRef);
+      credentialRef = undefined;
+    }
+    if (needsPasswordCredential) {
+      if (!input.password) {
+        throw new Error(`Cloud sync connection ${input.name} is missing password content.`);
+      }
+      credentialRef = await vault.storeCredential(`conn-${input.id}`, input.password);
+    }
+
+    const now = new Date().toISOString();
+    const profile: ConnectionProfile = {
+      id: input.id,
+      name: input.name,
+      host: input.host,
+      port: input.port,
+      username: input.username.trim(),
+      authType: input.authType,
+      credentialRef: needsPasswordCredential ? credentialRef : undefined,
+      sshKeyId: input.authType === "privateKey" ? input.sshKeyId : undefined,
+      hostFingerprint: input.hostFingerprint,
+      strictHostKeyChecking: input.strictHostKeyChecking,
+      proxyId: input.proxyId,
+      keepAliveEnabled: input.keepAliveEnabled,
+      keepAliveIntervalSec: input.keepAliveIntervalSec,
+      terminalEncoding: current?.terminalEncoding ?? "utf-8",
+      backspaceMode: current?.backspaceMode ?? "ascii-backspace",
+      deleteMode: current?.deleteMode ?? "vt220-delete",
+      groupPath: input.groupPath,
+      tags: input.tags,
+      notes: input.notes,
+      favorite: input.favorite,
+      monitorSession: current?.monitorSession ?? false,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: input.updatedAt,
+      lastConnectedAt: current?.lastConnectedAt
+    };
+
+    connections.save(profile);
+    if (!profile.monitorSession) {
+      await disposeAllMonitorSessions(profile.id);
+    }
   };
 
   const persistSuccessfulAuthOverride = async (
@@ -2234,10 +2405,35 @@ export const createServiceContainer = (
     };
 
     sshKeyRepo.save(profile);
+    void cloudSyncService?.pushSshKeyUpsert(profile);
     return profile;
   };
 
-  const removeSshKey = async (input: SshKeyRemoveInput): Promise<{ ok: true }> => {
+  const applySshKeyFromCloudSync = async (input: CloudSyncApplySshKeyInput): Promise<void> => {
+    const current = sshKeyRepo.getById(input.id);
+    const keyContentRef = await vault.storeCredential(`sshkey-${input.id}`, input.keyContent);
+    let passphraseRef = current?.passphraseRef;
+
+    if (input.passphrase) {
+      passphraseRef = await vault.storeCredential(`sshkey-${input.id}-pass`, input.passphrase);
+    } else if (current?.passphraseRef) {
+      await vault.deleteCredential(current.passphraseRef);
+      passphraseRef = undefined;
+    }
+
+    sshKeyRepo.save({
+      id: input.id,
+      name: input.name,
+      keyContentRef,
+      passphraseRef,
+      createdAt: current?.createdAt ?? input.updatedAt,
+      updatedAt: input.updatedAt
+    });
+  };
+
+  const removeSshKeyRecord = async (
+    input: SshKeyRemoveInput
+  ): Promise<{ ok: true }> => {
     const profile = sshKeyRepo.getById(input.id);
     if (!profile) {
       throw new Error("SSH key not found.");
@@ -2257,6 +2453,12 @@ export const createServiceContainer = (
 
     sshKeyRepo.remove(input.id);
     return { ok: true };
+  };
+
+  const removeSshKey = async (input: SshKeyRemoveInput): Promise<{ ok: true }> => {
+    const result = await removeSshKeyRecord(input);
+    void cloudSyncService?.pushSshKeyDelete(input.id);
+    return result;
   };
 
   // ── Proxy CRUD ──────────────────────────────────────────────────
@@ -2292,10 +2494,37 @@ export const createServiceContainer = (
     };
 
     proxyRepo.save(profile);
+    void cloudSyncService?.pushProxyUpsert(profile);
     return profile;
   };
 
-  const removeProxy = async (input: ProxyRemoveInput): Promise<{ ok: true }> => {
+  const applyProxyFromCloudSync = async (input: CloudSyncApplyProxyInput): Promise<void> => {
+    const current = proxyRepo.getById(input.id);
+    let credentialRef = current?.credentialRef;
+
+    if (input.password) {
+      credentialRef = await vault.storeCredential(`proxy-${input.id}`, input.password);
+    } else if (current?.credentialRef) {
+      await vault.deleteCredential(current.credentialRef);
+      credentialRef = undefined;
+    }
+
+    proxyRepo.save({
+      id: input.id,
+      name: input.name,
+      proxyType: input.proxyType,
+      host: input.host,
+      port: input.port,
+      username: input.username,
+      credentialRef,
+      createdAt: current?.createdAt ?? input.updatedAt,
+      updatedAt: input.updatedAt
+    });
+  };
+
+  const removeProxyRecord = async (
+    input: ProxyRemoveInput
+  ): Promise<{ ok: true }> => {
     const profile = proxyRepo.getById(input.id);
     if (!profile) {
       throw new Error("Proxy not found.");
@@ -2312,6 +2541,82 @@ export const createServiceContainer = (
 
     proxyRepo.remove(input.id);
     return { ok: true };
+  };
+
+  const removeProxy = async (input: ProxyRemoveInput): Promise<{ ok: true }> => {
+    const result = await removeProxyRecord(input);
+    void cloudSyncService?.pushProxyDelete(input.id);
+    return result;
+  };
+
+  cloudSyncService = new CloudSyncService({
+    keytarServiceName,
+    getPreferences: getAppPreferences,
+    savePreferencesPatch: saveAppPreferencesPatch,
+    vault,
+    listConnections: () => connections.list({}),
+    listSshKeys,
+    listProxies,
+    applyConnectionFromCloudSync,
+    applySshKeyFromCloudSync,
+    applyProxyFromCloudSync,
+    removeConnectionFromCloudSync: async (id) => {
+      await removeConnectionRecord(id, { skipAudit: true });
+    },
+    removeSshKeyFromCloudSync: async (id) => {
+      await removeSshKeyRecord({ id, force: true });
+    },
+    removeProxyFromCloudSync: async (id) => {
+      await removeProxyRecord({ id, force: true });
+    },
+    emitStatus: (status) => {
+      broadcastToAllWindows(IPCChannel.CloudSyncStatusEvent, status);
+    },
+    emitApplied: (event) => {
+      broadcastToAllWindows(IPCChannel.CloudSyncAppliedEvent, event);
+    },
+    loadPendingQueueState: () => connections.getJsonSetting(CLOUD_SYNC_PENDING_QUEUE_SETTING_KEY),
+    savePendingQueueState: (state) => {
+      if (state === undefined) {
+        connections.removeSetting(CLOUD_SYNC_PENDING_QUEUE_SETTING_KEY);
+        return;
+      }
+      connections.saveJsonSetting(CLOUD_SYNC_PENDING_QUEUE_SETTING_KEY, state);
+    },
+    listResourceStates: () => connections.listCloudSyncResourceStates(),
+    getResourceState: (resourceType, resourceId) => connections.getCloudSyncResourceState(resourceType, resourceId),
+    saveResourceState: (state) => {
+      connections.saveCloudSyncResourceState(state);
+    },
+    removeResourceState: (resourceType, resourceId) => {
+      connections.removeCloudSyncResourceState(resourceType, resourceId);
+    },
+    requestJson: cloudSyncRequestJson
+  });
+  cloudSyncService.initialize();
+
+  const cloudSyncConfigure = async (input: CloudSyncConfigureInput): Promise<CloudSyncStatus> => {
+    return cloudSyncService.configure(input);
+  };
+
+  const cloudSyncDisable = async (): Promise<{ ok: true }> => {
+    return cloudSyncService!.disable();
+  };
+
+  const cloudSyncStatus = async (): Promise<CloudSyncStatus> => {
+    return cloudSyncService!.status();
+  };
+
+  const cloudSyncSyncNow = async (): Promise<{ ok: true }> => {
+    return cloudSyncService!.syncNow();
+  };
+
+  const cloudSyncListConflicts = async (): Promise<CloudSyncConflictItem[]> => {
+    return cloudSyncService!.listConflicts();
+  };
+
+  const cloudSyncResolveConflict = async (input: CloudSyncResolveConflictInput): Promise<{ ok: true }> => {
+    return cloudSyncService!.resolveConflict(input);
   };
 
   // ─── Update Check ───────────────────────────────────────────────────────
@@ -2566,7 +2871,10 @@ export const createServiceContainer = (
     return { ok: true };
   };
 
-  const removeConnection = async (id: string): Promise<{ ok: true }> => {
+  const removeConnectionRecord = async (
+    id: string,
+    options?: { skipAudit?: boolean }
+  ): Promise<{ ok: true }> => {
     const sessions = Array.from(activeSessions.values()).filter(
       (session): session is ActiveRemoteSession =>
         session.kind === "remote" && session.connectionId === id
@@ -2592,12 +2900,20 @@ export const createServiceContainer = (
     await closeConnectionIfIdle(id);
     connections.remove(id);
     monitorStates.delete(id);
-    appendAuditLogIfEnabled({
-      action: "connection.remove",
-      level: "warn",
-      connectionId: id,
-      message: "Connection profile deleted"
-    });
+    if (!options?.skipAudit) {
+      appendAuditLogIfEnabled({
+        action: "connection.remove",
+        level: "warn",
+        connectionId: id,
+        message: "Connection profile deleted"
+      });
+    }
+    return { ok: true };
+  };
+
+  const removeConnection = async (id: string): Promise<{ ok: true }> => {
+    const result = await removeConnectionRecord(id);
+    void cloudSyncService?.pushConnectionDelete(id);
     return { ok: true };
   };
 
@@ -4839,6 +5155,7 @@ export const createServiceContainer = (
     await remoteEditManager.dispose();
 
     tracerouteStop();
+    await cloudSyncService?.dispose();
 
     const sessionIds = Array.from(activeSessions.keys());
     await Promise.all(sessionIds.map((sessionId) => closeSession(sessionId)));
@@ -4877,6 +5194,12 @@ export const createServiceContainer = (
     tracerouteStop,
     getAppPreferences,
     updateAppPreferences,
+    cloudSyncConfigure,
+    cloudSyncDisable,
+    cloudSyncStatus,
+    cloudSyncSyncNow,
+    cloudSyncListConflicts,
+    cloudSyncResolveConflict,
     openFilesDialog,
     openDirectoryDialog,
     openLocalPath,

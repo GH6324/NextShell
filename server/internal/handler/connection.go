@@ -22,16 +22,32 @@ func (h *Handler) UpsertConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version, updatedAt, err := h.Store.UpsertConnection(ws, id, req.Connection)
+	workspaceVersion, resourceRevision, updatedAt, conflict, err := h.Store.UpsertConnection(ws, id, req.Connection, req.BaseRevision, req.Force)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to upsert connection")
 		return
 	}
+	if conflict != nil {
+		writeJSON(w, http.StatusConflict, model.ConflictResponse{
+			OK:    false,
+			Error: "conflict",
+			Conflict: model.ResourceConflictInfo{
+				ResourceType:    conflict.ResourceType,
+				ResourceID:      conflict.ResourceID,
+				ServerRevision:  conflict.ServerRevision,
+				ServerUpdatedAt: conflict.ServerUpdatedAt,
+				ServerDeleted:   conflict.ServerDeleted,
+				ServerPayload:   conflict.ServerPayload,
+			},
+		})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, model.UpsertResponse{
-		OK:        true,
-		Version:   version,
-		UpdatedAt: updatedAt,
+		OK:               true,
+		WorkspaceVersion: workspaceVersion,
+		ResourceRevision: resourceRevision,
+		UpdatedAt:        updatedAt,
 	})
 }
 
@@ -48,16 +64,32 @@ func (h *Handler) DeleteConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version, deletedAt, err := h.Store.DeleteConnection(ws, req.ID)
+	workspaceVersion, resourceRevision, deletedAt, conflict, err := h.Store.DeleteConnection(ws, req.ID, req.BaseRevision, req.Force)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete connection")
 		return
 	}
+	if conflict != nil {
+		writeJSON(w, http.StatusConflict, model.ConflictResponse{
+			OK:    false,
+			Error: "conflict",
+			Conflict: model.ResourceConflictInfo{
+				ResourceType:    conflict.ResourceType,
+				ResourceID:      conflict.ResourceID,
+				ServerRevision:  conflict.ServerRevision,
+				ServerUpdatedAt: conflict.ServerUpdatedAt,
+				ServerDeleted:   conflict.ServerDeleted,
+				ServerPayload:   conflict.ServerPayload,
+			},
+		})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, model.DeleteResponse{
-		OK:        true,
-		Version:   version,
-		DeletedAt: deletedAt,
+		OK:               true,
+		WorkspaceVersion: workspaceVersion,
+		ResourceRevision: resourceRevision,
+		DeletedAt:        deletedAt,
 	})
 }
 

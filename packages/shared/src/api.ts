@@ -27,6 +27,15 @@ import type {
   AppPreferencesPatchInput,
   AuditClearInput,
   AuditListInput,
+  CloudSyncAppliedEvent,
+  CloudSyncConflictItem,
+  CloudSyncConfigureInput,
+  CloudSyncDisableInput,
+  CloudSyncListConflictsInput,
+  CloudSyncResolveConflictInput,
+  CloudSyncStatus,
+  CloudSyncStatusQueryInput,
+  CloudSyncSyncNowInput,
   DebugLogEntry,
   BackupListInput,
   BackupPasswordClearRememberedInput,
@@ -232,6 +241,16 @@ export interface NextShellApi {
       isUnlocked: boolean;
       keytarAvailable: boolean;
     }>;
+  };
+  cloudSync: {
+    configure: (payload: CloudSyncConfigureInput) => Promise<CloudSyncStatus>;
+    disable: (payload?: CloudSyncDisableInput) => Promise<{ ok: true }>;
+    status: (payload?: CloudSyncStatusQueryInput) => Promise<CloudSyncStatus>;
+    syncNow: (payload?: CloudSyncSyncNowInput) => Promise<{ ok: true }>;
+    listConflicts: (payload?: CloudSyncListConflictsInput) => Promise<CloudSyncConflictItem[]>;
+    resolveConflict: (payload: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
+    onStatus: (listener: (event: CloudSyncStatus) => void) => SessionEventUnsubscribe;
+    onApplied: (listener: (event: CloudSyncAppliedEvent) => void) => SessionEventUnsubscribe;
   };
   masterPassword: {
     setPassword: (payload: MasterPasswordSetInput) => Promise<{ ok: true }>;

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/hynor/nshellserver/internal/db"
 	"github.com/hynor/nshellserver/internal/model"
 )
 
@@ -42,14 +43,38 @@ func (h *Handler) Pull(w http.ResponseWriter, r *http.Request) {
 		Unchanged:  false,
 		ServerTime: now,
 		Snapshot: &model.Snapshot{
-			Connections: snap.Connections,
-			SSHKeys:     snap.SSHKeys,
-			Proxies:     snap.Proxies,
-			Deleted: model.DeletedIDs{
-				Connections: snap.DeletedConnections,
-				SSHKeys:     snap.DeletedSSHKeys,
-				Proxies:     snap.DeletedProxies,
+			Connections: mapResourceSnapshots(snap.Connections),
+			SSHKeys:     mapResourceSnapshots(snap.SSHKeys),
+			Proxies:     mapResourceSnapshots(snap.Proxies),
+			Deleted: model.DeletedResources{
+				Connections: mapDeletedResources(snap.DeletedConnections),
+				SSHKeys:     mapDeletedResources(snap.DeletedSSHKeys),
+				Proxies:     mapDeletedResources(snap.DeletedProxies),
 			},
 		},
 	})
+}
+
+func mapResourceSnapshots(items []db.ResourceSnapshot) []model.ResourceSnapshot {
+	result := make([]model.ResourceSnapshot, 0, len(items))
+	for _, item := range items {
+		result = append(result, model.ResourceSnapshot{
+			Payload:   item.Payload,
+			Revision:  item.Revision,
+			UpdatedAt: item.UpdatedAt,
+		})
+	}
+	return result
+}
+
+func mapDeletedResources(items []db.DeletedResource) []model.DeletedResource {
+	result := make([]model.DeletedResource, 0, len(items))
+	for _, item := range items {
+		result = append(result, model.DeletedResource{
+			ID:        item.ID,
+			Revision:  item.Revision,
+			DeletedAt: item.DeletedAt,
+		})
+	}
+	return result
 }

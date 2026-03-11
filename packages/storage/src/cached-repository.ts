@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import {
   MAX_COMMAND_HISTORY_ENTRIES,
   type AppPreferences,
+  type CloudSyncResourceSyncState,
   type AuditLogRecord,
   type CommandHistoryEntry,
   type CommandTemplateParam,
@@ -230,6 +231,40 @@ export class CachedConnectionRepository implements ConnectionRepository {
     this.prefDirty = true;
     this.schedulePrefsFlush();
     return preferences;
+  }
+
+  getJsonSetting<T = unknown>(key: string): T | undefined {
+    return this.inner.getJsonSetting<T>(key);
+  }
+
+  saveJsonSetting(key: string, value: unknown): void {
+    this.inner.saveJsonSetting(key, value);
+  }
+
+  removeSetting(key: string): void {
+    this.inner.removeSetting(key);
+  }
+
+  listCloudSyncResourceStates(): CloudSyncResourceSyncState[] {
+    return this.inner.listCloudSyncResourceStates();
+  }
+
+  getCloudSyncResourceState(
+    resourceType: CloudSyncResourceSyncState["resourceType"],
+    resourceId: string
+  ): CloudSyncResourceSyncState | undefined {
+    return this.inner.getCloudSyncResourceState(resourceType, resourceId);
+  }
+
+  saveCloudSyncResourceState(state: CloudSyncResourceSyncState): void {
+    this.inner.saveCloudSyncResourceState(state);
+  }
+
+  removeCloudSyncResourceState(
+    resourceType: CloudSyncResourceSyncState["resourceType"],
+    resourceId: string
+  ): void {
+    this.inner.removeCloudSyncResourceState(resourceType, resourceId);
   }
 
   private schedulePrefsFlush(): void {
