@@ -29,6 +29,7 @@ import { formatErrorMessage } from "../utils/errorMessage";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import { consumeOsc7Chunk, createOsc7ParserState } from "../utils/osc7";
+import { shouldTrackTerminalSessionMetadata } from "../utils/terminalSessionMonitoring";
 import { shouldReconnectOnInput } from "../utils/terminal-reconnect";
 import {
   buildTerminalAuthIntro,
@@ -249,7 +250,6 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   }, [onRetrySessionAuth]);
 
   const setSessionCwd = useWorkspaceStore((state) => state.setSessionCwd);
-  const setSessionRemoteTitle = useWorkspaceStore((state) => state.setSessionRemoteTitle);
 
   const sanitizeSessionOutput = useCallback(
     (targetSessionId: string, text: string): string => {
@@ -268,7 +268,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       const targetConnection = useWorkspaceStore
         .getState()
         .connections.find((item: ConnectionProfile) => item.id === targetSession.connectionId);
-      if (targetConnection?.monitorSession && parsed.cwdPath) {
+      if (
+        shouldTrackTerminalSessionMetadata(targetSession, targetConnection) &&
+        parsed.cwdPath
+      ) {
         setSessionCwd(targetSessionId, parsed.cwdPath);
       }
 
@@ -772,13 +775,6 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       }));
     });
 
-    const titleSub = terminal.onTitleChange((title) => {
-      const sessionId = sessionIdRef.current;
-      if (sessionId) {
-        setSessionRemoteTitle(sessionId, title);
-      }
-    });
-
     let resizeRafId = 0;
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(resizeRafId);
@@ -808,13 +804,12 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       observer.disconnect();
       dataSub.dispose();
       resizeSub.dispose();
-      titleSub.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
       searchAddonRef.current = null;
     };
-  }, [handleLocalAuthInput, message, setSessionRemoteTitle, tryReconnectOnEnter]);
+  }, [handleLocalAuthInput, message, tryReconnectOnEnter]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

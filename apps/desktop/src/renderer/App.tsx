@@ -54,7 +54,6 @@ export const App = () => {
     activeSessionId,
     monitor,
     bottomTab,
-    sessionDynamicBaseTitleById,
     lastActiveRemoteTerminalByConnection,
     setConnections,
     setSshKeys,
@@ -133,10 +132,6 @@ export const App = () => {
     () => sessions.find((session) => session.id === activeSessionId),
     [sessions, activeSessionId]
   );
-
-  const activeSessionDynamicBaseTitle = activeSessionId
-    ? sessionDynamicBaseTitleById[activeSessionId]
-    : undefined;
 
   const activeSessionConnection = useMemo(() => {
     if (!activeSession) return undefined;
@@ -545,7 +540,6 @@ export const App = () => {
           activeSessionId={activeSessionId}
           activeConnection={activeConnection}
           activeSession={activeSession}
-          activeSessionDynamicBaseTitle={activeSessionDynamicBaseTitle}
           activeSessionConnection={activeSessionConnection}
           activeTerminalSession={activeTerminalSession}
           activeTerminalConnection={activeTerminalConnection}

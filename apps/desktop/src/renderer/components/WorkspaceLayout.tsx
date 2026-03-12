@@ -30,7 +30,6 @@ import type { TransferTask } from "../store/useTransferQueueStore";
 import { formatErrorMessage } from "../utils/errorMessage";
 import type { QuickCreateConnectionInput } from "../utils/quickConnectInput";
 import { promptModal } from "../utils/promptModal";
-import { getDynamicSessionTitleParts } from "../utils/sessionTitle";
 import {
     persistWorkspacePanelState,
     resolveWorkspacePanelState,
@@ -70,11 +69,13 @@ interface SessionTabContextMenuState {
 const SessionTabContextMenu = ({
     state,
     session,
+    displayTitle,
     onClose,
     onRename,
 }: {
     state: SessionTabContextMenuState;
     session: SessionDescriptor;
+    displayTitle: string;
     onClose: () => void;
     onRename: (session: SessionDescriptor) => void;
 }) => {
@@ -155,8 +156,8 @@ const SessionTabContextMenu = ({
                 </span>
                 重命名当前标签
             </button>
-            <div className="session-tab-menu-hint" title={session.title}>
-                {session.title}
+            <div className="session-tab-menu-hint" title={displayTitle}>
+                {displayTitle}
             </div>
         </div>
     );
@@ -170,7 +171,6 @@ interface WorkspaceLayoutProps {
     activeSessionId?: string;
     activeConnection?: ConnectionProfile;
     activeSession?: SessionDescriptor;
-    activeSessionDynamicBaseTitle?: string;
     activeSessionConnection?: ConnectionProfile;
     activeTerminalSession?: SessionDescriptor;
     activeTerminalConnection?: ConnectionProfile;
@@ -223,7 +223,6 @@ export const WorkspaceLayout = ({
     activeSessionId,
     activeConnection,
     activeSession,
-    activeSessionDynamicBaseTitle,
     activeSessionConnection,
     activeTerminalSession,
     activeTerminalConnection,
@@ -310,19 +309,13 @@ export const WorkspaceLayout = ({
 
     const headerSessionText = useMemo(() => {
         if (!activeSession) return "no session";
-        const { baseTitle, remoteTitle } = getDynamicSessionTitleParts(
-            activeSession.title,
-            activeSessionDynamicBaseTitle,
-        );
-        const sessionIndex = baseTitle.match(/#\d+$/)?.[0];
         const baseLabel =
             activeSessionConnection?.name?.trim() ||
             activeSessionConnection?.host?.trim() ||
-            baseTitle.replace(/\s+#\d+$/, "").trim() ||
+            activeSession.title ||
             "session";
-        const dynamicLabel = remoteTitle ? ` — ${remoteTitle}` : "";
-        return `${activeSession.status} ${baseLabel}${sessionIndex ? ` ${sessionIndex}` : ""}${dynamicLabel}`;
-    }, [activeSession, activeSessionConnection, activeSessionDynamicBaseTitle]);
+        return `${activeSession.status} ${baseLabel}`;
+    }, [activeSession, activeSessionConnection]);
 
     const headerSessionClass = activeSession?.status ?? "disconnected";
 
@@ -336,6 +329,10 @@ export const WorkspaceLayout = ({
                   )
                 : undefined,
         [sessionContextMenu, sessions],
+    );
+    const contextMenuSessionTitle = useMemo(
+        () => contextMenuSession?.title,
+        [contextMenuSession],
     );
 
     useEffect(() => {
@@ -887,6 +884,7 @@ export const WorkspaceLayout = ({
                                             <SessionTabContextMenu
                                                 state={sessionContextMenu}
                                                 session={contextMenuSession}
+                                                displayTitle={contextMenuSessionTitle ?? contextMenuSession.title}
                                                 onClose={() => setSessionContextMenu(null)}
                                                 onRename={(session) => {
                                                     void handlePromptRenameSession(session);
