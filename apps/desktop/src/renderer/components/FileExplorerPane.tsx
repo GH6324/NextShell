@@ -15,6 +15,7 @@ import {
   extractDroppedFilePaths,
   isExternalFileDrag
 } from "../utils/sftpFileDrop";
+import { FILE_EXPLORER_FOLLOW_CWD_DEBOUNCE_MS } from "./FileExplorerPane.follow";
 import { getVisibleFileExplorerToolbarActions } from "./FileExplorerPane.toolbar";
 
 interface FileExplorerPaneProps {
@@ -743,7 +744,7 @@ export const FileExplorerPane = ({
       if (pathNameRef.current !== normalized) {
         navigateRef.current(normalized);
       }
-    }, 3000);
+    }, FILE_EXPLORER_FOLLOW_CWD_DEBOUNCE_MS);
 
     return () => {
       if (followCwdDebounceRef.current) {
@@ -1541,15 +1542,14 @@ export const FileExplorerPane = ({
                         });
                         return;
                       }
-                      setFollowCwd((v) => {
-                        const next = !v;
-                        if (next) {
-                          followCwdLastRef.current = null;
-                          message.info({ content: "已启用跟随终端目录", duration: 2 });
-                        } else {
-                          message.info({ content: "已关闭跟随终端目录", duration: 2 });
-                        }
-                        return next;
+                      const nextFollowCwd = !followCwd;
+                      if (nextFollowCwd) {
+                        followCwdLastRef.current = null;
+                      }
+                      setFollowCwd(nextFollowCwd);
+                      message.info({
+                        content: nextFollowCwd ? "已启用跟随终端目录" : "已关闭跟随终端目录",
+                        duration: 2
                       });
                     }}
                     disabled={!connection || !connected}
