@@ -9,7 +9,8 @@ import {
   Space,
   Switch,
   Tag,
-  Typography
+  Typography,
+  Tooltip,
 } from "antd";
 import type { CloudSyncConflictItem } from "@nextshell/shared";
 import { SettingsCard } from "./shared-components";
@@ -76,14 +77,14 @@ export const CloudSyncSection = ({
 
   return (
     <>
-      <SettingsCard title="工作区配置" description="通过 HTTPS API 与远端工作区共享服务器、密钥和代理配置">
+      <SettingsCard title="工作区配置" description="配置云端工作区，在多台设备间同步连接信息">
         <div className="cloud-sync-config">
           {!apiAvailable ? (
             <Alert
               type="warning"
               showIcon
-              message="当前构建尚未提供 cloudSync API"
-              description="renderer 已按约定接线；主进程和 preload 暴露该命名空间后，这个分区会自动生效。"
+              message="云同步功能暂不可用"
+              description="当前版本不支持云同步功能，请更新到支持该功能的版本。"
             />
           ) : null}
 
@@ -91,41 +92,49 @@ export const CloudSyncSection = ({
             <Alert
               type="error"
               showIcon
-              message="系统钥匙串不可用"
-              description="workspace 密码不会写入 settings。请先确保 keytar 可用，再启用云同步。"
+              message="系统安全存储不可用"
+              description="无法访问系统钥匙串，云同步密码无法安全存储。请检查系统权限设置。"
             />
           ) : null}
 
-          <div className="cloud-sync-config-grid">
-            <div className="cloud-sync-field cloud-sync-field--wide">
-              <div className="cloud-sync-field-label">API 地址</div>
-              <div className="cloud-sync-field-hint">例如 https://sync.example.com</div>
+          <div className="cloud-sync-config-grid cloud-sync-config-grid--simple">
+            <div className="cloud-sync-field cloud-sync-field--simple cloud-sync-field--wide">
+              <div className="cloud-sync-field-label">服务器地址</div>
               <Input
                 value={apiBaseUrl}
                 disabled={controlsDisabled}
                 onChange={(event) => setApiBaseUrl(event.target.value)}
-                placeholder="https://your-sync-server"
+                placeholder="https://your-sync-server.example.com"
               />
             </div>
 
-            <div className="cloud-sync-field">
-              <div className="cloud-sync-field-label">Workspace 名称</div>
-              <div className="cloud-sync-field-hint">同一 workspace 会在多台设备间共享同步域</div>
+            <div className="cloud-sync-field cloud-sync-field--simple">
+              <div className="cloud-sync-field-label">工作区名称</div>
               <Input
                 value={workspaceName}
                 disabled={controlsDisabled}
                 onChange={(event) => setWorkspaceName(event.target.value)}
-                placeholder="例如 personal"
+                placeholder="例如：personal"
               />
             </div>
 
-            <div className="cloud-sync-field">
-              <div className="cloud-sync-field-label">拉取周期（秒）</div>
-              <div className="cloud-sync-field-hint">后台按固定周期拉取远端快照并覆盖本地同步域</div>
+            <div className="cloud-sync-field cloud-sync-field--simple">
+              <div className="cloud-sync-field-label">工作区密码</div>
+              <Input.Password
+                value={workspacePassword}
+                disabled={controlsDisabled}
+                onChange={(event) => setWorkspacePassword(event.target.value)}
+                placeholder="启用或更新同步时需要"
+              />
+            </div>
+
+            <div className="cloud-sync-field cloud-sync-field--simple">
+              <div className="cloud-sync-field-label">自动同步间隔</div>
               <InputNumber
                 style={{ width: "100%" }}
                 min={10}
                 precision={0}
+                addonAfter="秒"
                 value={pullIntervalSec}
                 disabled={controlsDisabled}
                 onChange={(value) => {
@@ -137,22 +146,11 @@ export const CloudSyncSection = ({
               />
             </div>
 
-            <div className="cloud-sync-field">
-              <div className="cloud-sync-field-label">Workspace 密码</div>
-              <div className="cloud-sync-field-hint">只提交给 cloudSync.configure，不会写入 settings.update</div>
-              <Input.Password
-                value={workspacePassword}
-                disabled={controlsDisabled}
-                onChange={(event) => setWorkspacePassword(event.target.value)}
-                placeholder="输入后仅用于启用或更新云同步"
-              />
-            </div>
-
-            <div className="cloud-sync-field cloud-sync-field--toggle">
-              <div className="cloud-sync-toggle-row">
+            <div className="cloud-sync-field cloud-sync-field--simple cloud-sync-field--toggle">
+              <div className="cloud-sync-toggle-row cloud-sync-toggle-row--simple">
                 <div>
-                  <div className="cloud-sync-field-label">忽略 TLS 校验</div>
-                  <div className="cloud-sync-field-hint">仅对当前云同步工作区生效，适用于自签名证书</div>
+                  <div className="cloud-sync-field-label">忽略证书错误</div>
+                  <div className="cloud-sync-field-hint">用于自签名证书（不推荐）</div>
                 </div>
                 <Switch
                   checked={ignoreTlsErrors}
@@ -191,38 +189,15 @@ export const CloudSyncSection = ({
         </div>
       </SettingsCard>
 
-      <SettingsCard title="同步状态" description="远端工作区为准，首次启用或定时拉取时会覆盖本地同步域">
+      <SettingsCard title="同步状态" description="查看云端同步的最新状态">
         {loading ? (
-          <Skeleton active paragraph={{ rows: 4 }} />
+          <Skeleton active paragraph={{ rows: 3 }} />
         ) : (
-          <div className="cloud-sync-status-grid">
+          <div className="cloud-sync-status-grid cloud-sync-status-grid--simple">
             <div className="cloud-sync-status-card">
-              <div className="cloud-sync-status-label">启用状态</div>
-              <div className="cloud-sync-status-value">
-                <Space size={8}>
-                  <Badge status={status.enabled ? "success" : "default"} />
-                  <Typography.Text>{status.enabled ? "已启用" : "未启用"}</Typography.Text>
-                </Space>
-              </div>
-            </div>
-
-            <div className="cloud-sync-status-card">
-              <div className="cloud-sync-status-label">运行状态</div>
+              <div className="cloud-sync-status-label">同步状态</div>
               <div className="cloud-sync-status-value">
                 <Tag color={runtime.color}>{runtime.label}</Tag>
-              </div>
-            </div>
-
-            <div className="cloud-sync-status-card">
-              <div className="cloud-sync-status-label">钥匙串能力</div>
-              <div className="cloud-sync-status-value">
-                <Typography.Text>
-                  {status.keytarAvailable === null
-                    ? "未知"
-                    : status.keytarAvailable
-                      ? "可用"
-                      : "不可用"}
-                </Typography.Text>
               </div>
             </div>
 
@@ -236,30 +211,28 @@ export const CloudSyncSection = ({
             </div>
 
             <div className="cloud-sync-status-card">
-              <div className="cloud-sync-status-label">上次同步时间</div>
+              <div className="cloud-sync-status-label">上次同步</div>
               <div className="cloud-sync-status-value">
                 <Typography.Text>{formatCloudSyncTime(status.lastSyncAt)}</Typography.Text>
               </div>
             </div>
 
             <div className="cloud-sync-status-card">
-              <div className="cloud-sync-status-label">待同步队列</div>
+              <div className="cloud-sync-status-label">待同步</div>
               <div className="cloud-sync-status-value cloud-sync-status-value--metric">
                 {status.pendingCount}
               </div>
             </div>
 
             <div className="cloud-sync-status-card">
-              <div className="cloud-sync-status-label">冲突数量</div>
+              <div className="cloud-sync-status-label">冲突</div>
               <div className="cloud-sync-status-value cloud-sync-status-value--metric">
-                {status.conflictCount}
-              </div>
-            </div>
-
-            <div className="cloud-sync-status-card">
-              <div className="cloud-sync-status-label">TLS 校验</div>
-              <div className="cloud-sync-status-value">
-                <Typography.Text>{status.ignoreTlsErrors ? "已忽略证书校验" : "严格校验"}</Typography.Text>
+                <Space size={4}>
+                  <span>{status.conflictCount}</span>
+                  {status.conflictCount > 0 && (
+                    <Badge status="error" />
+                  )}
+                </Space>
               </div>
             </div>
           </div>
@@ -270,39 +243,38 @@ export const CloudSyncSection = ({
             <Alert
               type="error"
               showIcon
-              message="最近错误"
+              message="同步出错"
               description={status.lastError}
             />
           </div>
-        ) : (
-          <div className="cloud-sync-status-feedback stg-note">
-            云同步独立于云存档运行，仅覆盖服务器、 SSH 密钥和代理三个同步域。
-          </div>
-        )}
+        ) : null}
       </SettingsCard>
 
-      <SettingsCard title="冲突处理" description="检测到同一资源的远端更新时，不会自动覆盖本地待同步修改">
+      <SettingsCard title="冲突处理" description="当本地和云端同时修改了同一项目时出现冲突">
         {conflictsLoading ? (
           <Skeleton active paragraph={{ rows: 3 }} />
         ) : conflicts.length === 0 ? (
-          <div className="stg-note">当前没有待处理的云同步冲突。</div>
+          <div className="cloud-sync-empty-state">
+            <span className="cloud-sync-empty-icon">✓</span>
+            <span>没有待处理的冲突</span>
+          </div>
         ) : (
           <List
+            className="cloud-sync-conflict-list"
             dataSource={conflicts}
             renderItem={(item) => {
               const overwriteBusy = conflictBusyKey === `${item.resourceType}:${item.resourceId}:overwrite_local`;
               const keepBusy = conflictBusyKey === `${item.resourceType}:${item.resourceId}:keep_local`;
+              const resourceTypeLabel = {
+                connection: "连接",
+                sshKey: "SSH 密钥",
+                proxy: "代理"
+              }[item.resourceType];
+              
               return (
                 <List.Item
+                  className="cloud-sync-conflict-item"
                   actions={[
-                    <Button
-                      key="overwrite"
-                      size="small"
-                      loading={overwriteBusy}
-                      onClick={() => onResolveConflict(item.resourceType, item.resourceId, "overwrite_local")}
-                    >
-                      覆盖本地
-                    </Button>,
                     <Button
                       key="keep"
                       type="primary"
@@ -311,16 +283,39 @@ export const CloudSyncSection = ({
                       onClick={() => onResolveConflict(item.resourceType, item.resourceId, "keep_local")}
                     >
                       保留本地
+                    </Button>,
+                    <Button
+                      key="overwrite"
+                      size="small"
+                      danger
+                      loading={overwriteBusy}
+                      onClick={() => onResolveConflict(item.resourceType, item.resourceId, "overwrite_local")}
+                    >
+                      使用云端
                     </Button>
                   ]}
                 >
                   <List.Item.Meta
-                    title={`${item.displayName} · ${item.resourceType}`}
-                    description={[
-                      item.serverDeleted ? "远端已删除该资源" : `远端更新时间：${formatCloudSyncTime(item.serverUpdatedAt)}`,
-                      `本地更新时间：${formatCloudSyncTime(item.localUpdatedAt)}`,
-                      item.hasPendingLocalChange ? "本地有待同步修改" : "本地无待同步修改"
-                    ].join(" ｜ ")}
+                    title={
+                      <Space size={8}>
+                        <span>{item.displayName}</span>
+                        <Tag className="cloud-sync-resource-tag">{resourceTypeLabel}</Tag>
+                      </Space>
+                    }
+                    description={
+                      <Space size={16} className="cloud-sync-conflict-meta">
+                        {item.serverDeleted ? (
+                          <span className="cloud-sync-conflict-deleted">云端已删除</span>
+                        ) : (
+                          <Tooltip title="云端修改时间">
+                            <span>云端: {formatCloudSyncTime(item.serverUpdatedAt)}</span>
+                          </Tooltip>
+                        )}
+                        <Tooltip title="本地修改时间">
+                          <span>本地: {formatCloudSyncTime(item.localUpdatedAt)}</span>
+                        </Tooltip>
+                      </Space>
+                    }
                   />
                 </List.Item>
               );

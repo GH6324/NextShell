@@ -162,6 +162,7 @@
   gap: 16px;
 }
 
+/* Legacy grid with bordered fields */
 .cloud-sync-config-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(240px, 1fr);
@@ -213,6 +214,40 @@
   padding-top: 4px;
 }
 
+/* Simple layout (no borders, cleaner) */
+.cloud-sync-config-grid--simple {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.cloud-sync-field--simple {
+  padding: 0;
+  border: none;
+  background: transparent;
+  gap: 6px;
+}
+
+.cloud-sync-field--simple .cloud-sync-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--t2);
+}
+
+.cloud-sync-toggle-row--simple {
+  align-items: center;
+  height: 100%;
+}
+
+.cloud-sync-toggle-row--simple .cloud-sync-field-label {
+  margin-bottom: 2px;
+}
+
+@media (max-width: 640px) {
+  .cloud-sync-config-grid--simple {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .cloud-sync-status-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -253,6 +288,65 @@
 
 .cloud-sync-status-feedback {
   margin-top: 4px;
+}
+
+/* Simple status grid (3 columns, more compact) */
+.cloud-sync-status-grid--simple {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Empty state for conflicts */
+.cloud-sync-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--t3);
+  font-size: 13px;
+}
+
+.cloud-sync-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: var(--success-bg, rgba(82, 196, 26, 0.1));
+  color: var(--success, #52c41a);
+  border-radius: 50%;
+  font-size: 12px;
+}
+
+/* Conflict list styling */
+.cloud-sync-conflict-list .ant-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cloud-sync-conflict-item {
+  padding: 12px 16px !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r-md, 8px);
+  background: var(--bg-surface);
+}
+
+.cloud-sync-conflict-item .ant-list-item-meta {
+  align-items: center;
+}
+
+.cloud-sync-conflict-item .ant-list-item-meta-title {
+  margin-bottom: 4px !important;
+}
+
+.cloud-sync-conflict-meta {
+  font-size: 12px;
+  color: var(--t3);
+}
+
+.cloud-sync-conflict-deleted {
+  color: var(--error, #ff4d4f);
 }
 
 @media (max-width: 980px) {
