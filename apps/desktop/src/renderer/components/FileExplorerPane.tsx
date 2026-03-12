@@ -3,9 +3,9 @@ import { App as AntdApp, Modal, Table, Tooltip, Tree, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { DataNode } from "antd/es/tree";
 import type { ConnectionProfile, RemoteFileEntry } from "@nextshell/core";
-import { useScheduledPoll } from "../hooks/useScheduledPoll";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import { useTransferQueueStore } from "../store/useTransferQueueStore";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { pMap } from "../utils/concurrentLimit";
 import { formatErrorMessage } from "../utils/errorMessage";
 import { promptModal } from "../utils/promptModal";
@@ -19,6 +19,7 @@ import {
 interface FileExplorerPaneProps {
   connection?: ConnectionProfile;
   connected: boolean;
+  followSessionId?: string;
   active: boolean;
   onOpenSettings?: () => void;
   onOpenEditorTab?: (connectionId: string, remotePath: string) => Promise<void>;
@@ -403,6 +404,7 @@ const ContextMenu = ({
 export const FileExplorerPane = ({
   connection,
   connected,
+  followSessionId,
   active,
   onOpenSettings,
   onOpenEditorTab
@@ -442,11 +444,13 @@ export const FileExplorerPane = ({
 
   const [followCwd, setFollowCwd] = useState(false);
   const followCwdLastRef = useRef<string | null>(null);
-  const followCwdRequestIdRef = useRef(0);
   const followCwdDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined
   );
   const navigateRef = useRef<(p: string) => void>(() => {});
+  const followSessionCwd = useWorkspaceStore((state) =>
+    followSessionId ? state.sessionCwdById[followSessionId] : undefined
+  );
 
   const selectedEntries = useMemo(() => {
     const selected = new Set(selectedPaths);
@@ -679,15 +683,27 @@ export const FileExplorerPane = ({
   }, [connection?.id, connected]);
 
   useEffect(() => {
+    if (!connection?.monitorSession) {
+      setFollowCwd(false);
+    }
+  }, [connection?.id, connection?.monitorSession]);
+
+  useEffect(() => {
     dragDepthRef.current = 0;
     setDropTargetActive(false);
   }, [connection?.id, active]);
 
-  const followCwdPollingEnabled = Boolean(active && followCwd && connection && connected);
+  const followCwdTrackingEnabled = Boolean(
+    active &&
+    followCwd &&
+    connection &&
+    connected &&
+    connection.monitorSession &&
+    followSessionId
+  );
 
   useEffect(() => {
-    if (!followCwdPollingEnabled) {
-      followCwdRequestIdRef.current += 1;
+    if (!followCwdTrackingEnabled) {
       if (followCwdDebounceRef.current) {
         clearTimeout(followCwdDebounceRef.current);
         followCwdDebounceRef.current = undefined;
@@ -696,52 +712,41 @@ export const FileExplorerPane = ({
       return;
     }
     return () => {
-      followCwdRequestIdRef.current += 1;
       if (followCwdDebounceRef.current) {
         clearTimeout(followCwdDebounceRef.current);
         followCwdDebounceRef.current = undefined;
       }
     };
-  }, [followCwdPollingEnabled]);
-
-  const pollFollowCwd = useCallback(async () => {
-    if (!connection || !connected) {
-      return;
-    }
-    const requestId = followCwdRequestIdRef.current + 1;
-    followCwdRequestIdRef.current = requestId;
-    try {
-      const result = await window.nextshell.session.getCwd({ connectionId: connection.id });
-      if (followCwdRequestIdRef.current !== requestId) return;
-      if (!result?.cwd) return;
-      const normalized = normalizeRemotePath(result.cwd);
-      if (normalized === followCwdLastRef.current) return;
-      followCwdLastRef.current = normalized;
-      if (followCwdDebounceRef.current) clearTimeout(followCwdDebounceRef.current);
-      followCwdDebounceRef.current = setTimeout(() => {
-        if (followCwdRequestIdRef.current !== requestId) return;
-        followCwdDebounceRef.current = undefined;
-        if (pathNameRef.current !== normalized) {
-          navigateRef.current(normalized);
-        }
-      }, 3000);
-    } catch {
-      // ignore
-    }
-  }, [connection, connected]);
+  }, [followCwdTrackingEnabled, followSessionId]);
 
   useEffect(() => {
-    if (!followCwdPollingEnabled) {
+    if (!followCwdTrackingEnabled || !followSessionCwd) {
       return;
     }
-    void pollFollowCwd();
-  }, [connection?.id, followCwdPollingEnabled, pollFollowCwd]);
 
-  useScheduledPoll({
-    enabled: followCwdPollingEnabled,
-    intervalMs: 2000,
-    task: pollFollowCwd
-  });
+    const normalized = normalizeRemotePath(followSessionCwd);
+    if (normalized === followCwdLastRef.current) {
+      return;
+    }
+
+    followCwdLastRef.current = normalized;
+    if (followCwdDebounceRef.current) {
+      clearTimeout(followCwdDebounceRef.current);
+    }
+    followCwdDebounceRef.current = setTimeout(() => {
+      followCwdDebounceRef.current = undefined;
+      if (pathNameRef.current !== normalized) {
+        navigateRef.current(normalized);
+      }
+    }, 3000);
+
+    return () => {
+      if (followCwdDebounceRef.current) {
+        clearTimeout(followCwdDebounceRef.current);
+        followCwdDebounceRef.current = undefined;
+      }
+    };
+  }, [followCwdTrackingEnabled, followSessionCwd]);
 
   useEffect(() => {
     setEditorModalValue(preferences.remoteEdit.defaultEditorCommand);
@@ -1522,6 +1527,20 @@ export const FileExplorerPane = ({
                   className={`fe-icon-btn${followCwd ? " active" : ""}`}
                   aria-label="跟随终端目录"
                   onClick={() => {
+                    if (!connection?.monitorSession) {
+                      message.info({
+                        content: "该功能依赖监控会话开关，请先在服务器设置中启用监控会话。",
+                        duration: 3
+                      });
+                      return;
+                    }
+                    if (!followSessionId) {
+                      message.info({
+                        content: "当前连接暂无可跟随的远程终端。",
+                        duration: 2
+                      });
+                      return;
+                    }
                     setFollowCwd((v) => {
                       const next = !v;
                       if (next) {

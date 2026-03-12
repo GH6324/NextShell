@@ -14,6 +14,7 @@ import { usePreferencesStore } from "./store/usePreferencesStore";
 import { useTransferQueueStore } from "./store/useTransferQueueStore";
 import { useWorkspaceStore } from "./store/useWorkspaceStore";
 import { formatErrorMessage } from "./utils/errorMessage";
+import { resolveFollowTerminalSessionId } from "./utils/followTerminalSession";
 import {
   buildQuickCreateUpsertInput,
   buildQuickConnectUpsertInput,
@@ -53,6 +54,7 @@ export const App = () => {
     activeSessionId,
     monitor,
     bottomTab,
+    lastActiveRemoteTerminalByConnection,
     setConnections,
     setSshKeys,
     setProxies,
@@ -163,6 +165,24 @@ export const App = () => {
           session.status === "connected"
       )?.id,
     [activeConnectionId, sessions]
+  );
+
+  const followTerminalSessionId = useMemo(
+    () =>
+      resolveFollowTerminalSessionId({
+        activeConnectionId,
+        activeSessionId,
+        connections,
+        sessions,
+        lastActiveRemoteTerminalByConnection
+      }),
+    [
+      activeConnectionId,
+      activeSessionId,
+      connections,
+      lastActiveRemoteTerminalByConnection,
+      sessions
+    ]
   );
 
   const [lastActiveTerminalSessionId, setLastActiveTerminalSessionId] = useState<string>();
@@ -524,6 +544,7 @@ export const App = () => {
           activeTerminalSession={activeTerminalSession}
           activeTerminalConnection={activeTerminalConnection}
           activeConnectionConnectedTerminalSessionId={activeConnectionConnectedTerminalSessionId}
+          followTerminalSessionId={followTerminalSessionId}
           terminalSessionIds={terminalSessionIds}
           isActiveConnectionTerminalConnected={isActiveConnectionTerminalConnected}
           monitor={monitor}

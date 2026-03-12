@@ -28,6 +28,7 @@ import {
 import { formatErrorMessage } from "../utils/errorMessage";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { usePreferencesStore } from "../store/usePreferencesStore";
+import { consumeOsc7Chunk, createOsc7ParserState } from "../utils/osc7";
 import { shouldReconnectOnInput } from "../utils/terminal-reconnect";
 import {
   buildTerminalAuthIntro,
@@ -222,6 +223,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   const lastStatusKeyBySessionRef = useRef<Map<string, string>>(new Map());
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const frozenSessionIdRef = useRef<string | undefined>(undefined);
+  const osc7StateBySessionRef = useRef<Map<string, ReturnType<typeof createOsc7ParserState>>>(new Map());
   const terminalOptionsRef = useRef<FrozenTerminalOptions>(DEFAULT_TERMINAL_OPTIONS);
   const onRequestSearchModeRef = useRef<TerminalPaneProps["onRequestSearchMode"]>(onRequestSearchMode);
   const onReconnectSessionRef = useRef<TerminalPaneProps["onReconnectSession"]>(onReconnectSession);
@@ -245,6 +247,35 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   useEffect(() => {
     onRetrySessionAuthRef.current = onRetrySessionAuth;
   }, [onRetrySessionAuth]);
+
+  const setSessionCwd = useWorkspaceStore((state) => state.setSessionCwd);
+
+  const sanitizeSessionOutput = useCallback(
+    (targetSessionId: string, text: string): string => {
+      const targetSession = useWorkspaceStore
+        .getState()
+        .sessions.find((item: SessionDescriptor) => item.id === targetSessionId);
+      if (!targetSession || targetSession.target !== "remote" || !targetSession.connectionId) {
+        return text;
+      }
+
+      const currentState =
+        osc7StateBySessionRef.current.get(targetSessionId) ?? createOsc7ParserState();
+      const parsed = consumeOsc7Chunk(currentState, text);
+      osc7StateBySessionRef.current.set(targetSessionId, parsed.state);
+
+      const targetConnection = useWorkspaceStore
+        .getState()
+        .connections.find((item: ConnectionProfile) => item.id === targetSession.connectionId);
+      if (targetConnection?.monitorSession && parsed.cwdPath) {
+        setSessionCwd(targetSessionId, parsed.cwdPath);
+      }
+
+      return parsed.visibleText;
+    },
+    [setSessionCwd]
+  );
+
   const appendSessionOutput = useCallback((targetSessionId: string, text: string) => {
     if (!knownSessionIdsRef.current.has(targetSessionId) || !text) {
       return;
@@ -553,6 +584,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       lastStatusKeyBySessionRef.current,
       authStateBySessionRef.current,
       sessionStatusBySessionRef.current,
+      osc7StateBySessionRef.current,
       reconnectPendingSessionIdsRef.current
     ]);
   }, [sessionIds]);
@@ -807,10 +839,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
         return;
       }
 
-      appendSessionOutput(event.sessionId, event.data);
+      const sanitized = sanitizeSessionOutput(event.sessionId, event.data);
+      appendSessionOutput(event.sessionId, sanitized);
       const terminal = terminalRef.current;
       if (event.sessionId === sessionIdRef.current && terminal) {
-        terminal.write(event.data, () => {
+        terminal.write(sanitized, () => {
           ackSessionDelivery(event.sessionId, event.deliveryId, event.byteLength);
         });
         return;
@@ -867,7 +900,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       offData();
       offStatus();
     };
-  }, [appendSessionOutput, beginLocalAuthPrompt, message]);
+  }, [appendSessionOutput, beginLocalAuthPrompt, message, sanitizeSessionOutput]);
 
   useEffect(() => {
     const previousSessionId = sessionIdRef.current;

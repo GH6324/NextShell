@@ -118,6 +118,7 @@ export interface ShellOpenOptions {
   cols: number;
   rows: number;
   term?: string;
+  env?: Record<string, string>;
 }
 
 export interface ExecResult {
@@ -339,20 +340,25 @@ export class SshConnection {
     await this.readyPromise;
 
     return new Promise((resolve, reject) => {
-      this.client.shell(
-        {
-          term: options.term ?? "xterm-256color",
-          cols: options.cols,
-          rows: options.rows
-        },
-        (error, channel) => {
-          if (error || !channel) {
-            reject(error ?? new Error("Failed to open SSH shell"));
-            return;
-          }
-          resolve(channel);
+      const windowOptions = {
+        term: options.term ?? "xterm-256color",
+        cols: options.cols,
+        rows: options.rows
+      };
+      const onOpen = (error: Error | undefined, channel: ClientChannel | undefined) => {
+        if (error || !channel) {
+          reject(error ?? new Error("Failed to open SSH shell"));
+          return;
         }
-      );
+        resolve(channel);
+      };
+
+      if (options.env) {
+        this.client.shell(windowOptions, { env: options.env }, onOpen);
+        return;
+      }
+
+      this.client.shell(windowOptions, onOpen);
     });
   }
 

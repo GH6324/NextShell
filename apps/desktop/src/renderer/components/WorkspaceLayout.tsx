@@ -173,6 +173,7 @@ interface WorkspaceLayoutProps {
     activeTerminalSession?: SessionDescriptor;
     activeTerminalConnection?: ConnectionProfile;
     activeConnectionConnectedTerminalSessionId?: string;
+    followTerminalSessionId?: string;
     terminalSessionIds: string[];
     isActiveConnectionTerminalConnected: boolean;
     monitor?: import("@nextshell/core").MonitorSnapshot;
@@ -224,6 +225,7 @@ export const WorkspaceLayout = ({
     activeTerminalSession,
     activeTerminalConnection,
     activeConnectionConnectedTerminalSessionId,
+    followTerminalSessionId,
     terminalSessionIds,
     isActiveConnectionTerminalConnected,
     monitor,
@@ -1004,6 +1006,7 @@ export const WorkspaceLayout = ({
                                                             connected={
                                                                 isActiveConnectionTerminalConnected
                                                             }
+                                                            followSessionId={followTerminalSessionId}
                                                             active={bottomTab === "files"}
                                                             onOpenSettings={onOpenSettings}
                                                             onOpenEditorTab={onOpenEditorTab}

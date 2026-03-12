@@ -90,7 +90,6 @@ import type {
   SavedCommandUpsertInput,
   SessionCloseInput,
   SessionDataEvent,
-  SessionGetCwdInput,
   SessionGetHomeDirInput,
   SessionOpenInput,
   SessionResizeInput,
@@ -162,7 +161,6 @@ export interface NextShellApi {
     write: (payload: SessionWriteInput) => Promise<{ ok: true }>;
     resize: (payload: SessionResizeInput) => Promise<{ ok: true }>;
     close: (payload: SessionCloseInput) => Promise<{ ok: true }>;
-    getCwd: (payload: SessionGetCwdInput) => Promise<{ cwd: string } | null>;
     getHomeDir: (payload: SessionGetHomeDirInput) => Promise<{ path: string } | null>;
     ackData: (payload: StreamDeliveryAckInput) => Promise<{ ok: true }>;
     onData: (listener: (event: SessionDataEvent) => void) => SessionEventUnsubscribe;

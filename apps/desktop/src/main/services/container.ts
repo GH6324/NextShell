@@ -179,6 +179,10 @@ import {
   type NetworkTool,
 } from "./monitor/network-monitor-controller";
 import {
+  createRemoteOsc7BootstrapPlan,
+  resolveOsc7ShellFamily,
+} from "./terminal-osc7-bootstrap";
+import {
   createLatestOnlyDispatcher,
   createOrderedBytesDispatcher
 } from "./ipc-stream-dispatcher";
@@ -300,7 +304,6 @@ export interface ServiceContainer {
   stopSystemMonitor: (connectionId: string) => { ok: true };
   selectSystemNetworkInterface: (connectionId: string, networkInterface: string) => Promise<{ ok: true }>;
   execCommand: (connectionId: string, command: string) => Promise<CommandExecutionResult>;
-  getSessionCwd: (connectionId: string) => Promise<{ cwd: string } | null>;
   getSessionHomeDir: (connectionId: string) => Promise<{ path: string } | null>;
   execBatchCommand: (input: CommandBatchExecInput) => Promise<BatchCommandExecutionResult>;
   listAuditLogs: (limit: number) => AuditLogRecord[];
@@ -3229,10 +3232,25 @@ export const createServiceContainer = (
 
     try {
       const connection = await ensureConnection(connectionId, authOverride);
+      let osc7ShellFamily: ReturnType<typeof resolveOsc7ShellFamily> = undefined;
+      if (profile.monitorSession) {
+        try {
+          const shellProbe = await connection.exec('printf \'%s\' "${SHELL:-}"');
+          osc7ShellFamily = resolveOsc7ShellFamily(shellProbe.stdout);
+        } catch {
+          osc7ShellFamily = undefined;
+        }
+      }
+      const osc7Bootstrap = createRemoteOsc7BootstrapPlan(
+        Boolean(profile.monitorSession),
+        profile.host,
+        osc7ShellFamily
+      );
       const shell = await connection.openShell({
         cols: 140,
         rows: 40,
-        term: "xterm-256color"
+        term: "xterm-256color",
+        env: osc7Bootstrap.enabled ? osc7Bootstrap.env : undefined
       });
 
       const now = new Date().toISOString();
@@ -3294,6 +3312,10 @@ export const createServiceContainer = (
         shell.stderr.removeAllListeners();
         finalizeRemoteSession(descriptor.id, "failed", normalizeError(error));
       });
+
+      if (osc7Bootstrap.enabled && osc7Bootstrap.shellBootstrap) {
+        shell.write(`${osc7Bootstrap.shellBootstrap}\r`);
+      }
 
       let connectedReason = await warmupSftp(connectionId, connection);
       if (authOverride) {
@@ -3729,28 +3751,6 @@ export const createServiceContainer = (
     });
 
     return execution;
-  };
-
-  /** Get terminal shell CWD via /proc (Linux). No audit log. Returns null if unavailable. */
-  const getSessionCwd = async (
-    connectionId: string
-  ): Promise<{ cwd: string } | null> => {
-    getConnectionOrThrow(connectionId);
-    const connection = await ensureConnection(connectionId);
-    const cmd = [
-      'target_pid=$(ps -o pid= --ppid $PPID 2>/dev/null | tr -d " " | grep -v "^$$$" | tail -1)',
-      '[ -n "$target_pid" ] && readlink /proc/$target_pid/cwd 2>/dev/null'
-    ].join("; ");
-    try {
-      const result = await connection.exec(cmd);
-      const cwd = result.stdout.trim();
-      if (!cwd || !cwd.startsWith("/")) {
-        return null;
-      }
-      return { cwd };
-    } catch {
-      return null;
-    }
   };
 
   const getSessionHomeDir = async (
@@ -5222,7 +5222,6 @@ export const createServiceContainer = (
     stopSystemMonitor,
     selectSystemNetworkInterface,
     execCommand,
-    getSessionCwd,
     getSessionHomeDir,
     execBatchCommand,
     listAuditLogs,

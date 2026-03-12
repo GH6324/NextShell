@@ -55,7 +55,6 @@ const api: NextShellApi = {
     write: (payload) => ipcRenderer.invoke(IPCChannel.SessionWrite, payload),
     resize: (payload) => ipcRenderer.invoke(IPCChannel.SessionResize, payload),
     close: (payload) => ipcRenderer.invoke(IPCChannel.SessionClose, payload),
-    getCwd: (payload) => ipcRenderer.invoke(IPCChannel.SessionGetCwd, payload),
     getHomeDir: (payload) => ipcRenderer.invoke(IPCChannel.SessionGetHomeDir, payload),
     ackData: (payload) => ackStreamDelivery(payload),
     onData: (listener) => {

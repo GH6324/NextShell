@@ -142,10 +142,6 @@ export const sessionCloseSchema = z.object({
   sessionId: z.string().uuid()
 });
 
-export const sessionGetCwdSchema = z.object({
-  connectionId: z.string().uuid()
-});
-
 export const sessionGetHomeDirSchema = z.object({
   connectionId: z.string().uuid()
 });
@@ -809,7 +805,6 @@ export type SessionAuthOverrideInput = z.infer<typeof sessionAuthOverrideSchema>
 export type SessionWriteInput = z.infer<typeof sessionWriteSchema>;
 export type SessionResizeInput = z.infer<typeof sessionResizeSchema>;
 export type SessionCloseInput = z.infer<typeof sessionCloseSchema>;
-export type SessionGetCwdInput = z.infer<typeof sessionGetCwdSchema>;
 export type SessionGetHomeDirInput = z.infer<typeof sessionGetHomeDirSchema>;
 export type StreamKind = z.infer<typeof streamKindSchema>;
 export type StreamDeliveryAckInput = z.infer<typeof streamDeliveryAckSchema>;

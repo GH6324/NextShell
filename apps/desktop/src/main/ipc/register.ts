@@ -37,7 +37,6 @@ import {
   settingsGetSchema,
   settingsUpdateSchema,
   sessionCloseSchema,
-  sessionGetCwdSchema,
   sessionGetHomeDirSchema,
   streamDeliveryAckSchema,
   sftpDeleteSchema,
@@ -216,11 +215,6 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
   ipcMain.handle(IPCChannel.SessionClose, (_event, payload) => {
     const input = parsePayload(sessionCloseSchema, payload, "会话关闭");
     return services.closeSession(input.sessionId);
-  });
-
-  ipcMain.handle(IPCChannel.SessionGetCwd, (_event, payload) => {
-    const input = parsePayload(sessionGetCwdSchema, payload, "获取终端工作目录");
-    return services.getSessionCwd(input.connectionId);
   });
 
   ipcMain.handle(IPCChannel.SessionGetHomeDir, (_event, payload) => {
