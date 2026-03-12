@@ -577,6 +577,7 @@ export const createServiceContainer = (
     cloudSyncDisable: () => cloudSyncBridge!.disable(),
     cloudSyncStatus: () => cloudSyncBridge!.status(),
     cloudSyncSyncNow: () => cloudSyncBridge!.syncNow(),
+    cloudSyncPreviewPull: (i) => cloudSyncBridge!.previewPull(i),
     cloudSyncListConflicts: () => cloudSyncBridge!.listConflicts(),
     cloudSyncResolveConflict: (i) => cloudSyncBridge!.resolveConflict(i),
 

@@ -629,7 +629,13 @@ export const cloudSyncConfigureSchema = z.object({
   workspaceName: z.string().trim().min(1, "workspaceName is required"),
   workspacePassword: z.string().min(1, "workspacePassword is required"),
   pullIntervalSec: z.coerce.number().int().min(10).max(86_400).default(DEFAULT_APP_PREFERENCES.cloudSync.pullIntervalSec),
-  ignoreTlsErrors: z.boolean().default(DEFAULT_APP_PREFERENCES.cloudSync.ignoreTlsErrors)
+  ignoreTlsErrors: z.boolean().default(DEFAULT_APP_PREFERENCES.cloudSync.ignoreTlsErrors),
+  skipInitialPull: z.boolean().optional(),
+  initialMergeDecisions: z.array(z.object({
+    resourceType: z.enum(["connection", "sshKey"]),
+    resourceId: z.string().uuid(),
+    action: z.enum(["accept_remote", "keep_local"])
+  })).optional()
 });
 
 export const cloudSyncDisableSchema = z.object({});
@@ -676,6 +682,39 @@ export const cloudSyncResolveConflictSchema = z.object({
 export const cloudSyncAppliedEventSchema = z.object({
   appliedAt: z.string().min(1),
   version: z.coerce.number().int().min(0)
+});
+
+export const cloudSyncMergeActionSchema = z.enum(["accept_remote", "keep_local"]);
+
+export const cloudSyncPreviewPullSchema = z.object({
+  apiBaseUrl: httpsUrlSchema,
+  workspaceName: z.string().trim().min(1, "workspaceName is required"),
+  workspacePassword: z.string().min(1, "workspacePassword is required"),
+  ignoreTlsErrors: z.boolean().default(false)
+});
+
+export const cloudSyncPreviewConnectionSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  host: z.string(),
+  port: z.number().int(),
+  groupPath: z.string(),
+  updatedAt: z.string()
+});
+
+export const cloudSyncPreviewSshKeySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  updatedAt: z.string()
+});
+
+export const cloudSyncPreviewResultSchema = z.object({
+  remoteConnections: z.array(cloudSyncPreviewConnectionSchema),
+  remoteSshKeys: z.array(cloudSyncPreviewSshKeySchema),
+  localWorkspaceConnections: z.array(cloudSyncPreviewConnectionSchema),
+  localSshKeys: z.array(cloudSyncPreviewSshKeySchema),
+  hasRemoteData: z.boolean(),
+  hasLocalData: z.boolean()
 });
 
 export const masterPasswordSetSchema = backupPasswordSetSchema;
@@ -874,6 +913,11 @@ export type CloudSyncListConflictsInput = z.infer<typeof cloudSyncListConflictsS
 export type CloudSyncResolveConflictInput = z.infer<typeof cloudSyncResolveConflictSchema>;
 export type CloudSyncStatusEvent = CloudSyncStatus;
 export type CloudSyncAppliedEvent = z.infer<typeof cloudSyncAppliedEventSchema>;
+export type CloudSyncPreviewPullInput = z.infer<typeof cloudSyncPreviewPullSchema>;
+export type CloudSyncPreviewConnection = z.infer<typeof cloudSyncPreviewConnectionSchema>;
+export type CloudSyncPreviewSshKey = z.infer<typeof cloudSyncPreviewSshKeySchema>;
+export type CloudSyncPreviewResult = z.infer<typeof cloudSyncPreviewResultSchema>;
+export type CloudSyncMergeAction = z.infer<typeof cloudSyncMergeActionSchema>;
 export type MasterPasswordSetInput = z.infer<typeof masterPasswordSetSchema>;
 export type MasterPasswordUnlockInput = z.infer<typeof masterPasswordUnlockSchema>;
 export type MasterPasswordClearRememberedInput = z.infer<typeof masterPasswordClearRememberedSchema>;

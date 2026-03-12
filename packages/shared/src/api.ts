@@ -32,6 +32,8 @@ import type {
   CloudSyncConfigureInput,
   CloudSyncDisableInput,
   CloudSyncListConflictsInput,
+  CloudSyncPreviewPullInput,
+  CloudSyncPreviewResult,
   CloudSyncResolveConflictInput,
   CloudSyncStatus,
   CloudSyncStatusQueryInput,
@@ -251,6 +253,7 @@ export interface NextShellApi {
     disable: (payload?: CloudSyncDisableInput) => Promise<{ ok: true }>;
     status: (payload?: CloudSyncStatusQueryInput) => Promise<CloudSyncStatus>;
     syncNow: (payload?: CloudSyncSyncNowInput) => Promise<{ ok: true }>;
+    previewPull: (payload: CloudSyncPreviewPullInput) => Promise<CloudSyncPreviewResult>;
     listConflicts: (payload?: CloudSyncListConflictsInput) => Promise<CloudSyncConflictItem[]>;
     resolveConflict: (payload: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
     onStatus: (listener: (event: CloudSyncStatus) => void) => SessionEventUnsubscribe;

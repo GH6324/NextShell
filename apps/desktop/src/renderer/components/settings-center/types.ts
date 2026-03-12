@@ -1,4 +1,4 @@
-import type { CloudSyncConflictItem, CloudSyncConfigureInput } from "@nextshell/shared";
+import type { CloudSyncConflictItem, CloudSyncConfigureInput, CloudSyncPreviewPullInput, CloudSyncPreviewResult } from "@nextshell/shared";
 
 export type SettingsSection =
   | "window"
@@ -42,6 +42,7 @@ export type CloudSyncApi = {
   status?: () => Promise<unknown>;
   syncNow?: () => Promise<unknown>;
   listConflicts?: () => Promise<unknown>;
+  previewPull?: (input: CloudSyncPreviewPullInput) => Promise<CloudSyncPreviewResult>;
   resolveConflict?: (input: {
     resourceType: "connection" | "sshKey" | "proxy";
     resourceId: string;

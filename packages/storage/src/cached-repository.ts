@@ -164,7 +164,7 @@ export class CachedConnectionRepository implements ConnectionRepository {
 
     if (group) {
       result = result.filter((c) => {
-        return c.groupPath.includes(group);
+        return c.groupPath === group || c.groupPath.startsWith(group + "/");
       });
     }
 

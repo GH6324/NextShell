@@ -8,6 +8,28 @@ import type {
 } from "../../../../../packages/core/src/index";
 import { deobfuscatePassword } from "./connection-export-crypto";
 import { decryptFinalShellPassword } from "./finalshell/decrypt-password";
+import { CONNECTION_ZONES, extractZone, isValidZone, getSubPath } from "../../../../../packages/shared/src/constants";
+
+/**
+ * Remap an imported connection's groupPath into the /import zone.
+ * Strips any existing zone prefix so the user-visible sub-path is preserved.
+ * @example remapToImportZone("/server/hk")        → "/import/hk"
+ * @example remapToImportZone("/workspace/team/prod") → "/import/team/prod"
+ * @example remapToImportZone("/import/old")        → "/import/old"
+ * @example remapToImportZone("/mygroup/foo")       → "/import/mygroup/foo"
+ */
+const remapToImportZone = (groupPath: string): string => {
+  if (!groupPath) return `/${CONNECTION_ZONES.IMPORT}`;
+  const zone = extractZone(groupPath);
+  if (isValidZone(zone)) {
+    // Strip the zone prefix, keep sub-path
+    const sub = getSubPath(groupPath);
+    return sub ? `/${CONNECTION_ZONES.IMPORT}${sub}` : `/${CONNECTION_ZONES.IMPORT}`;
+  }
+  // Not a valid zone — treat entire path (after leading /) as sub-path
+  const normalized = groupPath.startsWith("/") ? groupPath : "/" + groupPath;
+  return `/${CONNECTION_ZONES.IMPORT}${normalized}`;
+};
 
 // ─── Format detection ────────────────────────────────────────────────────────
 
@@ -59,7 +81,7 @@ export const parseNextShellImport = (data: ConnectionExportFile): ConnectionImpo
       password,
       keepAliveEnabled: conn.keepAliveEnabled,
       keepAliveIntervalSec: conn.keepAliveIntervalSec,
-      groupPath: conn.groupPath,
+      groupPath: remapToImportZone(conn.groupPath),
       tags: conn.tags,
       notes: conn.notes,
       favorite: conn.favorite,
@@ -109,7 +131,7 @@ const parseOneFinalShellEntry = (entry: FinalShellEntry): ConnectionImportEntry 
     ...(decryptedPassword !== undefined
       ? { password: decryptedPassword }
       : { passwordUnavailable: true }),
-    groupPath: "/导入",
+    groupPath: "/import/finalshell",
     tags: [],
     favorite: false,
     terminalEncoding: mapFinalShellEncoding(entry.terminal_encoding),

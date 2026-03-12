@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { App as AntdApp, Modal } from "antd";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import type { BackupArchiveMeta } from "@nextshell/core";
-import type { CloudSyncConflictItem } from "@nextshell/shared";
+import type { CloudSyncConflictItem, CloudSyncPreviewResult } from "@nextshell/shared";
 import { formatErrorMessage } from "../utils/errorMessage";
+import { CloudSyncMergeDialog } from "./CloudSyncMergeDialog";
 import {
   type SettingsSection,
   type LocalShellPreference,
@@ -104,6 +105,9 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
   const [cloudSyncWorkspacePassword, setCloudSyncWorkspacePassword] = useState("");
   const [cloudSyncPullIntervalSec, setCloudSyncPullIntervalSec] = useState(60);
   const [cloudSyncIgnoreTlsErrors, setCloudSyncIgnoreTlsErrors] = useState(false);
+  const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
+  const [mergePreview, setMergePreview] = useState<CloudSyncPreviewResult | null>(null);
+  const [mergeConfirming, setMergeConfirming] = useState(false);
 
   const buildCloudSyncScopeKey = useCallback((apiBaseUrl: string, workspaceName: string): string => {
     return `${apiBaseUrl.trim()}::${workspaceName.trim()}`;
@@ -503,8 +507,54 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
       return;
     }
 
+    // Step 1: preview remote data to detect merge conflicts
     setCloudSyncBusyAction("configure");
     try {
+      if (cloudSync.previewPull) {
+        const preview = await cloudSync.previewPull({
+          apiBaseUrl,
+          workspaceName,
+          workspacePassword,
+          ignoreTlsErrors
+        });
+
+        // If both sides have data, show merge dialog for user confirmation
+        if (preview.hasRemoteData && preview.hasLocalData) {
+          setMergePreview(preview);
+          setMergeDialogOpen(true);
+          setCloudSyncBusyAction(null);
+          return; // Wait for user merge decision
+        }
+
+        // If only local data exists, skip initial pull (no remote to merge)
+        if (preview.hasLocalData && !preview.hasRemoteData) {
+          const configuredStatus = normalizeCloudSyncStatus(
+            await cloudSync.configure({
+              apiBaseUrl,
+              workspaceName,
+              workspacePassword,
+              pullIntervalSec,
+              ignoreTlsErrors,
+              skipInitialPull: true
+            }),
+            cloudSyncStatus
+          );
+          setCloudSyncStatus(configuredStatus);
+          syncCloudSyncFormFromStatus(configuredStatus);
+          setCloudSyncApiBaseUrl(apiBaseUrl);
+          setCloudSyncWorkspaceName(workspaceName);
+          setCloudSyncPullIntervalSec(pullIntervalSec);
+          setCloudSyncIgnoreTlsErrors(ignoreTlsErrors);
+          message.success("云同步已启用。");
+          await Promise.all([
+            refreshCloudSyncStatus({ silent: true }),
+            refreshCloudSyncConflicts({ silent: true })
+          ]);
+          return;
+        }
+      }
+
+      // No local data or previewPull not supported: proceed normally
       const configuredStatus = normalizeCloudSyncStatus(
         await cloudSync.configure({
           apiBaseUrl,
@@ -543,6 +593,70 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     refreshCloudSyncStatus,
     syncCloudSyncFormFromStatus
   ]);
+
+  const handleMergeConfirm = useCallback(
+    async (decisions: { resourceType: "connection" | "sshKey"; resourceId: string; action: "accept_remote" | "keep_local" }[]): Promise<void> => {
+      const cloudSync = getCloudSyncApi();
+      if (!cloudSync?.configure) return;
+
+      const apiBaseUrl = cloudSyncApiBaseUrl.trim();
+      const workspaceName = cloudSyncWorkspaceName.trim();
+      const workspacePassword = cloudSyncWorkspacePassword;
+      const pullIntervalSec = Math.max(10, Math.round(cloudSyncPullIntervalSec || 0));
+      const ignoreTlsErrors = cloudSyncIgnoreTlsErrors;
+
+      setMergeConfirming(true);
+      setCloudSyncBusyAction("configure");
+      try {
+        const configuredStatus = normalizeCloudSyncStatus(
+          await cloudSync.configure({
+            apiBaseUrl,
+            workspaceName,
+            workspacePassword,
+            pullIntervalSec,
+            ignoreTlsErrors,
+            initialMergeDecisions: decisions
+          }),
+          cloudSyncStatus
+        );
+        setCloudSyncStatus(configuredStatus);
+        syncCloudSyncFormFromStatus(configuredStatus);
+        setCloudSyncApiBaseUrl(apiBaseUrl);
+        setCloudSyncWorkspaceName(workspaceName);
+        setCloudSyncPullIntervalSec(pullIntervalSec);
+        setCloudSyncIgnoreTlsErrors(ignoreTlsErrors);
+        setMergeDialogOpen(false);
+        setMergePreview(null);
+        message.success("云同步已启用，合并完成。");
+        await Promise.all([
+          refreshCloudSyncStatus({ silent: true }),
+          refreshCloudSyncConflicts({ silent: true })
+        ]);
+      } catch (error) {
+        message.error(`启用云同步失败：${formatErrorMessage(error, "请检查云同步配置")}`);
+      } finally {
+        setMergeConfirming(false);
+        setCloudSyncBusyAction(null);
+      }
+    },
+    [
+      cloudSyncApiBaseUrl,
+      cloudSyncStatus,
+      cloudSyncIgnoreTlsErrors,
+      cloudSyncPullIntervalSec,
+      cloudSyncWorkspaceName,
+      cloudSyncWorkspacePassword,
+      message,
+      refreshCloudSyncConflicts,
+      refreshCloudSyncStatus,
+      syncCloudSyncFormFromStatus
+    ]
+  );
+
+  const handleMergeCancel = useCallback(() => {
+    setMergeDialogOpen(false);
+    setMergePreview(null);
+  }, []);
 
   const handleDisableCloudSync = useCallback(async (): Promise<void> => {
     const cloudSync = getCloudSyncApi();
@@ -833,6 +947,14 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
           {sectionContent}
         </div>
       </div>
+
+      <CloudSyncMergeDialog
+        open={mergeDialogOpen}
+        preview={mergePreview}
+        loading={mergeConfirming}
+        onConfirm={handleMergeConfirm}
+        onCancel={handleMergeCancel}
+      />
     </Modal>
   );
 };

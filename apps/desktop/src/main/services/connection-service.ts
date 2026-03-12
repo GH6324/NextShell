@@ -30,6 +30,7 @@ import type {
 } from "@nextshell/storage";
 import type { RemoteEditManager } from "./remote-edit-manager";
 import type { ActiveSession, ActiveRemoteSession, MonitorState } from "./container-types";
+import { enforceZonePrefix, CONNECTION_ZONES } from "../../../../../packages/shared/src/constants";
 import { normalizeError } from "./container-utils";
 import { logger } from "../logger";
 
@@ -141,6 +142,9 @@ export class ConnectionService {
       }
     }
 
+    // Enforce zone prefix on groupPath to guarantee valid zone isolation
+    const safeGroupPath = enforceZonePrefix(input.groupPath);
+
     const profile: ConnectionProfile = {
       id,
       name: input.name,
@@ -158,7 +162,7 @@ export class ConnectionService {
       terminalEncoding: input.terminalEncoding,
       backspaceMode: input.backspaceMode,
       deleteMode: input.deleteMode,
-      groupPath: input.groupPath,
+      groupPath: safeGroupPath,
       tags: input.tags,
       notes: input.notes,
       favorite: input.favorite,
@@ -216,6 +220,9 @@ export class ConnectionService {
       credentialRef = await vault.storeCredential(`conn-${input.id}`, input.password);
     }
 
+    // Cloud sync connections MUST live under /workspace — enforce zone safety
+    const cloudGroupPath = enforceZonePrefix(input.groupPath, CONNECTION_ZONES.WORKSPACE);
+
     const now = new Date().toISOString();
     const profile: ConnectionProfile = {
       id: input.id,
@@ -234,7 +241,7 @@ export class ConnectionService {
       terminalEncoding: current?.terminalEncoding ?? "utf-8",
       backspaceMode: current?.backspaceMode ?? "ascii-backspace",
       deleteMode: current?.deleteMode ?? "vt220-delete",
-      groupPath: input.groupPath,
+      groupPath: cloudGroupPath,
       tags: input.tags,
       notes: input.notes,
       favorite: input.favorite,

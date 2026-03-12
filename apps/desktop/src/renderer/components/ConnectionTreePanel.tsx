@@ -2,6 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { App as AntdApp, message } from "antd";
 import type { ConnectionProfile, SessionDescriptor, SshKeyProfile } from "@nextshell/core";
 import type { ConnectionUpsertInput } from "@nextshell/shared";
+import { ZONE_ORDER, ZONE_DISPLAY_NAMES, ZONE_ICONS, extractZone, isValidZone, type ConnectionZone } from "@nextshell/shared";
+import type { CloudSyncStatusView } from "./settings-center/types";
+import { formatCloudSyncState } from "./settings-center/constants";
+import { useCloudSyncStatus } from "../hooks/useCloudSyncStatus";
 import { CredentialEditModal, toConnectionUpsertInput } from "./CredentialEditModal";
 import { promptModal } from "../utils/promptModal";
 import { formatErrorMessage } from "../utils/errorMessage";
@@ -30,6 +34,10 @@ interface GroupNode {
   key: string;
   label: string;
   children: TreeNode[];
+  /** If set, this node is a fixed zone root (not user-renameable) */
+  zone?: ConnectionZone;
+  /** Custom icon class for zone nodes */
+  icon?: string;
 }
 
 interface LeafNode {
@@ -44,6 +52,10 @@ const groupPathToSegments = (groupPath: string): string[] => {
   return groupPath.split("/").filter((s) => s.length > 0);
 };
 
+/**
+ * Build the connection tree with three fixed zone nodes at the top level.
+ * Every connection is routed to its zone based on the first groupPath segment.
+ */
 const buildTree = (
   connections: ConnectionProfile[],
   sessions: SessionDescriptor[],
@@ -57,17 +69,32 @@ const buildTree = (
     children: []
   };
 
+  // Create the three fixed zone nodes (always present, even when empty)
+  const zoneNodes = new Map<string, GroupNode>();
+  for (const zone of ZONE_ORDER) {
+    const node: GroupNode = {
+      type: "group",
+      key: `zone:${zone}`,
+      label: ZONE_DISPLAY_NAMES[zone],
+      children: [],
+      zone,
+      icon: ZONE_ICONS[zone]
+    };
+    zoneNodes.set(zone, node);
+    root.children.push(node);
+  }
+
   const connectedConnectionIds = new Set(
     sessions
       .filter((s) => s.status === "connected" && s.type === "terminal")
       .map((s) => s.connectionId)
   );
 
-  const ensureGroup = (path: string[]): GroupNode => {
-    let current = root;
-    const visited: string[] = [];
+  const ensureGroup = (zoneNode: GroupNode, subSegments: string[]): GroupNode => {
+    let current = zoneNode;
+    const visited: string[] = [zoneNode.zone!];
 
-    for (const segment of path) {
+    for (const segment of subSegments) {
       visited.push(segment);
       const key = `group:${visited.join("/")}`;
       let next = current.children.find(
@@ -89,7 +116,13 @@ const buildTree = (
       continue;
     }
 
-    const group = ensureGroup(groupPathToSegments(connection.groupPath));
+    const segments = groupPathToSegments(connection.groupPath);
+    const zoneName = segments[0] ?? "server";
+    const zone = isValidZone(zoneName) ? zoneName : "server";
+    const zoneNode = zoneNodes.get(zone)!;
+    const subSegments = isValidZone(zoneName) ? segments.slice(1) : segments;
+
+    const group = ensureGroup(zoneNode, subSegments);
     const isConnected = connectedConnectionIds.has(connection.id);
     group.children.push({
       type: "leaf",
@@ -106,22 +139,43 @@ const buildTree = (
 const GroupRow = ({
   node,
   expanded,
-  onToggle
+  onToggle,
+  cloudSyncStatus
 }: {
   node: GroupNode;
   expanded: boolean;
   onToggle: () => void;
-}) => (
-  <button type="button" className="ct-group-row" onClick={onToggle}>
-    <i
-      className={expanded ? "ri-arrow-down-s-line" : "ri-arrow-right-s-line"}
-      aria-hidden="true"
-    />
-    <i className="ri-folder-3-line ct-group-icon" aria-hidden="true" />
-    <span className="ct-group-label">{node.label}</span>
-    <span className="ct-group-count">{countLeaves(node)}</span>
-  </button>
-);
+  cloudSyncStatus?: CloudSyncStatusView;
+}) => {
+  const showSyncBadge = node.zone === "workspace" && cloudSyncStatus;
+  const syncState = showSyncBadge ? formatCloudSyncState(cloudSyncStatus.state) : null;
+
+  return (
+    <button type="button" className={`ct-group-row${node.zone ? " ct-zone-row" : ""}`} onClick={onToggle}>
+      <i
+        className={expanded ? "ri-arrow-down-s-line" : "ri-arrow-right-s-line"}
+        aria-hidden="true"
+      />
+      <i className={`${node.icon ?? "ri-folder-3-line"} ct-group-icon`} aria-hidden="true" />
+      <span className="ct-group-label">{node.label}</span>
+      {showSyncBadge && syncState ? (
+        <span
+          className={`ct-sync-badge ct-sync-badge--${cloudSyncStatus.state}`}
+          title={syncState.label + (cloudSyncStatus.lastError ? `：${cloudSyncStatus.lastError}` : "")}
+        >
+          {cloudSyncStatus.state === "syncing" ? (
+            <i className="ri-loader-4-line ct-sync-spin" aria-hidden="true" />
+          ) : cloudSyncStatus.state === "error" ? (
+            <i className="ri-error-warning-line" aria-hidden="true" />
+          ) : cloudSyncStatus.enabled ? (
+            <i className="ri-check-line" aria-hidden="true" />
+          ) : null}
+        </span>
+      ) : null}
+      <span className="ct-group-count">{countLeaves(node)}</span>
+    </button>
+  );
+};
 
 const ServerRow = ({
   node,
@@ -198,7 +252,8 @@ const TreeGroup = ({
   onSelect,
   onDoubleClick,
   onConnect,
-  onContextMenu
+  onContextMenu,
+  cloudSyncStatus
 }: {
   node: GroupNode;
   depth: number;
@@ -209,6 +264,7 @@ const TreeGroup = ({
   onDoubleClick: (id: string) => void;
   onConnect: (id: string) => void;
   onContextMenu: (event: React.MouseEvent<HTMLButtonElement>, id: string) => void;
+  cloudSyncStatus?: CloudSyncStatusView;
 }) => {
   const isExpanded = expanded.has(node.key);
   return (
@@ -218,6 +274,7 @@ const TreeGroup = ({
           node={node}
           expanded={isExpanded}
           onToggle={() => toggleExpanded(node.key)}
+          cloudSyncStatus={node.zone === "workspace" ? cloudSyncStatus : undefined}
         />
       )}
       {(depth === 0 || isExpanded) && (
@@ -235,6 +292,7 @@ const TreeGroup = ({
                 onDoubleClick={onDoubleClick}
                 onConnect={onConnect}
                 onContextMenu={onContextMenu}
+                cloudSyncStatus={cloudSyncStatus}
               />
             ) : (
               <ServerRow
@@ -392,8 +450,11 @@ export const ConnectionTreePanel = ({
   onOpenManagerForConnection
 }: ConnectionTreePanelProps) => {
   const { modal } = AntdApp.useApp();
+  const cloudSyncStatus = useCloudSyncStatus();
   const [keyword, setKeyword] = useState("");
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["root"]));
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set(["root", ...ZONE_ORDER.map((z) => `zone:${z}`)])
+  );
   const [contextMenu, setContextMenu] = useState<ConnectionContextMenuState | null>(null);
   const [editingCredentialConnectionId, setEditingCredentialConnectionId] = useState<string>();
   const [savingName, setSavingName] = useState(false);
@@ -401,6 +462,11 @@ export const ConnectionTreePanel = ({
   const tree = useMemo(
     () => buildTree(connections, sessions, keyword),
     [connections, sessions, keyword]
+  );
+
+  const hasVisibleConnections = useMemo(
+    () => countLeaves(tree) > 0,
+    [tree]
   );
 
   const contextMenuConnection = useMemo(
@@ -531,7 +597,7 @@ export const ConnectionTreePanel = ({
 
       {/* Tree */}
       <div className="ct-tree">
-        {tree.children.length === 0 ? (
+        {!hasVisibleConnections ? (
           <div className="ct-empty">
             {keyword ? (
               <>
@@ -556,6 +622,7 @@ export const ConnectionTreePanel = ({
             onDoubleClick={onConnectByDoubleClick}
             onConnect={onConnect}
             onContextMenu={handleServerContextMenu}
+            cloudSyncStatus={cloudSyncStatus}
           />
         )}
       </div>

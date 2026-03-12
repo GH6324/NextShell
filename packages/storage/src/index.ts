@@ -188,14 +188,30 @@ const toMetadataJSON = (value: Record<string, unknown> | undefined): string | nu
 const parseGroupPath = (raw: string | null | undefined): string => {
   if (!raw) return "/server";
   const trimmed = raw.trim();
-  if (trimmed.startsWith("/")) return trimmed;
-  if (trimmed.startsWith("[")) {
+  let path: string;
+  if (trimmed.startsWith("/")) {
+    path = trimmed;
+  } else if (trimmed.startsWith("[")) {
     try {
       const arr = JSON.parse(trimmed) as string[];
-      if (Array.isArray(arr) && arr.length > 0) return "/" + arr.join("/");
-    } catch { /* fall through */ }
+      if (Array.isArray(arr) && arr.length > 0) {
+        path = "/" + arr.join("/");
+      } else {
+        path = "/server";
+      }
+    } catch {
+      path = "/" + trimmed;
+    }
+  } else {
+    path = "/" + trimmed;
   }
-  return "/" + trimmed;
+  // Enforce zone prefix: if path's first segment is not a valid zone, prepend /server
+  const segments = path.split("/").filter((s) => s.length > 0);
+  const zone = segments[0] ?? "server";
+  if (zone !== "server" && zone !== "workspace" && zone !== "import") {
+    return "/server" + path;
+  }
+  return path;
 };
 
 const rowToConnection = (row: ConnectionRow): ConnectionProfile => {
@@ -933,6 +949,28 @@ const migrations: MigrationDefinition[] = [
           ON cloud_sync_resource_state(conflict_remote_revision DESC, conflict_detected_at DESC);
       `);
     }
+  },
+  {
+    version: 18,
+    name: "enforce_connection_zones",
+    apply: (db) => {
+      // Migrate all connections whose groupPath doesn't start with one of the
+      // three allowed zone prefixes (/server, /workspace, /import) by prepending
+      // /server.  This normalizes legacy paths like /导入/xxx → /server/导入/xxx.
+      db.exec(`
+        UPDATE connections
+        SET group_path = '/server' || group_path
+        WHERE group_path NOT LIKE '/server%'
+          AND group_path NOT LIKE '/workspace%'
+          AND group_path NOT LIKE '/import%';
+      `);
+      // Ensure bare root "/" gets a zone
+      db.exec(`
+        UPDATE connections
+        SET group_path = '/server'
+        WHERE group_path = '/';
+      `);
+    }
   }
 ];
 
@@ -1114,7 +1152,7 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
             last_connected_at
           FROM connections
           WHERE (@favorite IS NULL OR favorite = @favorite)
-            AND (@group IS NULL OR group_path LIKE '%' || @group || '%')
+            AND (@group IS NULL OR (group_path = @group OR group_path LIKE @group || '/%'))
             AND (
               @keywordLike IS NULL
               OR lower(name || ' ' || host || ' ' || tags || ' ' || group_path || ' ' || ifnull(notes, '')) LIKE @keywordLike

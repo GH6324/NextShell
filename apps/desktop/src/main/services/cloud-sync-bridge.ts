@@ -5,6 +5,8 @@ import type { AppPreferences, ConnectionProfile, ProxyProfile, SshKeyProfile } f
 import type {
   CloudSyncConflictItem,
   CloudSyncConfigureInput,
+  CloudSyncPreviewPullInput,
+  CloudSyncPreviewResult,
   CloudSyncResolveConflictInput,
   CloudSyncStatus,
   SettingsUpdateInput,
@@ -101,6 +103,10 @@ export class CloudSyncBridge {
 
   async syncNow(): Promise<{ ok: true }> {
     return this.cloudSyncService.syncNow();
+  }
+
+  async previewPull(input: CloudSyncPreviewPullInput): Promise<CloudSyncPreviewResult> {
+    return this.cloudSyncService.previewPull(input);
   }
 
   async listConflicts(): Promise<CloudSyncConflictItem[]> {

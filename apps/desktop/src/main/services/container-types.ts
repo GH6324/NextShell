@@ -30,6 +30,8 @@ import type { IPty } from "node-pty";
 import type {
   CloudSyncConflictItem,
   CloudSyncConfigureInput,
+  CloudSyncPreviewPullInput,
+  CloudSyncPreviewResult,
   CloudSyncResolveConflictInput,
   CloudSyncStatus,
   CommandBatchExecInput,
@@ -155,6 +157,7 @@ export interface ServiceContainer {
   cloudSyncDisable: () => Promise<{ ok: true }>;
   cloudSyncStatus: () => Promise<CloudSyncStatus>;
   cloudSyncSyncNow: () => Promise<{ ok: true }>;
+  cloudSyncPreviewPull: (input: CloudSyncPreviewPullInput) => Promise<CloudSyncPreviewResult>;
   cloudSyncListConflicts: () => Promise<CloudSyncConflictItem[]>;
   cloudSyncResolveConflict: (input: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
   openFilesDialog: (

@@ -234,6 +234,7 @@ const api: NextShellApi = {
     disable: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncDisable, payload ?? {}),
     status: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncStatus, payload ?? {}),
     syncNow: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncSyncNow, payload ?? {}),
+    previewPull: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncPreviewPull, payload),
     listConflicts: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncListConflicts, payload ?? {}),
     resolveConflict: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncResolveConflict, payload),
     onStatus: (listener) => {

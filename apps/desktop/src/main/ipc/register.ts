@@ -70,6 +70,7 @@ import {
   cloudSyncConfigureSchema,
   cloudSyncDisableSchema,
   cloudSyncListConflictsSchema,
+  cloudSyncPreviewPullSchema,
   cloudSyncResolveConflictSchema,
   cloudSyncStatusQuerySchema,
   cloudSyncSyncNowSchema,
@@ -553,6 +554,11 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
   ipcMain.handle(IPCChannel.CloudSyncResolveConflict, (_event, payload) => {
     const input = parsePayload(cloudSyncResolveConflictSchema, payload, "云同步冲突处理");
     return services.cloudSyncResolveConflict(input);
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncPreviewPull, (_event, payload) => {
+    const input = parsePayload(cloudSyncPreviewPullSchema, payload, "云同步预览拉取");
+    return services.cloudSyncPreviewPull(input);
   });
 
   // ─── Template Params ──────────────────────────────────────────────────────

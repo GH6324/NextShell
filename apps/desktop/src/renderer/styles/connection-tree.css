@@ -206,6 +206,41 @@
   flex-shrink: 0;
 }
 
+/* Cloud sync status badge on workspace zone node */
+.ct-sync-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+.ct-sync-badge--idle {
+  color: #52c41a;
+}
+
+.ct-sync-badge--syncing {
+  color: #1677ff;
+}
+
+.ct-sync-badge--error {
+  color: #ff4d4f;
+}
+
+.ct-sync-badge--disabled {
+  color: var(--t3);
+}
+
+@keyframes ct-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.ct-sync-spin {
+  animation: ct-spin 1s linear infinite;
+}
+
 /* Server row */
 .ct-server-row {
   display: flex;

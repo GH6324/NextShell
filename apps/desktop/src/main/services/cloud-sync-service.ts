@@ -20,6 +20,8 @@ import {
   type CloudSyncAppliedEvent,
   type CloudSyncConflictItem,
   type CloudSyncConfigureInput,
+  type CloudSyncPreviewPullInput,
+  type CloudSyncPreviewResult,
   type CloudSyncResolveConflictInput,
   type CloudSyncStatus
 } from "../../../../../packages/shared/src/index";
@@ -402,6 +404,12 @@ interface PendingExecutionResult {
   clearResourceState?: boolean;
 }
 
+type PendingMergeDecision = {
+  resourceType: "connection" | "sshKey";
+  resourceId: string;
+  action: "accept_remote" | "keep_local";
+};
+
 export class CloudSyncService {
   private readonly options: CloudSyncServiceOptions;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -413,6 +421,7 @@ export class CloudSyncService {
   private currentVersion: number | null = null;
   private pendingQueueState: CloudSyncPendingQueueState | undefined;
   private pendingQueueScopeKey: string | null = null;
+  private pendingMergeDecisions: PendingMergeDecision[] | undefined;
 
   constructor(options: CloudSyncServiceOptions) {
     this.options = options;
@@ -482,12 +491,37 @@ export class CloudSyncService {
             ignoreTlsErrors: input.ignoreTlsErrors
           }
         }, { reconfigureCloudSync: false });
-        await this.runSyncCycleInternal({
+
+        const syncCredentials: CloudSyncCredentials = {
           apiBaseUrl,
           workspaceName,
           workspacePassword: input.workspacePassword,
           ignoreTlsErrors: input.ignoreTlsErrors
-        });
+        };
+
+        this.pendingMergeDecisions = input.initialMergeDecisions ?? undefined;
+        try {
+          if (input.skipInitialPull) {
+            this.queueLocalSeedResources(
+              apiBaseUrl,
+              workspaceName,
+              new Set<string>(),
+              new Set<string>(),
+              new Set<string>(),
+              new Set<string>()
+            );
+            await this.flushPendingQueueInternal(syncCredentials);
+            this.transition("idle", null);
+          } else {
+            await this.runSyncCycleInternal(syncCredentials);
+            if (this.pendingMergeDecisions?.length) {
+              await this.flushPendingQueueInternal(syncCredentials);
+            }
+          }
+        } finally {
+          this.pendingMergeDecisions = undefined;
+        }
+
         this.ensureTimer(input.pullIntervalSec);
       } catch (error) {
         this.transition("error", normalizeErrorMessage(error, "云同步配置失败"));
@@ -578,6 +612,82 @@ export class CloudSyncService {
       this.transition("idle", null);
     });
     return { ok: true };
+  }
+
+  async previewPull(input: CloudSyncPreviewPullInput): Promise<CloudSyncPreviewResult> {
+    const apiBaseUrl = normalizeApiBaseUrl(input.apiBaseUrl);
+    const workspaceName = input.workspaceName.trim();
+    const credentials: CloudSyncCredentials = {
+      apiBaseUrl,
+      workspaceName,
+      workspacePassword: input.workspacePassword,
+      ignoreTlsErrors: input.ignoreTlsErrors
+    };
+
+    // Validate credentials by probing workspace status
+    await this.postJson(credentials, "/api/v1/sync/workspace/status", {}, workspaceStatusResponseSchema);
+
+    // Fetch the full snapshot
+    const response = await this.postJson(
+      credentials,
+      "/api/v1/sync/pull",
+      { knownVersion: 0 },
+      pullResponseSchema
+    );
+
+    const groupPrefix = workspaceGroupPathPrefix(workspaceName);
+
+    // Build remote connection previews (scoped to workspace)
+    const remoteConnections = (response.snapshot?.connections ?? [])
+      .filter((item) => {
+        const gp = item.payload.groupPath;
+        if (!isConnectionGroupPathInScope(gp, workspaceName)) return false;
+        const firstSeg = gp.split("/").filter((s: string) => s.length > 0)[0];
+        return firstSeg === "workspace";
+      })
+      .map((item) => ({
+        id: item.payload.id,
+        name: item.payload.name,
+        host: item.payload.host,
+        port: item.payload.port,
+        groupPath: item.payload.groupPath,
+        updatedAt: item.updatedAt
+      }));
+
+    // Build remote SSH key previews
+    const remoteSshKeys = (response.snapshot?.sshKeys ?? []).map((item) => ({
+      id: item.payload.id,
+      name: item.payload.name,
+      updatedAt: item.updatedAt
+    }));
+
+    // Build local workspace connection previews (connections in scope)
+    const localWorkspaceConnections = this.options.listConnections()
+      .filter((c) => isConnectionGroupPathInScope(c.groupPath, workspaceName))
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        host: c.host,
+        port: c.port,
+        groupPath: c.groupPath,
+        updatedAt: c.updatedAt
+      }));
+
+    // Build local SSH key previews
+    const localSshKeys = this.options.listSshKeys().map((k) => ({
+      id: k.id,
+      name: k.name,
+      updatedAt: k.updatedAt
+    }));
+
+    return {
+      remoteConnections,
+      remoteSshKeys,
+      localWorkspaceConnections,
+      localSshKeys,
+      hasRemoteData: remoteConnections.length > 0 || remoteSshKeys.length > 0,
+      hasLocalData: localWorkspaceConnections.length > 0 || localSshKeys.length > 0
+    };
   }
 
   async pushConnectionUpsert(profile: ConnectionProfile): Promise<void> {
@@ -918,15 +1028,62 @@ export class CloudSyncService {
     };
   }
 
+  private shouldKeepLocal(resourceType: PendingMergeDecision["resourceType"], resourceId: string): boolean {
+    if (!this.pendingMergeDecisions?.length) {
+      return false;
+    }
+    return this.pendingMergeDecisions.some(
+      (decision) =>
+        decision.resourceType === resourceType &&
+        decision.resourceId === resourceId &&
+        decision.action === "keep_local"
+    );
+  }
+
+  private queueLocalSeedResources(
+    apiBaseUrl: string,
+    workspaceName: string,
+    remoteConnectionIds: ReadonlySet<string>,
+    deletedConnectionIds: ReadonlySet<string>,
+    remoteSshKeyIds: ReadonlySet<string>,
+    deletedSshKeyIds: ReadonlySet<string>
+  ): void {
+    for (const connection of this.options.listConnections()) {
+      if (!this.isConnectionProfileInScope(connection, workspaceName)) {
+        continue;
+      }
+      if (
+        this.shouldKeepLocal("connection", connection.id) ||
+        (!remoteConnectionIds.has(connection.id) && !deletedConnectionIds.has(connection.id))
+      ) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "connection", connection.id, "upsert");
+      }
+    }
+
+    for (const sshKey of this.options.listSshKeys()) {
+      if (
+        this.shouldKeepLocal("sshKey", sshKey.id) ||
+        (!remoteSshKeyIds.has(sshKey.id) && !deletedSshKeyIds.has(sshKey.id))
+      ) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "sshKey", sshKey.id, "upsert");
+      }
+    }
+  }
+
   private async applySnapshot(
     snapshot: NonNullable<z.infer<typeof pullResponseSchema>["snapshot"]>,
     credentials: CloudSyncCredentials,
     pullStartedAt: string
   ): Promise<void> {
     const { workspacePassword, apiBaseUrl, workspaceName } = credentials;
-    const scopedConnections = snapshot.connections.filter((item) =>
-      isConnectionGroupPathInScope(item.payload.groupPath, workspaceName)
-    );
+    // Double-gate: first filter by workspace scope, then reject anything outside the /workspace zone
+    const scopedConnections = snapshot.connections.filter((item) => {
+      const gp = item.payload.groupPath;
+      if (!isConnectionGroupPathInScope(gp, workspaceName)) return false;
+      // Zone safety: cloud-synced connections MUST live under /workspace
+      const firstSeg = gp.split("/").filter((s: string) => s.length > 0)[0];
+      return firstSeg === "workspace";
+    });
     const scopedDeletedConnections = snapshot.deleted.connections.filter((item) =>
       this.shouldProcessConnectionDeletion(item.id, workspaceName)
     );
@@ -936,6 +1093,11 @@ export class CloudSyncService {
     const deletedSshKeyIds = new Set(snapshot.deleted.sshKeys.map((item) => item.id));
 
     for (const sshKey of snapshot.sshKeys) {
+      if (this.shouldKeepLocal("sshKey", sshKey.payload.id)) {
+        // User chose to keep local version — queue local for push instead
+        this.queuePendingItem(apiBaseUrl, workspaceName, "sshKey", sshKey.payload.id, "upsert");
+        continue;
+      }
       const local = this.options.listSshKeys().find((k) => k.id === sshKey.payload.id);
       if (local && local.updatedAt > pullStartedAt) {
         this.queuePendingItem(apiBaseUrl, workspaceName, "sshKey", sshKey.payload.id, "upsert");
@@ -945,6 +1107,14 @@ export class CloudSyncService {
     }
     for (const connection of scopedConnections) {
       const local = this.options.listConnections().find((c) => c.id === connection.payload.id);
+      if (local && !this.isConnectionProfileInScope(local, workspaceName)) {
+        continue;
+      }
+      if (this.shouldKeepLocal("connection", connection.payload.id)) {
+        // User chose to keep local version — queue local for push instead
+        this.queuePendingItem(apiBaseUrl, workspaceName, "connection", connection.payload.id, "upsert");
+        continue;
+      }
       if (local && local.updatedAt > pullStartedAt) {
         this.queuePendingItem(apiBaseUrl, workspaceName, "connection", connection.payload.id, "upsert");
         continue;
@@ -953,6 +1123,10 @@ export class CloudSyncService {
     }
 
     for (const tombstone of scopedDeletedConnections) {
+      if (this.shouldKeepLocal("connection", tombstone.id)) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "connection", tombstone.id, "upsert");
+        continue;
+      }
       const local = this.options.listConnections().find((connection) => connection.id === tombstone.id);
       if (local && local.updatedAt > pullStartedAt) {
         this.queuePendingItem(apiBaseUrl, workspaceName, "connection", tombstone.id, "upsert");
@@ -961,6 +1135,10 @@ export class CloudSyncService {
       await this.applyRemoteConnectionDelete(tombstone);
     }
     for (const tombstone of snapshot.deleted.sshKeys) {
+      if (this.shouldKeepLocal("sshKey", tombstone.id)) {
+        this.queuePendingItem(apiBaseUrl, workspaceName, "sshKey", tombstone.id, "upsert");
+        continue;
+      }
       const local = this.options.listSshKeys().find((sshKey) => sshKey.id === tombstone.id);
       if (local && local.updatedAt > pullStartedAt) {
         this.queuePendingItem(apiBaseUrl, workspaceName, "sshKey", tombstone.id, "upsert");
@@ -969,8 +1147,24 @@ export class CloudSyncService {
       await this.applyRemoteSshKeyDelete(tombstone);
     }
 
+    if (this.pendingMergeDecisions?.length) {
+      this.queueLocalSeedResources(
+        apiBaseUrl,
+        workspaceName,
+        remoteConnectionIds,
+        deletedConnectionIds,
+        remoteSshKeyIds,
+        deletedSshKeyIds
+      );
+    }
+
+    // When merge decisions are active, don't remove local items not present on remote.
+    // This protects local-only workspace items during the initial merge.
+    const skipOrphanRemoval = Boolean(this.pendingMergeDecisions?.length);
+
     for (const connection of this.options.listConnections()) {
       if (
+        !skipOrphanRemoval &&
         this.isConnectionProfileInScope(connection, workspaceName) &&
         !remoteConnectionIds.has(connection.id) &&
         !deletedConnectionIds.has(connection.id) &&
@@ -982,6 +1176,7 @@ export class CloudSyncService {
     }
     for (const sshKey of this.options.listSshKeys()) {
       if (
+        !skipOrphanRemoval &&
         !remoteSshKeyIds.has(sshKey.id) &&
         !deletedSshKeyIds.has(sshKey.id) &&
         !this.findPendingItem("sshKey", sshKey.id)

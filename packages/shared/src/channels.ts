@@ -68,6 +68,7 @@ export const IPCChannel = {
   CloudSyncSyncNow: "nextshell:cloud-sync:sync-now",
   CloudSyncListConflicts: "nextshell:cloud-sync:list-conflicts",
   CloudSyncResolveConflict: "nextshell:cloud-sync:resolve-conflict",
+  CloudSyncPreviewPull: "nextshell:cloud-sync:preview-pull",
   CloudSyncStatusEvent: "nextshell:cloud-sync:status:event",
   CloudSyncAppliedEvent: "nextshell:cloud-sync:applied:event",
   MasterPasswordSet: "nextshell:master-password:set",

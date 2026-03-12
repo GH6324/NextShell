@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { App as AntdApp, Form, Input, InputNumber, Modal, Radio, Select, Switch, Tooltip, message } from "antd";
+import { App as AntdApp, Form, Input, InputNumber, Modal, Radio, Select, Switch, Tooltip } from "antd";
 import type { ConnectionProfile, ConnectionImportEntry, SshKeyProfile, ProxyProfile } from "@nextshell/core";
 import { CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX, type ConnectionUpsertInput } from "@nextshell/shared";
+import {
+  ZONE_ORDER, ZONE_DISPLAY_NAMES, ZONE_ICONS,
+  CONNECTION_ZONES, extractZone, isValidZone, getSubPath, buildGroupPath,
+  type ConnectionZone
+} from "@nextshell/shared";
 import { DndContext, DragOverlay, PointerSensor, useSensors, useSensor, useDraggable, useDroppable } from "@dnd-kit/core";
 import type { DragStartEvent, DragEndEvent } from "@dnd-kit/core";
 import { SshKeyManagerPanel } from "./SshKeyManagerPanel";
 import { ProxyManagerPanel } from "./ProxyManagerPanel";
 import { ConnectionImportModal } from "./ConnectionImportModal";
+import type { CloudSyncStatusView } from "./settings-center/types";
+import { formatCloudSyncState } from "./settings-center/constants";
+import { useCloudSyncStatus } from "../hooks/useCloudSyncStatus";
 import { formatDateTime, formatRelativeTime } from "../utils/formatTime";
 import { formatErrorMessage } from "../utils/errorMessage";
 
@@ -47,13 +55,15 @@ const sanitizeTextArray = (values: string[] | undefined): string[] => {
     .filter((item) => item.length > 0);
 };
 
+import { enforceZonePrefix } from "@nextshell/shared";
+
 const normalizeGroupPath = (value: string | undefined): string => {
   if (!value) return "/server";
   let path = value.trim().replace(/\\/g, "/");
   if (!path.startsWith("/")) path = "/" + path;
   path = path.replace(/\/+/g, "/");
   if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
-  return path || "/server";
+  return enforceZonePrefix(path || "/server");
 };
 
 type FormTab = "basic" | "property" | "network" | "advanced";
@@ -99,6 +109,10 @@ interface MgrGroupNode {
   key: string;
   label: string;
   children: MgrTreeNode[];
+  /** If set, this node is a fixed zone root */
+  zone?: ConnectionZone;
+  /** Custom icon class for zone nodes */
+  icon?: string;
 }
 
 interface MgrLeafNode {
@@ -116,10 +130,25 @@ const buildManagerTree = (connections: ConnectionProfile[], keyword: string): Mg
   const lower = keyword.toLowerCase().trim();
   const root: MgrGroupNode = { type: "group", key: "root", label: "全部连接", children: [] };
 
-  const ensureGroup = (path: string[]): MgrGroupNode => {
-    let pointer = root;
-    const segments: string[] = [];
-    for (const part of path) {
+  // Create fixed zone nodes
+  const zoneNodes = new Map<string, MgrGroupNode>();
+  for (const zone of ZONE_ORDER) {
+    const node: MgrGroupNode = {
+      type: "group",
+      key: `mgr-group:${zone}`,
+      label: ZONE_DISPLAY_NAMES[zone],
+      children: [],
+      zone,
+      icon: ZONE_ICONS[zone]
+    };
+    zoneNodes.set(zone, node);
+    root.children.push(node);
+  }
+
+  const ensureGroup = (zoneNode: MgrGroupNode, subSegments: string[]): MgrGroupNode => {
+    let pointer = zoneNode;
+    const segments: string[] = [zoneNode.zone!];
+    for (const part of subSegments) {
       segments.push(part);
       const key = `mgr-group:${segments.join("/")}`;
       let next = pointer.children.find(
@@ -137,7 +166,14 @@ const buildManagerTree = (connections: ConnectionProfile[], keyword: string): Mg
   for (const connection of connections) {
     const text = `${connection.name} ${connection.host} ${connection.groupPath} ${connection.tags.join(" ")}`.toLowerCase();
     if (lower && !text.includes(lower)) continue;
-    ensureGroup(groupPathToSegments(connection.groupPath)).children.push({ type: "leaf", connection });
+
+    const segments = groupPathToSegments(connection.groupPath);
+    const zoneName = segments[0] ?? "server";
+    const zone = isValidZone(zoneName) ? zoneName : "server";
+    const zoneNode = zoneNodes.get(zone)!;
+    const subSegments = isValidZone(zoneName) ? segments.slice(1) : segments;
+
+    ensureGroup(zoneNode, subSegments).children.push({ type: "leaf", connection });
   }
 
   return root;
@@ -157,13 +193,17 @@ const countMgrLeaves = (node: MgrGroupNode): number => {
 const MgrGroupRow = ({
   node,
   expanded,
-  onToggle
+  onToggle,
+  cloudSyncStatus
 }: {
   node: MgrGroupNode;
   expanded: boolean;
   onToggle: () => void;
+  cloudSyncStatus?: CloudSyncStatusView;
 }) => {
   const { isOver, setNodeRef } = useDroppable({ id: node.key });
+  const showSyncBadge = node.zone === "workspace" && cloudSyncStatus;
+  const syncState = showSyncBadge ? formatCloudSyncState(cloudSyncStatus.state) : null;
 
   return (
     <button
@@ -176,8 +216,26 @@ const MgrGroupRow = ({
         className={expanded ? "ri-arrow-down-s-line" : "ri-arrow-right-s-line"}
         aria-hidden="true"
       />
-      <i className={isOver ? "ri-folder-open-line" : "ri-folder-3-line"} aria-hidden="true" />
+      <i className={
+        node.icon
+          ? `${node.icon}`
+          : isOver ? "ri-folder-open-line" : "ri-folder-3-line"
+      } aria-hidden="true" />
       <span className="mgr-group-label">{node.label}</span>
+      {showSyncBadge && syncState ? (
+        <span
+          className={`ct-sync-badge ct-sync-badge--${cloudSyncStatus.state}`}
+          title={syncState.label + (cloudSyncStatus.lastError ? `：${cloudSyncStatus.lastError}` : "")}
+        >
+          {cloudSyncStatus.state === "syncing" ? (
+            <i className="ri-loader-4-line ct-sync-spin" aria-hidden="true" />
+          ) : cloudSyncStatus.state === "error" ? (
+            <i className="ri-error-warning-line" aria-hidden="true" />
+          ) : cloudSyncStatus.enabled ? (
+            <i className="ri-check-line" aria-hidden="true" />
+          ) : null}
+        </span>
+      ) : null}
       <span className="mgr-group-count">{countMgrLeaves(node)}</span>
     </button>
   );
@@ -245,7 +303,8 @@ const MgrTreeGroup = ({
   selectedConnectionId,
   selectedExportIds,
   onSelect,
-  onToggleExportSelect
+  onToggleExportSelect,
+  cloudSyncStatus
 }: {
   node: MgrGroupNode;
   depth: number;
@@ -255,6 +314,7 @@ const MgrTreeGroup = ({
   selectedExportIds: Set<string>;
   onSelect: (id: string) => void;
   onToggleExportSelect: (id: string) => void;
+  cloudSyncStatus?: CloudSyncStatusView;
 }) => {
   const isExpanded = expanded.has(node.key);
   return (
@@ -264,6 +324,7 @@ const MgrTreeGroup = ({
           node={node}
           expanded={isExpanded}
           onToggle={() => toggleExpanded(node.key)}
+          cloudSyncStatus={node.zone === "workspace" ? cloudSyncStatus : undefined}
         />
       )}
       {(depth === 0 || isExpanded) && (
@@ -280,6 +341,7 @@ const MgrTreeGroup = ({
                 selectedExportIds={selectedExportIds}
                 onSelect={onSelect}
                 onToggleExportSelect={onToggleExportSelect}
+                cloudSyncStatus={cloudSyncStatus}
               />
             ) : (
               <MgrServerRow
@@ -346,6 +408,8 @@ const DEFAULT_VALUES = {
   backspaceMode: "ascii-backspace" as const,
   deleteMode: "vt220-delete" as const,
   groupPath: "/server",
+  groupZone: CONNECTION_ZONES.SERVER as string,
+  groupSubPath: "",
   tags: [],
   favorite: false,
   monitorSession: true
@@ -367,7 +431,8 @@ export const ConnectionManagerModal = ({
   onReloadSshKeys,
   onReloadProxies
 }: ConnectionManagerModalProps) => {
-  const { modal } = AntdApp.useApp();
+  const { modal, message } = AntdApp.useApp();
+  const cloudSyncStatus = useCloudSyncStatus();
   const [activeTab, setActiveTab] = useState<ManagerTab>("connections");
   const [mode, setMode] = useState<"idle" | "new" | "edit">("idle");
   const [keyword, setKeyword] = useState("");
@@ -393,6 +458,10 @@ export const ConnectionManagerModal = ({
     () => buildManagerTree(connections, keyword),
     [connections, keyword]
   );
+  const hasVisibleConnections = useMemo(
+    () => countMgrLeaves(tree) > 0,
+    [tree]
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -400,7 +469,7 @@ export const ConnectionManagerModal = ({
     form.setFieldsValue(DEFAULT_VALUES);
     setSelectedConnectionId(undefined);
     setSelectedExportIds(new Set());
-    setExpanded(new Set(["root"]));
+    setExpanded(new Set(["root", ...ZONE_ORDER.map((z) => `mgr-group:${z}`)]));
     setMode("idle");
     setFormTab("basic");
     setKeyword("");
@@ -485,7 +554,9 @@ export const ConnectionManagerModal = ({
   }, [connections, selectedExportIds.size]);
 
   const applyConnectionToForm = useCallback((connection: ConnectionProfile) => {
-    form.setFieldsValue({
+    const connZone = extractZone(connection.groupPath);
+    const connSubPath = getSubPath(connection.groupPath);
+    (form as any).setFieldsValue({
       id: connection.id,
       name: connection.name,
       host: connection.host,
@@ -502,6 +573,8 @@ export const ConnectionManagerModal = ({
       backspaceMode: connection.backspaceMode,
       deleteMode: connection.deleteMode,
       groupPath: connection.groupPath,
+      groupZone: isValidZone(connZone) ? connZone : CONNECTION_ZONES.SERVER,
+      groupSubPath: connSubPath,
       tags: connection.tags,
       notes: connection.notes,
       favorite: connection.favorite,
@@ -582,10 +655,13 @@ export const ConnectionManagerModal = ({
     setSelectedConnectionId(undefined);
   }, []);
 
-  const saveConnection = useCallback(async (values: ConnectionUpsertInput): Promise<string | undefined> => {
+  const saveConnection = useCallback(async (values: ConnectionUpsertInput & { groupZone?: string; groupSubPath?: string }): Promise<string | undefined> => {
     const password = sanitizeOptionalText(values.password);
     const hostFingerprint = sanitizeOptionalText(values.hostFingerprint);
-    const groupPath = normalizeGroupPath(values.groupPath);
+    // Combine zone selector + sub-path into the final groupPath
+    const zone = (values.groupZone && isValidZone(values.groupZone) ? values.groupZone : CONNECTION_ZONES.SERVER) as ConnectionZone;
+    const subPath = values.groupSubPath ?? "";
+    const groupPath = normalizeGroupPath(buildGroupPath(zone, subPath));
     const tags = sanitizeTextArray(values.tags);
     const notes = sanitizeOptionalText(values.notes);
     // InputNumber may return null when cleared; coerce safely
@@ -737,11 +813,18 @@ export const ConnectionManagerModal = ({
     const targetPath = groupKeyToPath(overId);
     if (targetPath === conn.groupPath) return;
 
+    // Enforce zone prefix on the target path
+    const safePath = enforceZonePrefix(targetPath);
+
     try {
-      await onConnectionSaved(toQuickUpsertInput(conn, { groupPath: targetPath }));
-      message.success(`已移动到 ${targetPath}`);
+      await onConnectionSaved(toQuickUpsertInput(conn, { groupPath: safePath }));
+      const targetZone = extractZone(safePath);
+      const displayName = isValidZone(targetZone) ? ZONE_DISPLAY_NAMES[targetZone] : targetZone;
+      message.success(`已移动到 ${displayName}${getSubPath(safePath) || ""}`);
       if (selectedConnectionId === conn.id) {
-        form.setFieldValue("groupPath", targetPath);
+        form.setFieldValue("groupPath", safePath);
+        (form as any).setFieldValue("groupZone", isValidZone(targetZone) ? targetZone : CONNECTION_ZONES.SERVER);
+        (form as any).setFieldValue("groupSubPath", getSubPath(safePath));
       }
     } catch (error) {
       message.error(`移动连接失败：${formatErrorMessage(error, "请稍后重试")}`);
@@ -1306,7 +1389,7 @@ export const ConnectionManagerModal = ({
             onDragEnd={(e) => void handleDragEnd(e)}
           >
           <MgrRootDropZone>
-            {tree.children.length === 0 ? (
+            {!hasVisibleConnections ? (
               <div className="mgr-tree-empty">
                 {keyword ? (
                   <>
@@ -1330,6 +1413,7 @@ export const ConnectionManagerModal = ({
                 selectedExportIds={selectedExportIds}
                 onSelect={handleSelect}
                 onToggleExportSelect={handleToggleExportSelect}
+                cloudSyncStatus={cloudSyncStatus}
               />
             )}
           </MgrRootDropZone>
@@ -1708,12 +1792,25 @@ export const ConnectionManagerModal = ({
 
                 {/* ── Tab: 属性 ──── */}
                 <div style={{ display: formTab === "property" ? "" : "none" }}>
-                    <Form.Item label="分组路径" name="groupPath">
-                      <Input
-                        placeholder="/server/production"
-                        prefix={<i className="ri-folder-3-line" style={{ color: "var(--t3)", fontSize: 13 }} />}
-                        style={{ fontFamily: "var(--mono)" }}
-                      />
+                    <Form.Item label="分组路径" required>
+                      <div className="flex gap-2 items-start">
+                        <Form.Item name="groupZone" noStyle>
+                          <Select
+                            style={{ width: 120, flexShrink: 0 }}
+                            options={ZONE_ORDER.map((z) => ({
+                              label: ZONE_DISPLAY_NAMES[z],
+                              value: z
+                            }))}
+                          />
+                        </Form.Item>
+                        <Form.Item name="groupSubPath" noStyle>
+                          <Input
+                            placeholder="/production"
+                            prefix={<i className="ri-folder-3-line" style={{ color: "var(--t3)", fontSize: 13 }} />}
+                            style={{ fontFamily: "var(--mono)" }}
+                          />
+                        </Form.Item>
+                      </div>
                     </Form.Item>
 
                     <div className="flex gap-3 items-start">
