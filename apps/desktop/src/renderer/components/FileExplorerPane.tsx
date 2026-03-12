@@ -15,6 +15,7 @@ import {
   extractDroppedFilePaths,
   isExternalFileDrag
 } from "../utils/sftpFileDrop";
+import { getVisibleFileExplorerToolbarActions } from "./FileExplorerPane.toolbar";
 
 interface FileExplorerPaneProps {
   connection?: ConnectionProfile;
@@ -410,6 +411,10 @@ export const FileExplorerPane = ({
   onOpenEditorTab
 }: FileExplorerPaneProps) => {
   const { message, modal } = AntdApp.useApp();
+  const visibleToolbarActions = useMemo(
+    () => new Set(getVisibleFileExplorerToolbarActions()),
+    []
+  );
   const preferences = usePreferencesStore((state) => state.preferences);
   const updatePreferences = usePreferencesStore((state) => state.updatePreferences);
   const enqueueTask = useTransferQueueStore((state) => state.enqueueTask);
@@ -1515,118 +1520,85 @@ export const FileExplorerPane = ({
             />
           </div>
           <div className="fe-actions">
-            <Tooltip title="打开设置中心">
-              <button className="fe-icon-btn" onClick={onOpenSettings} aria-label="打开设置中心">
-                <i className="ri-settings-3-line" aria-hidden="true" />
-              </button>
-            </Tooltip>
-            <span className="w-px h-4 bg-[var(--border)] mx-[3px] shrink-0" />
-            <Tooltip title="跟随终端目录">
-              <span className="inline-flex">
-                <button
-                  className={`fe-icon-btn${followCwd ? " active" : ""}`}
-                  aria-label="跟随终端目录"
-                  onClick={() => {
-                    if (!connection?.monitorSession) {
-                      message.info({
-                        content: "该功能依赖监控会话开关，请先在服务器设置中启用监控会话。",
-                        duration: 3
-                      });
-                      return;
-                    }
-                    if (!followSessionId) {
-                      message.info({
-                        content: "当前连接暂无可跟随的远程终端。",
-                        duration: 2
-                      });
-                      return;
-                    }
-                    setFollowCwd((v) => {
-                      const next = !v;
-                      if (next) {
-                        followCwdLastRef.current = null;
-                        message.info({ content: "已启用跟随终端目录", duration: 2 });
-                      } else {
-                        message.info({ content: "已关闭跟随终端目录", duration: 2 });
+            {visibleToolbarActions.has("follow-cwd") && (
+              <Tooltip title="跟随终端目录">
+                <span className="inline-flex">
+                  <button
+                    className={`fe-icon-btn${followCwd ? " active" : ""}`}
+                    aria-label="跟随终端目录"
+                    onClick={() => {
+                      if (!connection?.monitorSession) {
+                        message.info({
+                          content: "该功能依赖监控会话开关，请先在服务器设置中启用监控会话。",
+                          duration: 3
+                        });
+                        return;
                       }
-                      return next;
-                    });
-                  }}
-                  disabled={!connection || !connected}
-                >
-                  <i className="ri-terminal-line" aria-hidden="true" />
-                </button>
-              </span>
-            </Tooltip>
-            <Tooltip title="刷新">
-              <button className="fe-icon-btn" onClick={() => void loadFiles()} disabled={busy} aria-label="刷新"><i className="ri-refresh-line" aria-hidden="true" /></button>
-            </Tooltip>
-            <Tooltip title="后退">
-              <button className="fe-icon-btn" onClick={goBack} disabled={historyIndex <= 0} aria-label="后退"><i className="ri-arrow-left-s-line" aria-hidden="true" /></button>
-            </Tooltip>
-            <Tooltip title="前进">
-              <button className="fe-icon-btn" onClick={goForward} disabled={historyIndex >= pathHistory.length - 1} aria-label="前进"><i className="ri-arrow-right-s-line" aria-hidden="true" /></button>
-            </Tooltip>
-            <Tooltip title="上级目录">
-              <button className="fe-icon-btn" onClick={toParentPath} disabled={pathName === "/" || busy} aria-label="上级目录"><i className="ri-arrow-up-s-line" aria-hidden="true" /></button>
-            </Tooltip>
+                      if (!followSessionId) {
+                        message.info({
+                          content: "当前连接暂无可跟随的远程终端。",
+                          duration: 2
+                        });
+                        return;
+                      }
+                      setFollowCwd((v) => {
+                        const next = !v;
+                        if (next) {
+                          followCwdLastRef.current = null;
+                          message.info({ content: "已启用跟随终端目录", duration: 2 });
+                        } else {
+                          message.info({ content: "已关闭跟随终端目录", duration: 2 });
+                        }
+                        return next;
+                      });
+                    }}
+                    disabled={!connection || !connected}
+                  >
+                    <i className="ri-terminal-line" aria-hidden="true" />
+                  </button>
+                </span>
+              </Tooltip>
+            )}
+            {visibleToolbarActions.has("refresh") && (
+              <Tooltip title="刷新">
+                <button className="fe-icon-btn" onClick={() => void loadFiles()} disabled={busy} aria-label="刷新"><i className="ri-refresh-line" aria-hidden="true" /></button>
+              </Tooltip>
+            )}
+            {visibleToolbarActions.has("back") && (
+              <Tooltip title="后退">
+                <button className="fe-icon-btn" onClick={goBack} disabled={historyIndex <= 0} aria-label="后退"><i className="ri-arrow-left-s-line" aria-hidden="true" /></button>
+              </Tooltip>
+            )}
+            {visibleToolbarActions.has("forward") && (
+              <Tooltip title="前进">
+                <button className="fe-icon-btn" onClick={goForward} disabled={historyIndex >= pathHistory.length - 1} aria-label="前进"><i className="ri-arrow-right-s-line" aria-hidden="true" /></button>
+              </Tooltip>
+            )}
+            {visibleToolbarActions.has("parent") && (
+              <Tooltip title="上级目录">
+                <button className="fe-icon-btn" onClick={toParentPath} disabled={pathName === "/" || busy} aria-label="上级目录"><i className="ri-arrow-up-s-line" aria-hidden="true" /></button>
+              </Tooltip>
+            )}
             <span className="w-px h-4 bg-[var(--border)] mx-[3px] shrink-0" />
-            <Tooltip title="上传">
-              <button className="fe-icon-btn" onClick={() => void handleUpload()} disabled={busy} aria-label="上传"><i className="ri-upload-2-line" aria-hidden="true" /></button>
-            </Tooltip>
-            <Tooltip title="打包上传（自动解包）">
-              <button className="fe-icon-btn" onClick={() => void handlePackedUpload()} disabled={busy} aria-label="打包上传"><i className="ri-inbox-archive-line" aria-hidden="true" /></button>
-            </Tooltip>
-            <Tooltip title={`下载到默认目录（${preferences.transfer.downloadDefaultDir}）`}>
-              <span className="inline-flex">
-                <button
-                  className="fe-icon-btn"
-                  aria-label="下载到默认目录"
-                  onClick={() => void handleDownload(selectedEntries)}
-                  disabled={selectedEntries.length === 0 || busy}
-                >
-                  <i className="ri-download-2-line" aria-hidden="true" />
-                </button>
-              </span>
-            </Tooltip>
-            <Tooltip title={`打包下载到默认目录（${preferences.transfer.downloadDefaultDir}）`}>
-              <span className="inline-flex">
-                <button
-                  className="fe-icon-btn"
-                  aria-label="打包下载到默认目录"
-                  onClick={() => void handlePackedDownload(selectedEntries)}
-                  disabled={selectedEntries.length === 0 || busy}
-                >
-                  <i className="ri-file-zip-line" aria-hidden="true" />
-                </button>
-              </span>
-            </Tooltip>
-            <Tooltip title="下载到...">
-              <span className="inline-flex">
-                <button
-                  className="fe-icon-btn"
-                  aria-label="下载到..."
-                  onClick={() => void handleDownloadTo(selectedEntries)}
-                  disabled={selectedEntries.length === 0 || busy}
-                >
-                  <i className="ri-folder-open-line" aria-hidden="true" />
-                </button>
-              </span>
-            </Tooltip>
-            <span className="w-px h-4 bg-[var(--border)] mx-[3px] shrink-0" />
-            <Tooltip title="新建目录">
-              <button className="fe-icon-btn" onClick={() => void handleCreateDirectory()} disabled={busy} aria-label="新建目录"><i className="ri-folder-add-line" aria-hidden="true" /></button>
-            </Tooltip>
-            <Tooltip title="重命名">
-              <span className="inline-flex">
-                <button className="fe-icon-btn" onClick={() => void handleRename()} disabled={!singleSelected || busy} aria-label="重命名"><i className="ri-edit-line" aria-hidden="true" /></button>
-              </span>
-            </Tooltip>
-            <Tooltip title="删除">
-              <span className="inline-flex">
-                <button className="fe-icon-btn danger" onClick={() => handleDelete()} disabled={selectedEntries.length === 0 || busy} aria-label="删除"><i className="ri-delete-bin-6-line" aria-hidden="true" /></button>
-              </span>
-            </Tooltip>
+            {visibleToolbarActions.has("mkdir") && (
+              <Tooltip title="新建目录">
+                <button className="fe-icon-btn" onClick={() => void handleCreateDirectory()} disabled={busy} aria-label="新建目录"><i className="ri-folder-add-line" aria-hidden="true" /></button>
+              </Tooltip>
+            )}
+            {visibleToolbarActions.has("rename") && (
+              <Tooltip title="重命名">
+                <span className="inline-flex">
+                  <button className="fe-icon-btn" onClick={() => void handleRename()} disabled={!singleSelected || busy} aria-label="重命名"><i className="ri-edit-line" aria-hidden="true" /></button>
+                </span>
+              </Tooltip>
+            )}
+            {visibleToolbarActions.has("delete") && (
+              <Tooltip title="删除">
+                <span className="inline-flex">
+                  <button className="fe-icon-btn danger" onClick={() => handleDelete()} disabled={selectedEntries.length === 0 || busy} aria-label="删除"><i className="ri-delete-bin-6-line" aria-hidden="true" /></button>
+                </span>
+              </Tooltip>
+            )}
             {clipboard && (
               <>
                 <span className="w-px h-4 bg-[var(--border)] mx-[3px] shrink-0" />
