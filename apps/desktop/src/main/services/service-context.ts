@@ -111,8 +111,7 @@ export interface ServiceContext {
   }) => void;
   getAppPreferences: () => AppPreferences;
   saveAppPreferencesPatch: (
-    patch: SettingsUpdateInput,
-    options?: { reconfigureCloudSync?: boolean }
+    patch: SettingsUpdateInput
   ) => AppPreferences;
 
   // ─── IPC Helpers ────────────────────────────────────────────────────────

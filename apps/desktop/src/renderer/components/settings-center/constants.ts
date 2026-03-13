@@ -1,8 +1,4 @@
-import type { CloudSyncConflictItem } from "@nextshell/shared";
 import type {
-  CloudSyncRuntimeState,
-  CloudSyncStatusView,
-  CloudSyncApi,
   LocalShellMode,
   LocalShellPreset,
   LocalShellPreference,
@@ -16,8 +12,7 @@ export const SECTIONS: Array<{ key: SettingsSection; label: string; icon: string
   { key: "command", label: "命令中心", icon: "ri-terminal-box-line" },
   { key: "terminal", label: "终端主题", icon: "ri-palette-line" },
   { key: "network", label: "网络工具", icon: "ri-route-line" },
-  { key: "cloudSync", label: "云同步", icon: "ri-repeat-2-line" },
-  { key: "cloudSyncV2", label: "多工作区同步", icon: "ri-git-merge-line" },
+  { key: "cloudSync", label: "云同步", icon: "ri-git-merge-line" },
   { key: "recycleBin", label: "回收站", icon: "ri-delete-bin-line" },
   { key: "backup", label: "云存档", icon: "ri-cloud-line" },
   { key: "security", label: "安全与审计", icon: "ri-shield-keyhole-line" },
@@ -61,20 +56,6 @@ export const DEFAULT_LOCAL_SHELL: LocalShellPreference = {
   mode: "preset",
   preset: "system",
   customPath: ""
-};
-
-export const DEFAULT_CLOUD_SYNC_STATUS: CloudSyncStatusView = {
-  enabled: false,
-  state: "disabled",
-  apiBaseUrl: "",
-  workspaceName: "",
-  pullIntervalSec: 60,
-  ignoreTlsErrors: false,
-  lastSyncAt: null,
-  lastError: null,
-  keytarAvailable: null,
-  pendingCount: 0,
-  conflictCount: 0
 };
 
 export const isLocalShellMode = (value: unknown): value is LocalShellMode =>
@@ -205,151 +186,3 @@ export const truncateCommand = (cmd: string, maxLen = 80): string => {
   return cmd.length > maxLen ? `${cmd.slice(0, maxLen)}…` : cmd;
 };
 
-export const getCloudSyncApi = (): CloudSyncApi | undefined =>
-  (window.nextshell as typeof window.nextshell & { cloudSync?: CloudSyncApi }).cloudSync;
-
-export const readCloudSyncError = (value: unknown): string | null => {
-  if (!value) {
-    return null;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (isRecord(value) && typeof value.message === "string") {
-    const trimmed = value.message.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  return null;
-};
-
-export const normalizeCloudSyncStatus = (
-  value: unknown,
-  fallback: CloudSyncStatusView = DEFAULT_CLOUD_SYNC_STATUS
-): CloudSyncStatusView => {
-  const payload =
-    isRecord(value) && "status" in value
-      ? value.status
-      : value;
-
-  if (!isRecord(payload)) {
-    return fallback;
-  }
-
-  const capabilities = isRecord(payload.capabilities) ? payload.capabilities : undefined;
-  const nextEnabled =
-    typeof payload.enabled === "boolean"
-      ? payload.enabled
-      : fallback.enabled;
-  const nextState =
-    typeof payload.state === "string"
-      ? payload.state
-      : typeof payload.status === "string"
-        ? payload.status
-        : nextEnabled
-          ? "idle"
-          : "disabled";
-
-  return {
-    enabled: nextEnabled,
-    state: nextState,
-    apiBaseUrl:
-      typeof payload.apiBaseUrl === "string"
-        ? payload.apiBaseUrl
-        : fallback.apiBaseUrl,
-    workspaceName:
-      typeof payload.workspaceName === "string"
-        ? payload.workspaceName
-        : fallback.workspaceName,
-    pullIntervalSec:
-      typeof payload.pullIntervalSec === "number" && Number.isFinite(payload.pullIntervalSec)
-        ? payload.pullIntervalSec
-        : fallback.pullIntervalSec,
-    ignoreTlsErrors:
-      typeof payload.ignoreTlsErrors === "boolean"
-        ? payload.ignoreTlsErrors
-        : fallback.ignoreTlsErrors,
-    lastSyncAt:
-      typeof payload.lastSyncAt === "string"
-        ? payload.lastSyncAt
-        : payload.lastSyncAt === null
-          ? null
-          : fallback.lastSyncAt,
-    lastError:
-      readCloudSyncError(payload.lastError) ??
-      readCloudSyncError(payload.error) ??
-      fallback.lastError,
-    keytarAvailable:
-      typeof payload.keytarAvailable === "boolean"
-        ? payload.keytarAvailable
-        : typeof capabilities?.keytarAvailable === "boolean"
-          ? capabilities.keytarAvailable
-          : fallback.keytarAvailable,
-    pendingCount:
-      typeof payload.pendingCount === "number" && Number.isFinite(payload.pendingCount)
-        ? Math.max(0, Math.round(payload.pendingCount))
-        : fallback.pendingCount,
-    conflictCount:
-      typeof payload.conflictCount === "number" && Number.isFinite(payload.conflictCount)
-        ? Math.max(0, Math.round(payload.conflictCount))
-        : fallback.conflictCount
-  };
-};
-
-export const normalizeCloudSyncConflicts = (value: unknown): CloudSyncConflictItem[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) {
-      return [];
-    }
-    const resourceType = entry.resourceType;
-    const resourceId = entry.resourceId;
-    const displayName = entry.displayName;
-    if (
-      (resourceType !== "connection" && resourceType !== "sshKey" && resourceType !== "proxy") ||
-      typeof resourceId !== "string" ||
-      typeof displayName !== "string"
-    ) {
-      return [];
-    }
-
-    return [{
-      resourceType,
-      resourceId,
-      displayName,
-      localUpdatedAt: typeof entry.localUpdatedAt === "string" ? entry.localUpdatedAt : null,
-      serverUpdatedAt: typeof entry.serverUpdatedAt === "string" ? entry.serverUpdatedAt : null,
-      serverDeleted: Boolean(entry.serverDeleted),
-      hasPendingLocalChange: Boolean(entry.hasPendingLocalChange)
-    }];
-  });
-};
-
-export const formatCloudSyncState = (state: CloudSyncRuntimeState): { color: string; label: string } => {
-  switch (state) {
-    case "syncing":
-      return { color: "processing", label: "同步中" };
-    case "error":
-      return { color: "error", label: "异常" };
-    case "disabled":
-      return { color: "default", label: "未启用" };
-    case "idle":
-      return { color: "success", label: "运行中" };
-    default:
-      return { color: "default", label: state || "未知" };
-  }
-};
-
-export const formatCloudSyncTime = (value: string | null): string => {
-  if (!value) {
-    return "尚未同步";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString();
-};

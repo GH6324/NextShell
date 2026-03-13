@@ -37,13 +37,6 @@ const isLocalSession = (session?: SessionDescriptor): boolean =>
 const getSessionConnectionId = (session?: SessionDescriptor): string | undefined =>
   (session as LocalAwareSessionDescriptor | undefined)?.connectionId;
 
-type CloudSyncApi = {
-  onApplied?: (listener: (_event: unknown) => void) => (() => void) | void;
-};
-
-const getCloudSyncApi = (): CloudSyncApi | undefined =>
-  (window.nextshell as typeof window.nextshell & { cloudSync?: CloudSyncApi }).cloudSync;
-
 export const App = () => {
   const {
     connections,
@@ -255,23 +248,6 @@ export const App = () => {
     });
     return () => { unsubscribe(); };
   }, [applyTransferEvent]);
-
-  useEffect(() => {
-    const cloudSync = getCloudSyncApi();
-    if (!cloudSync?.onApplied) {
-      return;
-    }
-
-    const unsubscribe = cloudSync.onApplied(() => {
-      void refreshSyncResources();
-    });
-
-    return () => {
-      if (typeof unsubscribe === "function") {
-        unsubscribe();
-      }
-    };
-  }, [refreshSyncResources]);
 
   const connectActiveConnection = useCallback(async () => {
     if (!activeConnectionId) {

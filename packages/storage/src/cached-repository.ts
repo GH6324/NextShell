@@ -21,7 +21,6 @@ import { randomUUID } from "node:crypto";
 import {
   MAX_COMMAND_HISTORY_ENTRIES,
   type AppPreferences,
-  type CloudSyncResourceSyncState,
   type CloudSyncResourceStateV2,
   type CloudSyncPendingOp,
   type CloudSyncWorkspaceProfile,
@@ -247,28 +246,6 @@ export class CachedConnectionRepository implements ConnectionRepository {
 
   removeSetting(key: string): void {
     this.inner.removeSetting(key);
-  }
-
-  listCloudSyncResourceStates(): CloudSyncResourceSyncState[] {
-    return this.inner.listCloudSyncResourceStates();
-  }
-
-  getCloudSyncResourceState(
-    resourceType: CloudSyncResourceSyncState["resourceType"],
-    resourceId: string
-  ): CloudSyncResourceSyncState | undefined {
-    return this.inner.getCloudSyncResourceState(resourceType, resourceId);
-  }
-
-  saveCloudSyncResourceState(state: CloudSyncResourceSyncState): void {
-    this.inner.saveCloudSyncResourceState(state);
-  }
-
-  removeCloudSyncResourceState(
-    resourceType: CloudSyncResourceSyncState["resourceType"],
-    resourceId: string
-  ): void {
-    this.inner.removeCloudSyncResourceState(resourceType, resourceId);
   }
 
   // ── Cloud Sync v2 pass-through ──

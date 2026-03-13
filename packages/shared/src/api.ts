@@ -29,17 +29,6 @@ import type {
   AppPreferencesPatchInput,
   AuditClearInput,
   AuditListInput,
-  CloudSyncAppliedEvent,
-  CloudSyncConflictItem,
-  CloudSyncConfigureInput,
-  CloudSyncDisableInput,
-  CloudSyncListConflictsInput,
-  CloudSyncPreviewPullInput,
-  CloudSyncPreviewResult,
-  CloudSyncResolveConflictInput,
-  CloudSyncStatus,
-  CloudSyncStatusQueryInput,
-  CloudSyncSyncNowInput,
   DebugLogEntry,
   BackupListInput,
   BackupPasswordClearRememberedInput,
@@ -129,11 +118,11 @@ import type {
   UpdateCheckResult,
   PingRequestInput,
   PingResult,
-  CloudSyncV2WorkspaceAddInput,
-  CloudSyncV2WorkspaceUpdateInput,
-  CloudSyncV2WorkspaceRemoveInput,
-  CloudSyncV2SyncNowInput,
-  CloudSyncV2ResolveConflictInput,
+  CloudSyncWorkspaceAddInput,
+  CloudSyncWorkspaceUpdateInput,
+  CloudSyncWorkspaceRemoveInput,
+  CloudSyncSyncNowInput,
+  CloudSyncResolveConflictInput,
   ResourceCopyConnectionInput,
   ResourceDangerMoveConnectionInput,
   ResourceDeleteConnectionInput,
@@ -262,15 +251,16 @@ export interface NextShellApi {
     }>;
   };
   cloudSync: {
-    configure: (payload: CloudSyncConfigureInput) => Promise<CloudSyncStatus>;
-    disable: (payload?: CloudSyncDisableInput) => Promise<{ ok: true }>;
-    status: (payload?: CloudSyncStatusQueryInput) => Promise<CloudSyncStatus>;
+    workspaceList: () => Promise<CloudSyncWorkspaceProfile[]>;
+    workspaceAdd: (payload: CloudSyncWorkspaceAddInput) => Promise<CloudSyncWorkspaceProfile>;
+    workspaceUpdate: (payload: CloudSyncWorkspaceUpdateInput) => Promise<CloudSyncWorkspaceProfile>;
+    workspaceRemove: (payload: CloudSyncWorkspaceRemoveInput) => Promise<{ ok: true }>;
+    status: () => Promise<{ workspaces: Array<{ workspaceId: string; state: string; lastSyncAt: string | null; lastError: string | null; pendingCount: number; conflictCount: number; currentVersion: number | null }> }>;
     syncNow: (payload?: CloudSyncSyncNowInput) => Promise<{ ok: true }>;
-    previewPull: (payload: CloudSyncPreviewPullInput) => Promise<CloudSyncPreviewResult>;
-    listConflicts: (payload?: CloudSyncListConflictsInput) => Promise<CloudSyncConflictItem[]>;
+    listConflicts: () => Promise<Array<{ workspaceId: string; workspaceName: string; resourceType: string; resourceId: string; displayName: string; serverRevision: number; conflictRemoteRevision: number; conflictRemoteDeleted: boolean; conflictDetectedAt: string }>>;
     resolveConflict: (payload: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
-    onStatus: (listener: (event: CloudSyncStatus) => void) => SessionEventUnsubscribe;
-    onApplied: (listener: (event: CloudSyncAppliedEvent) => void) => SessionEventUnsubscribe;
+    onStatus: (listener: (event: unknown) => void) => SessionEventUnsubscribe;
+    onApplied: (listener: (event: { workspaceId: string }) => void) => SessionEventUnsubscribe;
   };
   masterPassword: {
     setPassword: (payload: MasterPasswordSetInput) => Promise<{ ok: true }>;
@@ -310,18 +300,6 @@ export interface NextShellApi {
     enableLog: () => Promise<{ ok: true }>;
     disableLog: () => Promise<{ ok: true }>;
     onLogEvent: (listener: (entry: DebugLogEntry) => void) => SessionEventUnsubscribe;
-  };
-  cloudSyncV2: {
-    workspaceList: () => Promise<CloudSyncWorkspaceProfile[]>;
-    workspaceAdd: (payload: CloudSyncV2WorkspaceAddInput) => Promise<CloudSyncWorkspaceProfile>;
-    workspaceUpdate: (payload: CloudSyncV2WorkspaceUpdateInput) => Promise<CloudSyncWorkspaceProfile>;
-    workspaceRemove: (payload: CloudSyncV2WorkspaceRemoveInput) => Promise<{ ok: true }>;
-    status: () => Promise<{ workspaces: Array<{ workspaceId: string; state: string; lastSyncAt: string | null; lastError: string | null; pendingCount: number; conflictCount: number; currentVersion: number | null }> }>;
-    syncNow: (payload?: CloudSyncV2SyncNowInput) => Promise<{ ok: true }>;
-    listConflicts: () => Promise<Array<{ workspaceId: string; workspaceName: string; resourceType: string; resourceId: string; displayName: string; serverRevision: number; conflictRemoteRevision: number; conflictRemoteDeleted: boolean; conflictDetectedAt: string }>>;
-    resolveConflict: (payload: CloudSyncV2ResolveConflictInput) => Promise<{ ok: true }>;
-    onStatus: (listener: (event: unknown) => void) => SessionEventUnsubscribe;
-    onApplied: (listener: (event: { workspaceId: string }) => void) => SessionEventUnsubscribe;
   };
   resourceOps: {
     copyConnection: (payload: ResourceCopyConnectionInput) => Promise<ConnectionProfile>;

@@ -56,7 +56,6 @@ import { CommandService } from "./command-service";
 import { BackupPasswordService } from "./backup-password-service";
 import { ConnectionService } from "./connection-service";
 import { ImportExportService } from "./import-export-service";
-import { CloudSyncBridge } from "./cloud-sync-bridge";
 import { CloudSyncManager } from "./cloud-sync-manager";
 import { ResourceOperationsService } from "./resource-operations-service";
 import { MonitorService } from "./monitor-service";
@@ -350,7 +349,6 @@ export const createServiceContainer = (
   const prefsSvc = new PreferencesDialogService({
     connections,
     auditEnabledForSession,
-    getCloudSyncService: () => cloudSyncBridge?.getService(),
   });
 
   const networkToolSvc = new NetworkToolService({ connections });
@@ -385,7 +383,6 @@ export const createServiceContainer = (
     monitorStates: monitorSvc.monitorStates,
     appendAuditLogIfEnabled,
     sendSessionStatus,
-    getCloudSyncService: () => cloudSyncBridge?.getService(),
   });
 
   const backupPasswordSvc = new BackupPasswordService({
@@ -425,30 +422,7 @@ export const createServiceContainer = (
     persistAuthOverride: (id, override) => connectionSvc.persistSuccessfulAuthOverride(id, override),
   });
 
-  // Cloud sync bridge (needs connectionSvc methods)
-  let cloudSyncBridge: CloudSyncBridge | undefined = new CloudSyncBridge({
-    keytarServiceName,
-    getAppPreferences: () => prefsSvc.getAppPreferences(),
-    saveAppPreferencesPatch: (patch, opts) => prefsSvc.saveAppPreferencesPatch(patch, opts),
-    vault,
-    listConnections: () => connections.list({}),
-    listSshKeys: () => connectionSvc.listSshKeys(),
-    listProxies: () => connectionSvc.listProxies(),
-    applyConnectionFromCloudSync: (input) => connectionSvc.applyConnectionFromCloudSync(input),
-    applySshKeyFromCloudSync: (input) => connectionSvc.applySshKeyFromCloudSync(input),
-    applyProxyFromCloudSync: (input) => connectionSvc.applyProxyFromCloudSync(input),
-    removeConnectionFromCloudSync: async (id) => { await connectionSvc.removeConnectionRecord(id, { skipAudit: true }); },
-    removeSshKeyFromCloudSync: async (id) => { await connectionSvc.removeSshKeyRecord({ id, force: true }); },
-    removeProxyFromCloudSync: async (id) => { await connectionSvc.removeProxyRecord({ id, force: true }); },
-    migrateConnectionGroupPath: (id, newGroupPath) => {
-      const conn = connections.getById(id);
-      if (conn) connections.save({ ...conn, groupPath: newGroupPath });
-    },
-    broadcastToAllWindows,
-    connections,
-  });
-
-  // Cloud Sync v2 Manager
+  // Cloud Sync Manager
   const cloudSyncManager = new CloudSyncManager({
     listConnections: () => connections.list({}),
     saveConnection: (conn) => connections.save(conn),
@@ -481,8 +455,8 @@ export const createServiceContainer = (
     deleteWorkspacePassword: async (wId) => {
       await vault.deleteCredential(`cloud-sync-ws-${wId}`).catch(() => {});
     },
-    broadcastStatus: (status) => broadcastToAllWindows(IPCChannel.CloudSyncV2StatusEvent, status),
-    broadcastApplied: (wId) => broadcastToAllWindows(IPCChannel.CloudSyncV2AppliedEvent, { workspaceId: wId }),
+    broadcastStatus: (status) => broadcastToAllWindows(IPCChannel.CloudSyncStatusEvent, status),
+    broadcastApplied: (wId) => broadcastToAllWindows(IPCChannel.CloudSyncAppliedEvent, { workspaceId: wId }),
   });
   cloudSyncManager.initialize();
 
@@ -509,7 +483,6 @@ export const createServiceContainer = (
 
     await remoteEditManager.dispose();
     networkToolSvc.tracerouteStop();
-    cloudSyncBridge?.dispose();
     cloudSyncManager.dispose();
 
     const sessionIds = Array.from(activeSessions.keys());
@@ -630,23 +603,14 @@ export const createServiceContainer = (
     disableDebugLog: (s) => prefsSvc.disableDebugLog(s),
 
     // Cloud Sync
-    cloudSyncConfigure: (i) => cloudSyncBridge!.configure(i),
-    cloudSyncDisable: () => cloudSyncBridge!.disable(),
-    cloudSyncStatus: () => cloudSyncBridge!.status(),
-    cloudSyncSyncNow: () => cloudSyncBridge!.syncNow(),
-    cloudSyncPreviewPull: (i) => cloudSyncBridge!.previewPull(i),
-    cloudSyncListConflicts: () => cloudSyncBridge!.listConflicts(),
-    cloudSyncResolveConflict: (i) => cloudSyncBridge!.resolveConflict(i),
-
-    // Cloud Sync v2
-    cloudSyncV2WorkspaceList: () => cloudSyncManager.listWorkspaces(),
-    cloudSyncV2WorkspaceAdd: (i) => cloudSyncManager.addWorkspace(i),
-    cloudSyncV2WorkspaceUpdate: (i) => cloudSyncManager.updateWorkspace({ ...i, id: i.id }),
-    cloudSyncV2WorkspaceRemove: (i) => cloudSyncManager.removeWorkspace(i.id),
-    cloudSyncV2Status: () => cloudSyncManager.getStatus(),
-    cloudSyncV2SyncNow: (i) => cloudSyncManager.syncNow(i.workspaceId),
-    cloudSyncV2ListConflicts: () => cloudSyncManager.listConflicts(),
-    cloudSyncV2ResolveConflict: (i) => cloudSyncManager.resolveConflict(i.workspaceId, i.resourceType as "server" | "sshKey", i.resourceId, i.strategy),
+    cloudSyncWorkspaceList: () => cloudSyncManager.listWorkspaces(),
+    cloudSyncWorkspaceAdd: (i) => cloudSyncManager.addWorkspace(i),
+    cloudSyncWorkspaceUpdate: (i) => cloudSyncManager.updateWorkspace({ ...i, id: i.id }),
+    cloudSyncWorkspaceRemove: (i) => cloudSyncManager.removeWorkspace(i.id),
+    cloudSyncStatus: () => cloudSyncManager.getStatus(),
+    cloudSyncSyncNow: (i) => cloudSyncManager.syncNow(i.workspaceId),
+    cloudSyncListConflicts: () => cloudSyncManager.listConflicts(),
+    cloudSyncResolveConflict: (i) => cloudSyncManager.resolveConflict(i.workspaceId, i.resourceType as "server" | "sshKey", i.resourceId, i.strategy),
 
     // Resource Operations
     resourceCopyConnection: (i) => resourceOpsSvc.copyConnection(i),

@@ -258,7 +258,7 @@ export const CloudSyncSection = () => {
 
   return (
     <>
-      <SettingsCard title="云同步 — 工作区管理" description="管理多个云同步工作区，每个工作区独立同步。">
+      <SettingsCard title="云同步 v2 — 多工作区" description="管理多个云同步工作区，每个工作区独立同步。">
         <div style={{ marginBottom: 12 }}>
           <Button type="primary" size="small" onClick={openAddModal}>
             添加工作区

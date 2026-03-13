@@ -2,20 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { App as AntdApp, Modal } from "antd";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import type { BackupArchiveMeta } from "@nextshell/core";
-import type { CloudSyncConflictItem, CloudSyncPreviewResult } from "@nextshell/shared";
 import { formatErrorMessage } from "../utils/errorMessage";
-import { CloudSyncMergeDialog } from "./CloudSyncMergeDialog";
 import {
   type SettingsSection,
   type LocalShellPreference,
-  type CloudSyncStatusView,
   SECTIONS,
-  DEFAULT_CLOUD_SYNC_STATUS,
   readLocalShellPreference,
   resolvePresetByColors,
-  getCloudSyncApi,
-  normalizeCloudSyncStatus,
-  normalizeCloudSyncConflicts,
   WindowSection,
   TransferSection,
   EditorSection,
@@ -23,7 +16,6 @@ import {
   TerminalSection,
   NetworkSection,
   CloudSyncSection,
-  CloudSyncV2Section,
   RecycleBinSection,
   BackupSection,
   SecuritySection,
@@ -96,24 +88,6 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
   const [archiveListVisible, setArchiveListVisible] = useState(false);
   const [archiveListLoading, setArchiveListLoading] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncStatusView>(DEFAULT_CLOUD_SYNC_STATUS);
-  const [cloudSyncStatusLoading, setCloudSyncStatusLoading] = useState(false);
-  const [cloudSyncBusyAction, setCloudSyncBusyAction] = useState<"configure" | "disable" | "sync" | null>(null);
-  const [cloudSyncConflicts, setCloudSyncConflicts] = useState<CloudSyncConflictItem[]>([]);
-  const [cloudSyncConflictsLoading, setCloudSyncConflictsLoading] = useState(false);
-  const [cloudSyncConflictBusyKey, setCloudSyncConflictBusyKey] = useState<string | null>(null);
-  const [cloudSyncApiBaseUrl, setCloudSyncApiBaseUrl] = useState("");
-  const [cloudSyncWorkspaceName, setCloudSyncWorkspaceName] = useState("");
-  const [cloudSyncWorkspacePassword, setCloudSyncWorkspacePassword] = useState("");
-  const [cloudSyncPullIntervalSec, setCloudSyncPullIntervalSec] = useState(60);
-  const [cloudSyncIgnoreTlsErrors, setCloudSyncIgnoreTlsErrors] = useState(false);
-  const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
-  const [mergePreview, setMergePreview] = useState<CloudSyncPreviewResult | null>(null);
-  const [mergeConfirming, setMergeConfirming] = useState(false);
-
-  const buildCloudSyncScopeKey = useCallback((apiBaseUrl: string, workspaceName: string): string => {
-    return `${apiBaseUrl.trim()}::${workspaceName.trim()}`;
-  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -152,91 +126,6 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     setChangeAckRisk(false);
   }, [open, preferences]);
 
-  const syncCloudSyncFormFromStatus = useCallback((status: CloudSyncStatusView) => {
-    const nextScopeKey = buildCloudSyncScopeKey(status.apiBaseUrl, status.workspaceName);
-    const currentScopeKey = buildCloudSyncScopeKey(cloudSyncApiBaseUrl, cloudSyncWorkspaceName);
-    setCloudSyncApiBaseUrl(status.apiBaseUrl);
-    setCloudSyncWorkspaceName(status.workspaceName);
-    if (nextScopeKey !== currentScopeKey) {
-      setCloudSyncWorkspacePassword("");
-    }
-    setCloudSyncPullIntervalSec(
-      status.pullIntervalSec > 0 ? Math.round(status.pullIntervalSec) : DEFAULT_CLOUD_SYNC_STATUS.pullIntervalSec
-    );
-    setCloudSyncIgnoreTlsErrors(status.ignoreTlsErrors);
-  }, [buildCloudSyncScopeKey, cloudSyncApiBaseUrl, cloudSyncWorkspaceName]);
-
-  const refreshCloudSyncStatus = useCallback(
-    async (options?: { syncForm?: boolean; silent?: boolean }) => {
-      const cloudSync = getCloudSyncApi();
-      if (!cloudSync?.status) {
-        const unsupportedStatus = {
-          ...DEFAULT_CLOUD_SYNC_STATUS,
-          lastError: "当前构建尚未提供 cloudSync API。"
-        };
-        setCloudSyncStatus(unsupportedStatus);
-        if (options?.syncForm) {
-          syncCloudSyncFormFromStatus(unsupportedStatus);
-        }
-        return unsupportedStatus;
-      }
-
-      setCloudSyncStatusLoading(true);
-      try {
-        const result = await cloudSync.status();
-        let nextStatus = DEFAULT_CLOUD_SYNC_STATUS;
-        setCloudSyncStatus((prev) => {
-          nextStatus = normalizeCloudSyncStatus(result, prev);
-          return nextStatus;
-        });
-        if (options?.syncForm) {
-          syncCloudSyncFormFromStatus(nextStatus);
-        }
-        return nextStatus;
-      } catch (error) {
-        const lastError = formatErrorMessage(error, "请稍后重试");
-        setCloudSyncStatus((prev) => ({
-          ...prev,
-          state: prev.enabled ? "error" : prev.state,
-          lastError
-        }));
-        if (!options?.silent) {
-          message.error(`读取云同步状态失败：${lastError}`);
-        }
-        return null;
-      } finally {
-        setCloudSyncStatusLoading(false);
-      }
-    },
-    [message, syncCloudSyncFormFromStatus]
-  );
-
-  const refreshCloudSyncConflicts = useCallback(
-    async (options?: { silent?: boolean }) => {
-      const cloudSync = getCloudSyncApi();
-      if (!cloudSync?.listConflicts) {
-        setCloudSyncConflicts([]);
-        return [];
-      }
-
-      setCloudSyncConflictsLoading(true);
-      try {
-        const result = await cloudSync.listConflicts();
-        const normalized = normalizeCloudSyncConflicts(result);
-        setCloudSyncConflicts(normalized);
-        return normalized;
-      } catch (error) {
-        if (!options?.silent) {
-          message.error(`读取云同步冲突失败：${formatErrorMessage(error, "请稍后重试")}`);
-        }
-        return [];
-      } finally {
-        setCloudSyncConflictsLoading(false);
-      }
-    },
-    [message]
-  );
-
   useEffect(() => {
     const next = resolvePresetByColors(terminalBackgroundColor, terminalForegroundColor);
     setTerminalThemePreset((cur) => (cur === next ? cur : next));
@@ -256,43 +145,6 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
       }
     })();
   }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    void Promise.all([
-      refreshCloudSyncStatus({ syncForm: true, silent: true }),
-      refreshCloudSyncConflicts({ silent: true })
-    ]);
-  }, [open, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const cloudSync = getCloudSyncApi();
-    if (!cloudSync) {
-      return;
-    }
-
-    const offStatus = cloudSync.onStatus?.((event) => {
-      setCloudSyncStatus((prev) => normalizeCloudSyncStatus(event, prev));
-    });
-    const offApplied = cloudSync.onApplied?.(() => {
-      void Promise.all([
-        refreshCloudSyncStatus({ silent: true }),
-        refreshCloudSyncConflicts({ silent: true })
-      ]);
-    });
-
-    return () => {
-      if (typeof offStatus === "function") {
-        offStatus();
-      }
-      if (typeof offApplied === "function") {
-        offApplied();
-      }
-    };
-  }, [open, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
 
   const refreshPasswordStatus = useCallback(async () => {
     try {
@@ -483,276 +335,6 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     });
   }, [message, modal]);
 
-  const handleConfigureCloudSync = useCallback(async (): Promise<void> => {
-    const cloudSync = getCloudSyncApi();
-    if (!cloudSync?.configure) {
-      message.error("当前构建尚未提供 cloudSync.configure 接口。");
-      return;
-    }
-
-    const apiBaseUrl = cloudSyncApiBaseUrl.trim();
-    const workspaceName = cloudSyncWorkspaceName.trim();
-    const workspacePassword = cloudSyncWorkspacePassword;
-    const pullIntervalSec = Math.max(10, Math.round(cloudSyncPullIntervalSec || 0));
-    const ignoreTlsErrors = cloudSyncIgnoreTlsErrors;
-
-    if (!apiBaseUrl) {
-      message.warning("请输入 API 地址。");
-      return;
-    }
-    if (!workspaceName) {
-      message.warning("请输入 workspace 名称。");
-      return;
-    }
-    if (!workspacePassword) {
-      message.warning("请输入 workspace 密码。");
-      return;
-    }
-
-    // Detect scope switch: if already enabled with a different API+workspace, warn user
-    const isScopeSwitch =
-      cloudSyncStatus.enabled &&
-      (cloudSyncStatus.apiBaseUrl !== apiBaseUrl || cloudSyncStatus.workspaceName !== workspaceName);
-
-    if (isScopeSwitch) {
-      const confirmed = await new Promise<boolean>((resolve) => {
-        modal.confirm({
-          title: "切换云同步工作区",
-          content: `即将从工作区 "${cloudSyncStatus.workspaceName}" 切换到 "${workspaceName}"。`
-            + `\n\n旧工作区下的连接将被移回「服务器」区域，待推送的改动将尝试同步到旧服务器。`,
-          okText: "确认切换",
-          cancelText: "取消",
-          onOk: () => resolve(true),
-          onCancel: () => resolve(false)
-        });
-      });
-      if (!confirmed) return;
-    }
-
-    // Step 1: preview remote data to detect merge conflicts
-    setCloudSyncBusyAction("configure");
-    try {
-      if (cloudSync.previewPull) {
-        const preview = await cloudSync.previewPull({
-          apiBaseUrl,
-          workspaceName,
-          workspacePassword,
-          ignoreTlsErrors
-        });
-
-        // If both sides have data, show merge dialog for user confirmation
-        if (preview.hasRemoteData && preview.hasLocalData) {
-          setMergePreview(preview);
-          setMergeDialogOpen(true);
-          setCloudSyncBusyAction(null);
-          return; // Wait for user merge decision
-        }
-
-        // If only local data exists, skip initial pull (no remote to merge)
-        if (preview.hasLocalData && !preview.hasRemoteData) {
-          const configuredStatus = normalizeCloudSyncStatus(
-            await cloudSync.configure({
-              apiBaseUrl,
-              workspaceName,
-              workspacePassword,
-              pullIntervalSec,
-              ignoreTlsErrors,
-              skipInitialPull: true
-            }),
-            cloudSyncStatus
-          );
-          setCloudSyncStatus(configuredStatus);
-          syncCloudSyncFormFromStatus(configuredStatus);
-          setCloudSyncApiBaseUrl(apiBaseUrl);
-          setCloudSyncWorkspaceName(workspaceName);
-          setCloudSyncPullIntervalSec(pullIntervalSec);
-          setCloudSyncIgnoreTlsErrors(ignoreTlsErrors);
-          message.success("云同步已启用。");
-          await Promise.all([
-            refreshCloudSyncStatus({ silent: true }),
-            refreshCloudSyncConflicts({ silent: true })
-          ]);
-          return;
-        }
-      }
-
-      // No local data or previewPull not supported: proceed normally
-      const configuredStatus = normalizeCloudSyncStatus(
-        await cloudSync.configure({
-          apiBaseUrl,
-          workspaceName,
-          workspacePassword,
-          pullIntervalSec,
-          ignoreTlsErrors
-        }),
-        cloudSyncStatus
-      );
-      setCloudSyncStatus(configuredStatus);
-      syncCloudSyncFormFromStatus(configuredStatus);
-      setCloudSyncApiBaseUrl(apiBaseUrl);
-      setCloudSyncWorkspaceName(workspaceName);
-      setCloudSyncPullIntervalSec(pullIntervalSec);
-      setCloudSyncIgnoreTlsErrors(ignoreTlsErrors);
-      message.success("云同步已启用。");
-      await Promise.all([
-        refreshCloudSyncStatus({ silent: true }),
-        refreshCloudSyncConflicts({ silent: true })
-      ]);
-    } catch (error) {
-      message.error(`启用云同步失败：${formatErrorMessage(error, "请检查云同步配置")}`);
-    } finally {
-      setCloudSyncBusyAction(null);
-    }
-  }, [
-    cloudSyncApiBaseUrl,
-    cloudSyncStatus,
-    cloudSyncIgnoreTlsErrors,
-    cloudSyncPullIntervalSec,
-    cloudSyncWorkspaceName,
-    cloudSyncWorkspacePassword,
-    message,
-    modal,
-    refreshCloudSyncConflicts,
-    refreshCloudSyncStatus,
-    syncCloudSyncFormFromStatus
-  ]);
-
-  const handleMergeConfirm = useCallback(
-    async (decisions: { resourceType: "connection" | "sshKey"; resourceId: string; action: "accept_remote" | "keep_local" }[]): Promise<void> => {
-      const cloudSync = getCloudSyncApi();
-      if (!cloudSync?.configure) return;
-
-      const apiBaseUrl = cloudSyncApiBaseUrl.trim();
-      const workspaceName = cloudSyncWorkspaceName.trim();
-      const workspacePassword = cloudSyncWorkspacePassword;
-      const pullIntervalSec = Math.max(10, Math.round(cloudSyncPullIntervalSec || 0));
-      const ignoreTlsErrors = cloudSyncIgnoreTlsErrors;
-
-      setMergeConfirming(true);
-      setCloudSyncBusyAction("configure");
-      try {
-        const configuredStatus = normalizeCloudSyncStatus(
-          await cloudSync.configure({
-            apiBaseUrl,
-            workspaceName,
-            workspacePassword,
-            pullIntervalSec,
-            ignoreTlsErrors,
-            initialMergeDecisions: decisions
-          }),
-          cloudSyncStatus
-        );
-        setCloudSyncStatus(configuredStatus);
-        syncCloudSyncFormFromStatus(configuredStatus);
-        setCloudSyncApiBaseUrl(apiBaseUrl);
-        setCloudSyncWorkspaceName(workspaceName);
-        setCloudSyncPullIntervalSec(pullIntervalSec);
-        setCloudSyncIgnoreTlsErrors(ignoreTlsErrors);
-        setMergeDialogOpen(false);
-        setMergePreview(null);
-        message.success("云同步已启用，合并完成。");
-        await Promise.all([
-          refreshCloudSyncStatus({ silent: true }),
-          refreshCloudSyncConflicts({ silent: true })
-        ]);
-      } catch (error) {
-        message.error(`启用云同步失败：${formatErrorMessage(error, "请检查云同步配置")}`);
-      } finally {
-        setMergeConfirming(false);
-        setCloudSyncBusyAction(null);
-      }
-    },
-    [
-      cloudSyncApiBaseUrl,
-      cloudSyncStatus,
-      cloudSyncIgnoreTlsErrors,
-      cloudSyncPullIntervalSec,
-      cloudSyncWorkspaceName,
-      cloudSyncWorkspacePassword,
-      message,
-      refreshCloudSyncConflicts,
-      refreshCloudSyncStatus,
-      syncCloudSyncFormFromStatus
-    ]
-  );
-
-  const handleMergeCancel = useCallback(() => {
-    setMergeDialogOpen(false);
-    setMergePreview(null);
-  }, []);
-
-  const handleDisableCloudSync = useCallback(async (): Promise<void> => {
-    const cloudSync = getCloudSyncApi();
-    if (!cloudSync?.disable) {
-      message.error("当前构建尚未提供 cloudSync.disable 接口。");
-      return;
-    }
-
-    setCloudSyncBusyAction("disable");
-    try {
-      await cloudSync.disable();
-      message.success("云同步已停用。");
-      setCloudSyncWorkspacePassword("");
-      await Promise.all([
-        refreshCloudSyncStatus({ syncForm: true, silent: true }),
-        refreshCloudSyncConflicts({ silent: true })
-      ]);
-    } catch (error) {
-      message.error(`停用云同步失败：${formatErrorMessage(error, "请稍后重试")}`);
-    } finally {
-      setCloudSyncBusyAction(null);
-    }
-  }, [message, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
-
-  const handleCloudSyncNow = useCallback(async (): Promise<void> => {
-    const cloudSync = getCloudSyncApi();
-    if (!cloudSync?.syncNow) {
-      message.error("当前构建尚未提供 cloudSync.syncNow 接口。");
-      return;
-    }
-
-    setCloudSyncBusyAction("sync");
-    try {
-      await cloudSync.syncNow();
-      message.success("已触发云同步。");
-      await Promise.all([
-        refreshCloudSyncStatus({ silent: true }),
-        refreshCloudSyncConflicts({ silent: true })
-      ]);
-    } catch (error) {
-      message.error(`立即同步失败：${formatErrorMessage(error, "请稍后重试")}`);
-    } finally {
-      setCloudSyncBusyAction(null);
-    }
-  }, [message, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
-
-  const handleResolveCloudSyncConflict = useCallback(async (
-    resourceType: CloudSyncConflictItem["resourceType"],
-    resourceId: string,
-    strategy: "overwrite_local" | "keep_local"
-  ): Promise<void> => {
-    const cloudSync = getCloudSyncApi();
-    if (!cloudSync?.resolveConflict) {
-      message.error("当前构建尚未提供 cloudSync.resolveConflict 接口。");
-      return;
-    }
-
-    const busyKey = `${resourceType}:${resourceId}:${strategy}`;
-    setCloudSyncConflictBusyKey(busyKey);
-    try {
-      await cloudSync.resolveConflict({ resourceType, resourceId, strategy });
-      message.success(strategy === "overwrite_local" ? "已使用远端版本覆盖本地。" : "已保留本地版本并重新推送。");
-      await Promise.all([
-        refreshCloudSyncStatus({ silent: true }),
-        refreshCloudSyncConflicts({ silent: true })
-      ]);
-    } catch (error) {
-      message.error(`处理冲突失败：${formatErrorMessage(error, "请稍后重试")}`);
-    } finally {
-      setCloudSyncConflictBusyKey(null);
-    }
-  }, [message, refreshCloudSyncConflicts, refreshCloudSyncStatus]);
-
   // ─── Memoized section content ───────────────────────────────────────
   const sectionContent = useMemo(() => {
     switch (activeSection) {
@@ -863,34 +445,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
         />;
 
       case "cloudSync":
-        return <CloudSyncSection
-          apiAvailable={Boolean(getCloudSyncApi())}
-          status={cloudSyncStatus}
-          loading={cloudSyncStatusLoading}
-          busyAction={cloudSyncBusyAction}
-          conflicts={cloudSyncConflicts}
-          conflictsLoading={cloudSyncConflictsLoading}
-          conflictBusyKey={cloudSyncConflictBusyKey}
-          apiBaseUrl={cloudSyncApiBaseUrl}
-          workspaceName={cloudSyncWorkspaceName}
-          workspacePassword={cloudSyncWorkspacePassword}
-          pullIntervalSec={cloudSyncPullIntervalSec}
-          ignoreTlsErrors={cloudSyncIgnoreTlsErrors}
-          setApiBaseUrl={setCloudSyncApiBaseUrl}
-          setWorkspaceName={setCloudSyncWorkspaceName}
-          setWorkspacePassword={setCloudSyncWorkspacePassword}
-          setPullIntervalSec={setCloudSyncPullIntervalSec}
-          setIgnoreTlsErrors={setCloudSyncIgnoreTlsErrors}
-          onConfigure={() => void handleConfigureCloudSync()}
-          onDisable={() => void handleDisableCloudSync()}
-          onSyncNow={() => void handleCloudSyncNow()}
-          onResolveConflict={(resourceType, resourceId, strategy) =>
-            void handleResolveCloudSyncConflict(resourceType, resourceId, strategy)
-          }
-        />;
-
-      case "cloudSyncV2":
-        return <CloudSyncV2Section />;
+        return <CloudSyncSection />;
 
       case "recycleBin":
         return <RecycleBinSection />;
@@ -931,14 +486,11 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     uploadDefaultDir, downloadDefaultDir, editorMode, editorCommand,
     terminalBackgroundColor, terminalForegroundColor, terminalThemePreset, localShell,
     appBackgroundImagePath, nexttracePath,
-    cloudSyncStatus, cloudSyncStatusLoading, cloudSyncBusyAction, cloudSyncConflicts, cloudSyncConflictsLoading, cloudSyncConflictBusyKey,
-    cloudSyncApiBaseUrl, cloudSyncWorkspaceName, cloudSyncWorkspacePassword, cloudSyncPullIntervalSec, cloudSyncIgnoreTlsErrors,
     backupRemotePath, rclonePath, backupConflictPolicy, restoreConflictPolicy,
     pwdStatus, pwdStatusKnown, pwdStatusLoading, pwdInput, pwdConfirm, pwdBusy,
     changeOldPwd, changeNewPwd, changeConfirmPwd, changeAckRisk, changeBusy,
     backupRunning, archiveList, archiveListVisible, archiveListLoading, restoring,
-    save, pickDirectory, message, modal,
-    handleConfigureCloudSync, handleDisableCloudSync, handleCloudSyncNow, handleResolveCloudSyncConflict
+    save, pickDirectory, message, modal
   ]);
 
   return (
@@ -977,13 +529,6 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
         </div>
       </div>
 
-      <CloudSyncMergeDialog
-        open={mergeDialogOpen}
-        preview={mergePreview}
-        loading={mergeConfirming}
-        onConfirm={handleMergeConfirm}
-        onCancel={handleMergeCancel}
-      />
     </Modal>
   );
 };

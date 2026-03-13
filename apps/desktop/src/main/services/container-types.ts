@@ -30,12 +30,6 @@ import type {
 import type { SshShellChannel } from "../../../../../packages/ssh/src/index";
 import type { IPty } from "node-pty";
 import type {
-  CloudSyncConflictItem,
-  CloudSyncConfigureInput,
-  CloudSyncPreviewPullInput,
-  CloudSyncPreviewResult,
-  CloudSyncResolveConflictInput,
-  CloudSyncStatus,
   CommandBatchExecInput,
   ConnectionExportInput,
   ConnectionExportBatchInput,
@@ -64,11 +58,11 @@ import type {
   UpdateCheckResult,
   ProxyUpsertInput,
   ProxyRemoveInput,
-  CloudSyncV2WorkspaceAddInput,
-  CloudSyncV2WorkspaceUpdateInput,
-  CloudSyncV2WorkspaceRemoveInput,
-  CloudSyncV2SyncNowInput,
-  CloudSyncV2ResolveConflictInput,
+  CloudSyncWorkspaceAddInput,
+  CloudSyncWorkspaceUpdateInput,
+  CloudSyncWorkspaceRemoveInput,
+  CloudSyncSyncNowInput,
+  CloudSyncResolveConflictInput,
   ResourceCopyConnectionInput,
   ResourceDangerMoveConnectionInput,
   ResourceDeleteConnectionInput,
@@ -166,13 +160,18 @@ export interface ServiceContainer {
   tracerouteStop: () => { ok: true };
   getAppPreferences: () => AppPreferences;
   updateAppPreferences: (patch: SettingsUpdateInput) => AppPreferences;
-  cloudSyncConfigure: (input: CloudSyncConfigureInput) => Promise<CloudSyncStatus>;
-  cloudSyncDisable: () => Promise<{ ok: true }>;
-  cloudSyncStatus: () => Promise<CloudSyncStatus>;
-  cloudSyncSyncNow: () => Promise<{ ok: true }>;
-  cloudSyncPreviewPull: (input: CloudSyncPreviewPullInput) => Promise<CloudSyncPreviewResult>;
-  cloudSyncListConflicts: () => Promise<CloudSyncConflictItem[]>;
-  cloudSyncResolveConflict: (input: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
+  enableDebugLog: (sender: WebContents) => { ok: true };
+  disableDebugLog: (sender: WebContents) => { ok: true };
+
+  // Cloud Sync
+  cloudSyncWorkspaceList: () => CloudSyncWorkspaceProfile[];
+  cloudSyncWorkspaceAdd: (input: CloudSyncWorkspaceAddInput) => Promise<CloudSyncWorkspaceProfile>;
+  cloudSyncWorkspaceUpdate: (input: CloudSyncWorkspaceUpdateInput) => Promise<CloudSyncWorkspaceProfile>;
+  cloudSyncWorkspaceRemove: (input: CloudSyncWorkspaceRemoveInput) => Promise<void>;
+  cloudSyncStatus: () => { workspaces: Array<{ workspaceId: string; state: string; lastSyncAt: string | null; lastError: string | null; pendingCount: number; conflictCount: number; currentVersion: number | null }> };
+  cloudSyncSyncNow: (input: CloudSyncSyncNowInput) => Promise<void>;
+  cloudSyncListConflicts: () => Array<{ workspaceId: string; workspaceName: string; resourceType: string; resourceId: string; displayName: string; serverRevision: number; conflictRemoteRevision: number; conflictRemoteDeleted: boolean; conflictDetectedAt: string }>;
+  cloudSyncResolveConflict: (input: CloudSyncResolveConflictInput) => Promise<void>;
   openFilesDialog: (
     sender: WebContents,
     input: DialogOpenFilesInput
@@ -294,18 +293,6 @@ export interface ServiceContainer {
   listTemplateParams: (input?: TemplateParamsListInput) => CommandTemplateParam[];
   upsertTemplateParams: (input: TemplateParamsUpsertInput) => { ok: true };
   clearTemplateParams: (input: TemplateParamsClearInput) => { ok: true };
-  enableDebugLog: (sender: WebContents) => { ok: true };
-  disableDebugLog: (sender: WebContents) => { ok: true };
-
-  // Cloud Sync v2
-  cloudSyncV2WorkspaceList: () => CloudSyncWorkspaceProfile[];
-  cloudSyncV2WorkspaceAdd: (input: CloudSyncV2WorkspaceAddInput) => Promise<CloudSyncWorkspaceProfile>;
-  cloudSyncV2WorkspaceUpdate: (input: CloudSyncV2WorkspaceUpdateInput) => Promise<CloudSyncWorkspaceProfile>;
-  cloudSyncV2WorkspaceRemove: (input: CloudSyncV2WorkspaceRemoveInput) => Promise<void>;
-  cloudSyncV2Status: () => { workspaces: Array<{ workspaceId: string; state: string; lastSyncAt: string | null; lastError: string | null; pendingCount: number; conflictCount: number; currentVersion: number | null }> };
-  cloudSyncV2SyncNow: (input: CloudSyncV2SyncNowInput) => Promise<void>;
-  cloudSyncV2ListConflicts: () => Array<{ workspaceId: string; workspaceName: string; resourceType: string; resourceId: string; displayName: string; serverRevision: number; conflictRemoteRevision: number; conflictRemoteDeleted: boolean; conflictDetectedAt: string }>;
-  cloudSyncV2ResolveConflict: (input: CloudSyncV2ResolveConflictInput) => Promise<void>;
 
   // Resource Operations
   resourceCopyConnection: (input: ResourceCopyConnectionInput) => Promise<ConnectionProfile>;

@@ -12,9 +12,6 @@ import type { DragStartEvent, DragEndEvent } from "@dnd-kit/core";
 import { SshKeyManagerPanel } from "./SshKeyManagerPanel";
 import { ProxyManagerPanel } from "./ProxyManagerPanel";
 import { ConnectionImportModal } from "./ConnectionImportModal";
-import type { CloudSyncStatusView } from "./settings-center/types";
-import { formatCloudSyncState } from "./settings-center/constants";
-import { useCloudSyncStatus } from "../hooks/useCloudSyncStatus";
 import { formatDateTime, formatRelativeTime } from "../utils/formatTime";
 import { formatErrorMessage } from "../utils/errorMessage";
 
@@ -193,17 +190,13 @@ const countMgrLeaves = (node: MgrGroupNode): number => {
 const MgrGroupRow = ({
   node,
   expanded,
-  onToggle,
-  cloudSyncStatus
+  onToggle
 }: {
   node: MgrGroupNode;
   expanded: boolean;
   onToggle: () => void;
-  cloudSyncStatus?: CloudSyncStatusView;
 }) => {
   const { isOver, setNodeRef } = useDroppable({ id: node.key });
-  const showSyncBadge = node.zone === "workspace" && cloudSyncStatus;
-  const syncState = showSyncBadge ? formatCloudSyncState(cloudSyncStatus.state) : null;
 
   return (
     <button
@@ -222,20 +215,6 @@ const MgrGroupRow = ({
           : isOver ? "ri-folder-open-line" : "ri-folder-3-line"
       } aria-hidden="true" />
       <span className="mgr-group-label">{node.label}</span>
-      {showSyncBadge && syncState ? (
-        <span
-          className={`ct-sync-badge ct-sync-badge--${cloudSyncStatus.state}`}
-          title={syncState.label + (cloudSyncStatus.lastError ? `：${cloudSyncStatus.lastError}` : "")}
-        >
-          {cloudSyncStatus.state === "syncing" ? (
-            <i className="ri-loader-4-line ct-sync-spin" aria-hidden="true" />
-          ) : cloudSyncStatus.state === "error" ? (
-            <i className="ri-error-warning-line" aria-hidden="true" />
-          ) : cloudSyncStatus.enabled ? (
-            <i className="ri-check-line" aria-hidden="true" />
-          ) : null}
-        </span>
-      ) : null}
       <span className="mgr-group-count">{countMgrLeaves(node)}</span>
     </button>
   );
@@ -303,8 +282,7 @@ const MgrTreeGroup = ({
   selectedConnectionId,
   selectedExportIds,
   onSelect,
-  onToggleExportSelect,
-  cloudSyncStatus
+  onToggleExportSelect
 }: {
   node: MgrGroupNode;
   depth: number;
@@ -314,7 +292,6 @@ const MgrTreeGroup = ({
   selectedExportIds: Set<string>;
   onSelect: (id: string) => void;
   onToggleExportSelect: (id: string) => void;
-  cloudSyncStatus?: CloudSyncStatusView;
 }) => {
   const isExpanded = expanded.has(node.key);
   return (
@@ -324,7 +301,6 @@ const MgrTreeGroup = ({
           node={node}
           expanded={isExpanded}
           onToggle={() => toggleExpanded(node.key)}
-          cloudSyncStatus={node.zone === "workspace" ? cloudSyncStatus : undefined}
         />
       )}
       {(depth === 0 || isExpanded) && (
@@ -341,7 +317,6 @@ const MgrTreeGroup = ({
                 selectedExportIds={selectedExportIds}
                 onSelect={onSelect}
                 onToggleExportSelect={onToggleExportSelect}
-                cloudSyncStatus={cloudSyncStatus}
               />
             ) : (
               <MgrServerRow
@@ -432,7 +407,6 @@ export const ConnectionManagerModal = ({
   onReloadProxies
 }: ConnectionManagerModalProps) => {
   const { modal, message } = AntdApp.useApp();
-  const cloudSyncStatus = useCloudSyncStatus();
   const [activeTab, setActiveTab] = useState<ManagerTab>("connections");
   const [mode, setMode] = useState<"idle" | "new" | "edit">("idle");
   const [keyword, setKeyword] = useState("");
@@ -1413,7 +1387,6 @@ export const ConnectionManagerModal = ({
                 selectedExportIds={selectedExportIds}
                 onSelect={handleSelect}
                 onToggleExportSelect={handleToggleExportSelect}
-                cloudSyncStatus={cloudSyncStatus}
               />
             )}
           </MgrRootDropZone>

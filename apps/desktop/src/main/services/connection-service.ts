@@ -17,11 +17,6 @@ import type {
   ProxyUpsertInput,
   ProxyRemoveInput,
 } from "@nextshell/shared";
-import type {
-  CloudSyncApplyConnectionInput,
-  CloudSyncApplySshKeyInput,
-  CloudSyncApplyProxyInput,
-} from "./cloud-sync-service";
 import type { EncryptedSecretVault } from "@nextshell/security";
 import type {
   CachedConnectionRepository,
@@ -30,7 +25,7 @@ import type {
 } from "@nextshell/storage";
 import type { RemoteEditManager } from "./remote-edit-manager";
 import type { ActiveSession, ActiveRemoteSession, MonitorState } from "./container-types";
-import { enforceZonePrefix, CONNECTION_ZONES } from "../../../../../packages/shared/src/constants";
+import { enforceZonePrefix } from "../../../../../packages/shared/src/constants";
 import { normalizeError } from "./container-utils";
 import { logger } from "../logger";
 
@@ -52,16 +47,6 @@ export interface ConnectionServiceOptions {
     metadata?: Record<string, unknown>;
   }) => void;
   sendSessionStatus: (sender: WebContents, payload: SessionStatusEvent) => void;
-  getCloudSyncService: () =>
-    | {
-        pushConnectionUpsert: (profile: ConnectionProfile) => void;
-        pushConnectionDelete: (id: string) => void;
-        pushSshKeyUpsert: (profile: SshKeyProfile) => void;
-        pushSshKeyDelete: (id: string) => void;
-        pushProxyUpsert: (profile: ProxyProfile) => void;
-        pushProxyDelete: (id: string) => void;
-      }
-    | undefined;
 }
 
 export class ConnectionService {
@@ -91,7 +76,6 @@ export class ConnectionService {
       vault,
       appendAuditLogIfEnabled,
       disposeAllMonitorSessions,
-      getCloudSyncService,
     } = this.options;
 
     const now = new Date().toISOString();
@@ -191,70 +175,7 @@ export class ConnectionService {
         deleteMode: profile.deleteMode,
       },
     });
-    void getCloudSyncService()?.pushConnectionUpsert(profile);
     return profile;
-  }
-
-  async applyConnectionFromCloudSync(input: CloudSyncApplyConnectionInput): Promise<void> {
-    const { connections, sshKeyRepo, vault, disposeAllMonitorSessions } = this.options;
-
-    const current = connections.getById(input.id);
-    const needsPasswordCredential = input.authType === "password" || input.authType === "interactive";
-
-    if (input.authType === "privateKey" && !input.sshKeyId) {
-      throw new Error("Cloud sync connection is missing sshKeyId for private key auth.");
-    }
-    if (input.sshKeyId && !sshKeyRepo.getById(input.sshKeyId)) {
-      throw new Error(`Cloud sync referenced SSH key not found: ${input.sshKeyId}`);
-    }
-
-    let credentialRef = current?.credentialRef;
-    if (!needsPasswordCredential && credentialRef) {
-      await vault.deleteCredential(credentialRef);
-      credentialRef = undefined;
-    }
-    if (needsPasswordCredential) {
-      if (!input.password) {
-        throw new Error(`Cloud sync connection ${input.name} is missing password content.`);
-      }
-      credentialRef = await vault.storeCredential(`conn-${input.id}`, input.password);
-    }
-
-    // Cloud sync connections MUST live under /workspace — enforce zone safety
-    const cloudGroupPath = enforceZonePrefix(input.groupPath, CONNECTION_ZONES.WORKSPACE);
-
-    const now = new Date().toISOString();
-    const profile: ConnectionProfile = {
-      id: input.id,
-      name: input.name,
-      host: input.host,
-      port: input.port,
-      username: input.username.trim(),
-      authType: input.authType,
-      credentialRef: needsPasswordCredential ? credentialRef : undefined,
-      sshKeyId: input.authType === "privateKey" ? input.sshKeyId : undefined,
-      hostFingerprint: input.hostFingerprint,
-      strictHostKeyChecking: input.strictHostKeyChecking,
-      proxyId: undefined,
-      keepAliveEnabled: input.keepAliveEnabled,
-      keepAliveIntervalSec: input.keepAliveIntervalSec,
-      terminalEncoding: current?.terminalEncoding ?? "utf-8",
-      backspaceMode: current?.backspaceMode ?? "ascii-backspace",
-      deleteMode: current?.deleteMode ?? "vt220-delete",
-      groupPath: cloudGroupPath,
-      tags: input.tags,
-      notes: input.notes,
-      favorite: input.favorite,
-      monitorSession: current?.monitorSession ?? false,
-      createdAt: current?.createdAt ?? now,
-      updatedAt: input.updatedAt,
-      lastConnectedAt: current?.lastConnectedAt,
-    };
-
-    connections.save(profile);
-    if (!profile.monitorSession) {
-      await disposeAllMonitorSessions(profile.id);
-    }
   }
 
   async removeConnectionRecord(
@@ -309,9 +230,7 @@ export class ConnectionService {
   }
 
   async removeConnection(id: string): Promise<{ ok: true }> {
-    const result = await this.removeConnectionRecord(id);
-    void this.options.getCloudSyncService()?.pushConnectionDelete(id);
-    return { ok: true };
+    return this.removeConnectionRecord(id);
   }
 
   // ── SSH Key CRUD ──────────────────────────────────────────────────
@@ -321,7 +240,7 @@ export class ConnectionService {
   }
 
   async upsertSshKey(input: SshKeyUpsertInput): Promise<SshKeyProfile> {
-    const { sshKeyRepo, vault, getCloudSyncService } = this.options;
+    const { sshKeyRepo, vault } = this.options;
 
     const now = new Date().toISOString();
     const id = input.id ?? randomUUID();
@@ -361,32 +280,7 @@ export class ConnectionService {
     };
 
     sshKeyRepo.save(profile);
-    void getCloudSyncService()?.pushSshKeyUpsert(profile);
     return profile;
-  }
-
-  async applySshKeyFromCloudSync(input: CloudSyncApplySshKeyInput): Promise<void> {
-    const { sshKeyRepo, vault } = this.options;
-
-    const current = sshKeyRepo.getById(input.id);
-    const keyContentRef = await vault.storeCredential(`sshkey-${input.id}`, input.keyContent);
-    let passphraseRef = current?.passphraseRef;
-
-    if (input.passphrase) {
-      passphraseRef = await vault.storeCredential(`sshkey-${input.id}-pass`, input.passphrase);
-    } else if (current?.passphraseRef) {
-      await vault.deleteCredential(current.passphraseRef);
-      passphraseRef = undefined;
-    }
-
-    sshKeyRepo.save({
-      id: input.id,
-      name: input.name,
-      keyContentRef,
-      passphraseRef,
-      createdAt: current?.createdAt ?? input.updatedAt,
-      updatedAt: input.updatedAt,
-    });
   }
 
   async removeSshKeyRecord(input: SshKeyRemoveInput): Promise<{ ok: true }> {
@@ -414,9 +308,7 @@ export class ConnectionService {
   }
 
   async removeSshKey(input: SshKeyRemoveInput): Promise<{ ok: true }> {
-    const result = await this.removeSshKeyRecord(input);
-    void this.options.getCloudSyncService()?.pushSshKeyDelete(input.id);
-    return result;
+    return this.removeSshKeyRecord(input);
   }
 
   // ── Proxy CRUD ────────────────────────────────────────────────────
@@ -458,32 +350,6 @@ export class ConnectionService {
 
     proxyRepo.save(profile);
     return profile;
-  }
-
-  async applyProxyFromCloudSync(input: CloudSyncApplyProxyInput): Promise<void> {
-    const { proxyRepo, vault } = this.options;
-
-    const current = proxyRepo.getById(input.id);
-    let credentialRef = current?.credentialRef;
-
-    if (input.password) {
-      credentialRef = await vault.storeCredential(`proxy-${input.id}`, input.password);
-    } else if (current?.credentialRef) {
-      await vault.deleteCredential(current.credentialRef);
-      credentialRef = undefined;
-    }
-
-    proxyRepo.save({
-      id: input.id,
-      name: input.name,
-      proxyType: input.proxyType,
-      host: input.host,
-      port: input.port,
-      username: input.username,
-      credentialRef,
-      createdAt: current?.createdAt ?? input.updatedAt,
-      updatedAt: input.updatedAt,
-    });
   }
 
   async removeProxyRecord(input: ProxyRemoveInput): Promise<{ ok: true }> {

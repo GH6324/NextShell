@@ -22,15 +22,11 @@ const DEBUG_MAX_PENDING = 50;
 export interface PreferencesDialogServiceOptions {
   connections: CachedConnectionRepository;
   auditEnabledForSession: boolean;
-  getCloudSyncService: () =>
-    | { refreshFromPreferences: (opts: { triggerPull: boolean }) => Promise<void> }
-    | undefined;
 }
 
 export class PreferencesDialogService {
   private readonly connections: CachedConnectionRepository;
   private readonly auditEnabledForSession: boolean;
-  private readonly getCloudSyncService: PreferencesDialogServiceOptions["getCloudSyncService"];
 
   readonly debugSenders = new Set<WebContents>();
   private debugPending: DebugLogEntry[] = [];
@@ -39,7 +35,6 @@ export class PreferencesDialogService {
   constructor(options: PreferencesDialogServiceOptions) {
     this.connections = options.connections;
     this.auditEnabledForSession = options.auditEnabledForSession;
-    this.getCloudSyncService = options.getCloudSyncService;
   }
 
   // ---------------------------------------------------------------------------
@@ -52,7 +47,6 @@ export class PreferencesDialogService {
 
   saveAppPreferencesPatch(
     patch: SettingsUpdateInput,
-    options?: { reconfigureCloudSync?: boolean },
   ): AppPreferences {
     const current = this.connections.getAppPreferences();
     const merged = mergePreferences(current, patch);
@@ -64,10 +58,6 @@ export class PreferencesDialogService {
 
     if (patch.audit?.retentionDays !== undefined && this.auditEnabledForSession) {
       this.purgeExpiredAuditLogs();
-    }
-
-    if (options?.reconfigureCloudSync !== false) {
-      void this.getCloudSyncService()?.refreshFromPreferences({ triggerPull: false });
     }
 
     return saved;

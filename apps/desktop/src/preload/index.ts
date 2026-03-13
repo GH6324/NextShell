@@ -1,7 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
-  CloudSyncAppliedEvent,
-  CloudSyncStatus,
   DebugLogEntry,
   SessionDataEvent,
   SessionStatusEvent,
@@ -230,30 +228,27 @@ const api: NextShellApi = {
     passwordStatus: () => masterPasswordApi.passwordStatus()
   },
   cloudSync: {
-    configure: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncConfigure, payload),
-    disable: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncDisable, payload ?? {}),
-    status: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncStatus, payload ?? {}),
+    workspaceList: () => ipcRenderer.invoke(IPCChannel.CloudSyncWorkspaceList, {}),
+    workspaceAdd: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncWorkspaceAdd, payload),
+    workspaceUpdate: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncWorkspaceUpdate, payload),
+    workspaceRemove: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncWorkspaceRemove, payload),
+    status: () => ipcRenderer.invoke(IPCChannel.CloudSyncStatus, {}),
     syncNow: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncSyncNow, payload ?? {}),
-    previewPull: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncPreviewPull, payload),
-    listConflicts: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncListConflicts, payload ?? {}),
+    listConflicts: () => ipcRenderer.invoke(IPCChannel.CloudSyncListConflicts, {}),
     resolveConflict: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncResolveConflict, payload),
     onStatus: (listener) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: CloudSyncStatus) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => {
         listener(payload);
       };
       ipcRenderer.on(IPCChannel.CloudSyncStatusEvent, handler);
-      return () => {
-        ipcRenderer.off(IPCChannel.CloudSyncStatusEvent, handler);
-      };
+      return () => { ipcRenderer.off(IPCChannel.CloudSyncStatusEvent, handler); };
     },
     onApplied: (listener) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: CloudSyncAppliedEvent) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { workspaceId: string }) => {
         listener(payload);
       };
       ipcRenderer.on(IPCChannel.CloudSyncAppliedEvent, handler);
-      return () => {
-        ipcRenderer.off(IPCChannel.CloudSyncAppliedEvent, handler);
-      };
+      return () => { ipcRenderer.off(IPCChannel.CloudSyncAppliedEvent, handler); };
     }
   },
   masterPassword: masterPasswordApi,
@@ -302,30 +297,6 @@ const api: NextShellApi = {
       return () => {
         ipcRenderer.off(IPCChannel.DebugLogEvent, handler);
       };
-    }
-  },
-  cloudSyncV2: {
-    workspaceList: () => ipcRenderer.invoke(IPCChannel.CloudSyncV2WorkspaceList, {}),
-    workspaceAdd: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncV2WorkspaceAdd, payload),
-    workspaceUpdate: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncV2WorkspaceUpdate, payload),
-    workspaceRemove: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncV2WorkspaceRemove, payload),
-    status: () => ipcRenderer.invoke(IPCChannel.CloudSyncV2Status, {}),
-    syncNow: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncV2SyncNow, payload ?? {}),
-    listConflicts: () => ipcRenderer.invoke(IPCChannel.CloudSyncV2ListConflicts, {}),
-    resolveConflict: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncV2ResolveConflict, payload),
-    onStatus: (listener) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => {
-        listener(payload);
-      };
-      ipcRenderer.on(IPCChannel.CloudSyncV2StatusEvent, handler);
-      return () => { ipcRenderer.off(IPCChannel.CloudSyncV2StatusEvent, handler); };
-    },
-    onApplied: (listener) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: { workspaceId: string }) => {
-        listener(payload);
-      };
-      ipcRenderer.on(IPCChannel.CloudSyncV2AppliedEvent, handler);
-      return () => { ipcRenderer.off(IPCChannel.CloudSyncV2AppliedEvent, handler); };
     }
   },
   resourceOps: {

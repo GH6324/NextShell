@@ -62,13 +62,15 @@ export const IPCChannel = {
   BackupList: "nextshell:backup:list",
   BackupRun: "nextshell:backup:run",
   BackupRestore: "nextshell:backup:restore",
-  CloudSyncConfigure: "nextshell:cloud-sync:configure",
-  CloudSyncDisable: "nextshell:cloud-sync:disable",
+  // ── Cloud Sync: Workspace Management ──
+  CloudSyncWorkspaceList: "nextshell:cloud-sync:workspace:list",
+  CloudSyncWorkspaceAdd: "nextshell:cloud-sync:workspace:add",
+  CloudSyncWorkspaceUpdate: "nextshell:cloud-sync:workspace:update",
+  CloudSyncWorkspaceRemove: "nextshell:cloud-sync:workspace:remove",
   CloudSyncStatus: "nextshell:cloud-sync:status",
   CloudSyncSyncNow: "nextshell:cloud-sync:sync-now",
   CloudSyncListConflicts: "nextshell:cloud-sync:list-conflicts",
   CloudSyncResolveConflict: "nextshell:cloud-sync:resolve-conflict",
-  CloudSyncPreviewPull: "nextshell:cloud-sync:preview-pull",
   CloudSyncStatusEvent: "nextshell:cloud-sync:status:event",
   CloudSyncAppliedEvent: "nextshell:cloud-sync:applied:event",
   MasterPasswordSet: "nextshell:master-password:set",
@@ -104,18 +106,6 @@ export const IPCChannel = {
   TracerouteRun: "nextshell:traceroute:run",
   TracerouteStop: "nextshell:traceroute:stop",
   TracerouteData: "nextshell:traceroute:data",
-
-  // ── Cloud Sync v2: Workspace Management ──
-  CloudSyncV2WorkspaceList: "nextshell:cloud-sync-v2:workspace:list",
-  CloudSyncV2WorkspaceAdd: "nextshell:cloud-sync-v2:workspace:add",
-  CloudSyncV2WorkspaceUpdate: "nextshell:cloud-sync-v2:workspace:update",
-  CloudSyncV2WorkspaceRemove: "nextshell:cloud-sync-v2:workspace:remove",
-  CloudSyncV2Status: "nextshell:cloud-sync-v2:status",
-  CloudSyncV2SyncNow: "nextshell:cloud-sync-v2:sync-now",
-  CloudSyncV2ListConflicts: "nextshell:cloud-sync-v2:list-conflicts",
-  CloudSyncV2ResolveConflict: "nextshell:cloud-sync-v2:resolve-conflict",
-  CloudSyncV2StatusEvent: "nextshell:cloud-sync-v2:status:event",
-  CloudSyncV2AppliedEvent: "nextshell:cloud-sync-v2:applied:event",
 
   // ── Resource Operations ──
   ResourceCopyConnection: "nextshell:resource:copy-connection",

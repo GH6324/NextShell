@@ -67,13 +67,14 @@ import {
   backupPasswordUnlockSchema,
   backupPasswordClearRememberedSchema,
   backupPasswordStatusSchema,
-  cloudSyncConfigureSchema,
-  cloudSyncDisableSchema,
-  cloudSyncListConflictsSchema,
-  cloudSyncPreviewPullSchema,
-  cloudSyncResolveConflictSchema,
-  cloudSyncStatusQuerySchema,
+  cloudSyncWorkspaceListSchema,
+  cloudSyncWorkspaceAddSchema,
+  cloudSyncWorkspaceUpdateSchema,
+  cloudSyncWorkspaceRemoveSchema,
+  cloudSyncStatusSchema,
   cloudSyncSyncNowSchema,
+  cloudSyncListConflictsSchema,
+  cloudSyncResolveConflictSchema,
   masterPasswordSetSchema,
   masterPasswordUnlockSchema,
   masterPasswordChangeSchema,
@@ -92,14 +93,6 @@ import {
   updateCheckSchema,
   pingRequestSchema,
   tracerouteRunSchema,
-  cloudSyncV2WorkspaceListSchema,
-  cloudSyncV2WorkspaceAddSchema,
-  cloudSyncV2WorkspaceUpdateSchema,
-  cloudSyncV2WorkspaceRemoveSchema,
-  cloudSyncV2StatusSchema,
-  cloudSyncV2SyncNowSchema,
-  cloudSyncV2ListConflictsSchema,
-  cloudSyncV2ResolveConflictSchema,
   resourceCopyConnectionSchema,
   resourceDangerMoveConnectionSchema,
   resourceDeleteConnectionSchema,
@@ -541,24 +534,36 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
     return services.masterPasswordStatus();
   });
 
-  ipcMain.handle(IPCChannel.CloudSyncConfigure, (_event, payload) => {
-    const input = parsePayload(cloudSyncConfigureSchema, payload, "云同步配置");
-    return services.cloudSyncConfigure(input);
+  // ─── Cloud Sync ──────────────────────────────────────────────────────────
+
+  ipcMain.handle(IPCChannel.CloudSyncWorkspaceList, (_event, payload) => {
+    parsePayload(cloudSyncWorkspaceListSchema, payload ?? {}, "云同步工作区列表");
+    return services.cloudSyncWorkspaceList();
   });
 
-  ipcMain.handle(IPCChannel.CloudSyncDisable, (_event, payload) => {
-    parsePayload(cloudSyncDisableSchema, payload ?? {}, "停用云同步");
-    return services.cloudSyncDisable();
+  ipcMain.handle(IPCChannel.CloudSyncWorkspaceAdd, (_event, payload) => {
+    const input = parsePayload(cloudSyncWorkspaceAddSchema, payload, "云同步添加工作区");
+    return services.cloudSyncWorkspaceAdd(input);
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncWorkspaceUpdate, (_event, payload) => {
+    const input = parsePayload(cloudSyncWorkspaceUpdateSchema, payload, "云同步更新工作区");
+    return services.cloudSyncWorkspaceUpdate(input);
+  });
+
+  ipcMain.handle(IPCChannel.CloudSyncWorkspaceRemove, (_event, payload) => {
+    const input = parsePayload(cloudSyncWorkspaceRemoveSchema, payload, "云同步删除工作区");
+    return services.cloudSyncWorkspaceRemove(input);
   });
 
   ipcMain.handle(IPCChannel.CloudSyncStatus, (_event, payload) => {
-    parsePayload(cloudSyncStatusQuerySchema, payload ?? {}, "云同步状态");
+    parsePayload(cloudSyncStatusSchema, payload ?? {}, "云同步状态");
     return services.cloudSyncStatus();
   });
 
   ipcMain.handle(IPCChannel.CloudSyncSyncNow, (_event, payload) => {
-    parsePayload(cloudSyncSyncNowSchema, payload ?? {}, "立即云同步");
-    return services.cloudSyncSyncNow();
+    const input = parsePayload(cloudSyncSyncNowSchema, payload ?? {}, "云同步立即同步");
+    return services.cloudSyncSyncNow(input);
   });
 
   ipcMain.handle(IPCChannel.CloudSyncListConflicts, (_event, payload) => {
@@ -569,11 +574,6 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
   ipcMain.handle(IPCChannel.CloudSyncResolveConflict, (_event, payload) => {
     const input = parsePayload(cloudSyncResolveConflictSchema, payload, "云同步冲突处理");
     return services.cloudSyncResolveConflict(input);
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncPreviewPull, (_event, payload) => {
-    const input = parsePayload(cloudSyncPreviewPullSchema, payload, "云同步预览拉取");
-    return services.cloudSyncPreviewPull(input);
   });
 
   // ─── Template Params ──────────────────────────────────────────────────────
@@ -658,48 +658,6 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
 
   ipcMain.handle(IPCChannel.DebugLogDisable, (event) => {
     return services.disableDebugLog(event.sender);
-  });
-
-  // ─── Cloud Sync v2 ───────────────────────────────────────────────────────
-
-  ipcMain.handle(IPCChannel.CloudSyncV2WorkspaceList, (_event, payload) => {
-    parsePayload(cloudSyncV2WorkspaceListSchema, payload ?? {}, "云同步工作区列表");
-    return services.cloudSyncV2WorkspaceList();
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncV2WorkspaceAdd, (_event, payload) => {
-    const input = parsePayload(cloudSyncV2WorkspaceAddSchema, payload, "云同步添加工作区");
-    return services.cloudSyncV2WorkspaceAdd(input);
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncV2WorkspaceUpdate, (_event, payload) => {
-    const input = parsePayload(cloudSyncV2WorkspaceUpdateSchema, payload, "云同步更新工作区");
-    return services.cloudSyncV2WorkspaceUpdate(input);
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncV2WorkspaceRemove, (_event, payload) => {
-    const input = parsePayload(cloudSyncV2WorkspaceRemoveSchema, payload, "云同步删除工作区");
-    return services.cloudSyncV2WorkspaceRemove(input);
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncV2Status, (_event, payload) => {
-    parsePayload(cloudSyncV2StatusSchema, payload ?? {}, "云同步v2状态");
-    return services.cloudSyncV2Status();
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncV2SyncNow, (_event, payload) => {
-    const input = parsePayload(cloudSyncV2SyncNowSchema, payload ?? {}, "云同步v2立即同步");
-    return services.cloudSyncV2SyncNow(input);
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncV2ListConflicts, (_event, payload) => {
-    parsePayload(cloudSyncV2ListConflictsSchema, payload ?? {}, "云同步v2冲突列表");
-    return services.cloudSyncV2ListConflicts();
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncV2ResolveConflict, (_event, payload) => {
-    const input = parsePayload(cloudSyncV2ResolveConflictSchema, payload, "云同步v2冲突处理");
-    return services.cloudSyncV2ResolveConflict(input);
   });
 
   // ─── Resource Operations ──────────────────────────────────────────────────

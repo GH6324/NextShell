@@ -3,9 +3,6 @@ import { App as AntdApp, message } from "antd";
 import type { ConnectionProfile, SessionDescriptor, SshKeyProfile } from "@nextshell/core";
 import type { ConnectionUpsertInput } from "@nextshell/shared";
 import { ZONE_ORDER, ZONE_DISPLAY_NAMES, ZONE_ICONS, extractZone, isValidZone, type ConnectionZone } from "@nextshell/shared";
-import type { CloudSyncStatusView } from "./settings-center/types";
-import { formatCloudSyncState } from "./settings-center/constants";
-import { useCloudSyncStatus } from "../hooks/useCloudSyncStatus";
 import { CredentialEditModal, toConnectionUpsertInput } from "./CredentialEditModal";
 import { promptModal } from "../utils/promptModal";
 import { formatErrorMessage } from "../utils/errorMessage";
@@ -140,17 +137,12 @@ const buildTree = (
 const GroupRow = ({
   node,
   expanded,
-  onToggle,
-  cloudSyncStatus
+  onToggle
 }: {
   node: GroupNode;
   expanded: boolean;
   onToggle: () => void;
-  cloudSyncStatus?: CloudSyncStatusView;
 }) => {
-  const showSyncBadge = node.zone === "workspace" && cloudSyncStatus;
-  const syncState = showSyncBadge ? formatCloudSyncState(cloudSyncStatus.state) : null;
-
   return (
     <button type="button" className={`ct-group-row${node.zone ? " ct-zone-row" : ""}`} onClick={onToggle}>
       <i
@@ -159,20 +151,6 @@ const GroupRow = ({
       />
       <i className={`${node.icon ?? "ri-folder-3-line"} ct-group-icon`} aria-hidden="true" />
       <span className="ct-group-label">{node.label}</span>
-      {showSyncBadge && syncState ? (
-        <span
-          className={`ct-sync-badge ct-sync-badge--${cloudSyncStatus.state}`}
-          title={syncState.label + (cloudSyncStatus.lastError ? `：${cloudSyncStatus.lastError}` : "")}
-        >
-          {cloudSyncStatus.state === "syncing" ? (
-            <i className="ri-loader-4-line ct-sync-spin" aria-hidden="true" />
-          ) : cloudSyncStatus.state === "error" ? (
-            <i className="ri-error-warning-line" aria-hidden="true" />
-          ) : cloudSyncStatus.enabled ? (
-            <i className="ri-check-line" aria-hidden="true" />
-          ) : null}
-        </span>
-      ) : null}
       <span className="ct-group-count">{countLeaves(node)}</span>
     </button>
   );
@@ -253,8 +231,7 @@ const TreeGroup = ({
   onSelect,
   onDoubleClick,
   onConnect,
-  onContextMenu,
-  cloudSyncStatus
+  onContextMenu
 }: {
   node: GroupNode;
   depth: number;
@@ -265,7 +242,6 @@ const TreeGroup = ({
   onDoubleClick: (id: string) => void;
   onConnect: (id: string) => void;
   onContextMenu: (event: React.MouseEvent<HTMLButtonElement>, id: string) => void;
-  cloudSyncStatus?: CloudSyncStatusView;
 }) => {
   const isExpanded = expanded.has(node.key);
   return (
@@ -275,7 +251,6 @@ const TreeGroup = ({
           node={node}
           expanded={isExpanded}
           onToggle={() => toggleExpanded(node.key)}
-          cloudSyncStatus={node.zone === "workspace" ? cloudSyncStatus : undefined}
         />
       )}
       {(depth === 0 || isExpanded) && (
@@ -293,7 +268,6 @@ const TreeGroup = ({
                 onDoubleClick={onDoubleClick}
                 onConnect={onConnect}
                 onContextMenu={onContextMenu}
-                cloudSyncStatus={cloudSyncStatus}
               />
             ) : (
               <ServerRow
@@ -461,7 +435,6 @@ export const ConnectionTreePanel = ({
   onDelete
 }: ConnectionTreePanelProps) => {
   const { modal } = AntdApp.useApp();
-  const cloudSyncStatus = useCloudSyncStatus();
   const [keyword, setKeyword] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(["root", ...ZONE_ORDER.map((z) => `zone:${z}`)])
@@ -658,7 +631,6 @@ export const ConnectionTreePanel = ({
             onDoubleClick={onConnectByDoubleClick}
             onConnect={onConnect}
             onContextMenu={handleServerContextMenu}
-            cloudSyncStatus={cloudSyncStatus}
           />
         )}
       </div>

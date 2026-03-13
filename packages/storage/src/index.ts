@@ -6,7 +6,6 @@ import type Database from "better-sqlite3";
 export { CachedConnectionRepository, CachedSshKeyRepository, CachedProxyRepository } from "./cached-repository";
 import type {
   AppPreferences,
-  CloudSyncResourceSyncState,
   CloudSyncResourceStateV2,
   CloudSyncPendingOp,
   CloudSyncWorkspaceProfile,
@@ -464,7 +463,6 @@ const cloneDefaultPreferences = (): AppPreferences => {
     terminal: { ...DEFAULT_APP_PREFERENCES_VALUE.terminal },
     ssh: { ...DEFAULT_APP_PREFERENCES_VALUE.ssh },
     backup: { ...DEFAULT_APP_PREFERENCES_VALUE.backup },
-    cloudSync: { ...DEFAULT_APP_PREFERENCES_VALUE.cloudSync },
     window: { ...DEFAULT_APP_PREFERENCES_VALUE.window },
     traceroute: { ...DEFAULT_APP_PREFERENCES_VALUE.traceroute },
     audit: { ...DEFAULT_APP_PREFERENCES_VALUE.audit }
@@ -624,35 +622,6 @@ const parseAppPreferences = (value: string | null): AppPreferences => {
           typeof parsed.backup?.lastBackupAt === "string"
             ? parsed.backup.lastBackupAt
             : fallback.backup.lastBackupAt
-      },
-      cloudSync: {
-        enabled:
-          typeof parsed.cloudSync?.enabled === "boolean"
-            ? parsed.cloudSync.enabled
-            : fallback.cloudSync.enabled,
-        apiBaseUrl:
-          typeof parsed.cloudSync?.apiBaseUrl === "string"
-            ? parsed.cloudSync.apiBaseUrl.trim()
-            : fallback.cloudSync.apiBaseUrl,
-        workspaceName:
-          typeof parsed.cloudSync?.workspaceName === "string"
-            ? parsed.cloudSync.workspaceName.trim()
-            : fallback.cloudSync.workspaceName,
-        pullIntervalSec:
-          typeof parsed.cloudSync?.pullIntervalSec === "number" &&
-          Number.isInteger(parsed.cloudSync.pullIntervalSec) &&
-          parsed.cloudSync.pullIntervalSec >= 10 &&
-          parsed.cloudSync.pullIntervalSec <= 86_400
-            ? parsed.cloudSync.pullIntervalSec
-            : fallback.cloudSync.pullIntervalSec,
-        ignoreTlsErrors:
-          typeof parsed.cloudSync?.ignoreTlsErrors === "boolean"
-            ? parsed.cloudSync.ignoreTlsErrors
-            : fallback.cloudSync.ignoreTlsErrors,
-        lastSyncAt:
-          typeof parsed.cloudSync?.lastSyncAt === "string"
-            ? parsed.cloudSync.lastSyncAt
-            : fallback.cloudSync.lastSyncAt
       },
       window: {
         appearance:
@@ -1244,10 +1213,6 @@ export interface ConnectionRepository {
   getJsonSetting: <T = unknown>(key: string) => T | undefined;
   saveJsonSetting: (key: string, value: unknown) => void;
   removeSetting: (key: string) => void;
-  listCloudSyncResourceStates: () => CloudSyncResourceSyncState[];
-  getCloudSyncResourceState: (resourceType: CloudSyncResourceSyncState["resourceType"], resourceId: string) => CloudSyncResourceSyncState | undefined;
-  saveCloudSyncResourceState: (state: CloudSyncResourceSyncState) => void;
-  removeCloudSyncResourceState: (resourceType: CloudSyncResourceSyncState["resourceType"], resourceId: string) => void;
   // ── Cloud Sync v2: multi-workspace ──
   listCloudSyncWorkspaces: () => CloudSyncWorkspaceProfile[];
   getCloudSyncWorkspace: (id: string) => CloudSyncWorkspaceProfile | undefined;
@@ -1983,126 +1948,6 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
 
   removeSetting(key: string): void {
     this.db.prepare("DELETE FROM app_settings WHERE key = ?").run(key);
-  }
-
-  // ── Legacy cloud sync resource state methods (kept for backward compatibility) ──
-  // After migration 19, the table has workspace_id. These methods use empty string as workspace_id.
-  listCloudSyncResourceStates(): CloudSyncResourceSyncState[] {
-    const rows = this.db.prepare(
-      `
-        SELECT
-          resource_type,
-          resource_id,
-          server_revision,
-          conflict_remote_revision,
-          conflict_remote_payload_json,
-          conflict_remote_updated_at,
-          conflict_remote_deleted,
-          conflict_detected_at
-        FROM cloud_sync_resource_state
-        ORDER BY resource_type ASC, resource_id ASC
-      `
-    ).all() as CloudSyncResourceStateV2Row[];
-
-    return rows.map((row) => ({
-      resourceType: row.resource_type as CloudSyncResourceSyncState["resourceType"],
-      resourceId: row.resource_id,
-      serverRevision: typeof row.server_revision === "number" ? row.server_revision : undefined,
-      conflictRemoteRevision: typeof row.conflict_remote_revision === "number" ? row.conflict_remote_revision : undefined,
-      conflictRemotePayloadJson: row.conflict_remote_payload_json ?? undefined,
-      conflictRemoteUpdatedAt: row.conflict_remote_updated_at ?? undefined,
-      conflictRemoteDeleted: row.conflict_remote_deleted === 1,
-      conflictDetectedAt: row.conflict_detected_at ?? undefined
-    }));
-  }
-
-  getCloudSyncResourceState(
-    resourceType: CloudSyncResourceSyncState["resourceType"],
-    resourceId: string
-  ): CloudSyncResourceSyncState | undefined {
-    const row = this.db.prepare(
-      `
-        SELECT
-          resource_type,
-          resource_id,
-          server_revision,
-          conflict_remote_revision,
-          conflict_remote_payload_json,
-          conflict_remote_updated_at,
-          conflict_remote_deleted,
-          conflict_detected_at
-        FROM cloud_sync_resource_state
-        WHERE resource_type = ? AND resource_id = ?
-        LIMIT 1
-      `
-    ).get(resourceType, resourceId) as CloudSyncResourceStateV2Row | undefined;
-
-    if (!row) return undefined;
-    return {
-      resourceType: row.resource_type as CloudSyncResourceSyncState["resourceType"],
-      resourceId: row.resource_id,
-      serverRevision: typeof row.server_revision === "number" ? row.server_revision : undefined,
-      conflictRemoteRevision: typeof row.conflict_remote_revision === "number" ? row.conflict_remote_revision : undefined,
-      conflictRemotePayloadJson: row.conflict_remote_payload_json ?? undefined,
-      conflictRemoteUpdatedAt: row.conflict_remote_updated_at ?? undefined,
-      conflictRemoteDeleted: row.conflict_remote_deleted === 1,
-      conflictDetectedAt: row.conflict_detected_at ?? undefined
-    };
-  }
-
-  saveCloudSyncResourceState(state: CloudSyncResourceSyncState): void {
-    // Legacy: write with empty workspace_id
-    this.db.prepare(
-      `
-        INSERT INTO cloud_sync_resource_state (
-          workspace_id,
-          resource_type,
-          resource_id,
-          server_revision,
-          conflict_remote_revision,
-          conflict_remote_payload_json,
-          conflict_remote_updated_at,
-          conflict_remote_deleted,
-          conflict_detected_at
-        ) VALUES (
-          @workspace_id,
-          @resource_type,
-          @resource_id,
-          @server_revision,
-          @conflict_remote_revision,
-          @conflict_remote_payload_json,
-          @conflict_remote_updated_at,
-          @conflict_remote_deleted,
-          @conflict_detected_at
-        )
-        ON CONFLICT(workspace_id, resource_type, resource_id) DO UPDATE SET
-          server_revision = excluded.server_revision,
-          conflict_remote_revision = excluded.conflict_remote_revision,
-          conflict_remote_payload_json = excluded.conflict_remote_payload_json,
-          conflict_remote_updated_at = excluded.conflict_remote_updated_at,
-          conflict_remote_deleted = excluded.conflict_remote_deleted,
-          conflict_detected_at = excluded.conflict_detected_at
-      `
-    ).run({
-      workspace_id: "",
-      resource_type: state.resourceType,
-      resource_id: state.resourceId,
-      server_revision: state.serverRevision ?? null,
-      conflict_remote_revision: state.conflictRemoteRevision ?? null,
-      conflict_remote_payload_json: state.conflictRemotePayloadJson ?? null,
-      conflict_remote_updated_at: state.conflictRemoteUpdatedAt ?? null,
-      conflict_remote_deleted: state.conflictRemoteDeleted ? 1 : 0,
-      conflict_detected_at: state.conflictDetectedAt ?? null
-    });
-  }
-
-  removeCloudSyncResourceState(
-    resourceType: CloudSyncResourceSyncState["resourceType"],
-    resourceId: string
-  ): void {
-    this.db.prepare(
-      "DELETE FROM cloud_sync_resource_state WHERE resource_type = ? AND resource_id = ?"
-    ).run(resourceType, resourceId);
   }
 
   // ── Cloud Sync v2: workspace-scoped resource state ──
