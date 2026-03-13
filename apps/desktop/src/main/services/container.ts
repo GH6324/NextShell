@@ -438,6 +438,10 @@ export const createServiceContainer = (
     removeConnectionFromCloudSync: async (id) => { await connectionSvc.removeConnectionRecord(id, { skipAudit: true }); },
     removeSshKeyFromCloudSync: async (id) => { await connectionSvc.removeSshKeyRecord({ id, force: true }); },
     removeProxyFromCloudSync: async (id) => { await connectionSvc.removeProxyRecord({ id, force: true }); },
+    migrateConnectionGroupPath: (id, newGroupPath) => {
+      const conn = connections.getById(id);
+      if (conn) connections.save({ ...conn, groupPath: newGroupPath });
+    },
     broadcastToAllWindows,
     connections,
   });

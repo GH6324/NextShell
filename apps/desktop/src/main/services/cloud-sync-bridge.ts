@@ -36,6 +36,7 @@ export interface CloudSyncBridgeOptions {
   removeConnectionFromCloudSync: (id: string) => Promise<void>;
   removeSshKeyFromCloudSync: (id: string) => Promise<void>;
   removeProxyFromCloudSync: (id: string) => Promise<void>;
+  migrateConnectionGroupPath: (id: string, newGroupPath: string) => void;
   broadcastToAllWindows: (channel: string, payload: unknown) => void;
   connections: CachedConnectionRepository;
 }
@@ -60,6 +61,7 @@ export class CloudSyncBridge {
       removeConnectionFromCloudSync: options.removeConnectionFromCloudSync,
       removeSshKeyFromCloudSync: options.removeSshKeyFromCloudSync,
       removeProxyFromCloudSync: options.removeProxyFromCloudSync,
+      migrateConnectionGroupPath: options.migrateConnectionGroupPath,
       emitStatus: (status) => {
         options.broadcastToAllWindows(IPCChannel.CloudSyncStatusEvent, status);
       },

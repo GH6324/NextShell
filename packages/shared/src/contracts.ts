@@ -714,7 +714,9 @@ export const cloudSyncPreviewResultSchema = z.object({
   localWorkspaceConnections: z.array(cloudSyncPreviewConnectionSchema),
   localSshKeys: z.array(cloudSyncPreviewSshKeySchema),
   hasRemoteData: z.boolean(),
-  hasLocalData: z.boolean()
+  hasLocalData: z.boolean(),
+  strandedConnectionCount: z.number().int().min(0),
+  previousWorkspaceName: z.string().optional()
 });
 
 export const masterPasswordSetSchema = backupPasswordSetSchema;

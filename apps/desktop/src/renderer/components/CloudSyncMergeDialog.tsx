@@ -295,6 +295,16 @@ export const CloudSyncMergeDialog = ({
         }
       />
 
+      {preview && preview.strandedConnectionCount > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`将有 ${preview.strandedConnectionCount} 个旧工作区「${preview.previousWorkspaceName}」的连接被移回「服务器」区域`}
+          description="这些连接不会被删除，但将不再参与云同步。"
+        />
+      )}
+
       {hasConflicts && (
         <div style={{ marginBottom: 12, fontSize: 13, color: "var(--color-text-secondary)" }}>
           冲突项：{conflictCount} 个，当前保留本地 {keepLocalCount} 个、接受远端 {conflictCount - keepLocalCount} 个

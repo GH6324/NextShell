@@ -250,6 +250,7 @@ export interface CloudSyncServiceOptions {
   removeConnectionFromCloudSync: (id: string) => Promise<void>;
   removeSshKeyFromCloudSync: (id: string) => Promise<void>;
   removeProxyFromCloudSync: (id: string) => Promise<void>;
+  migrateConnectionGroupPath?: (id: string, newGroupPath: string) => void;
   emitStatus: (status: CloudSyncStatus) => void;
   emitApplied: (event: CloudSyncAppliedEvent) => void;
   loadPendingQueueState?: () => unknown;
@@ -474,8 +475,12 @@ export class CloudSyncService {
           : null;
         const nextScopeKey = queueScopeKey(apiBaseUrl, workspaceName);
         if (previousScopeKey && previousScopeKey !== nextScopeKey) {
+          // Attempt to flush old pending queue before discarding it
+          await this.tryFlushOldPendingQueue(previousPrefs);
           this.clearPendingQueueState();
           this.clearAllResourceStates();
+          // Migrate connections from old workspace prefix to /server zone
+          this.migrateStrandedConnections(previousPrefs.workspaceName);
         } else {
           this.ensurePendingQueueState(apiBaseUrl, workspaceName);
         }
@@ -686,7 +691,8 @@ export class CloudSyncService {
       localWorkspaceConnections,
       localSshKeys,
       hasRemoteData: remoteConnections.length > 0 || remoteSshKeys.length > 0,
-      hasLocalData: localWorkspaceConnections.length > 0 || localSshKeys.length > 0
+      hasLocalData: localWorkspaceConnections.length > 0 || localSshKeys.length > 0,
+      ...this.computeStrandedInfo(workspaceName)
     };
   }
 
@@ -1174,11 +1180,15 @@ export class CloudSyncService {
         this.removeResourceState("connection", connection.id);
       }
     }
+    // SSH keys are global resources (not scoped to a workspace prefix).
+    // Only remove a local key if the remote has explicitly tombstoned it
+    // (i.e. it exists in deletedSshKeyIds). Never delete local-only keys
+    // that the remote simply doesn't know about — this prevents data loss
+    // when switching workspaces.
     for (const sshKey of this.options.listSshKeys()) {
       if (
         !skipOrphanRemoval &&
-        !remoteSshKeyIds.has(sshKey.id) &&
-        !deletedSshKeyIds.has(sshKey.id) &&
+        deletedSshKeyIds.has(sshKey.id) &&
         !this.findPendingItem("sshKey", sshKey.id)
       ) {
         await this.options.removeSshKeyFromCloudSync(sshKey.id);
@@ -1377,6 +1387,32 @@ export class CloudSyncService {
 
   private isConnectionProfileInScope(profile: ConnectionProfile, workspaceName: string): boolean {
     return isConnectionGroupPathInScope(profile.groupPath, workspaceName);
+  }
+
+  /**
+   * Count connections under a previous workspace prefix that will become stranded
+   * if the user switches to a different workspace.
+   */
+  private computeStrandedInfo(newWorkspaceName: string): {
+    strandedConnectionCount: number;
+    previousWorkspaceName?: string;
+  } {
+    const prefs = this.options.getPreferences().cloudSync;
+    const previousWorkspaceName = prefs.workspaceName?.trim();
+    if (
+      !prefs.enabled ||
+      !previousWorkspaceName ||
+      previousWorkspaceName === newWorkspaceName
+    ) {
+      return { strandedConnectionCount: 0 };
+    }
+    const count = this.options.listConnections().filter(
+      (c) => isConnectionGroupPathInScope(c.groupPath, previousWorkspaceName)
+    ).length;
+    return {
+      strandedConnectionCount: count,
+      previousWorkspaceName: count > 0 ? previousWorkspaceName : undefined
+    };
   }
 
   private shouldProcessConnectionDeletion(resourceId: string, workspaceName: string): boolean {
@@ -1982,6 +2018,56 @@ export class CloudSyncService {
     this.pendingQueueState = undefined;
     this.pendingQueueScopeKey = null;
     this.options.savePendingQueueState?.(undefined);
+  }
+
+  /**
+   * Best-effort flush of the old workspace's pending queue before switching scope.
+   * If the old server is unreachable or the password is missing, silently skip.
+   */
+  private async tryFlushOldPendingQueue(
+    previousPrefs: { apiBaseUrl: string; workspaceName: string; ignoreTlsErrors: boolean }
+  ): Promise<void> {
+    const oldApiBaseUrl = normalizeApiBaseUrl(previousPrefs.apiBaseUrl);
+    const oldWorkspaceName = previousPrefs.workspaceName.trim();
+    if (!oldApiBaseUrl || !oldWorkspaceName) return;
+
+    const queueState = this.ensurePendingQueueState(oldApiBaseUrl, oldWorkspaceName);
+    if (!queueState || queueState.items.length === 0) return;
+
+    try {
+      const oldAccount = keytarAccountForWorkspace(oldApiBaseUrl, oldWorkspaceName);
+      const password = await new KeytarPasswordCache(this.options.keytarServiceName, oldAccount).recall();
+      if (!password) return;
+
+      await this.flushPendingQueueInternal({
+        apiBaseUrl: oldApiBaseUrl,
+        workspaceName: oldWorkspaceName,
+        workspacePassword: password,
+        ignoreTlsErrors: previousPrefs.ignoreTlsErrors
+      });
+    } catch {
+      // Best-effort: old server may be unreachable. We'll discard leftovers.
+    }
+  }
+
+  /**
+   * Move connections under `/workspace/{oldWorkspaceName}/...` to `/server/...`
+   * so they don't become invisible orphans after a scope switch.
+   */
+  private migrateStrandedConnections(oldWorkspaceName: string): void {
+    const migrate = this.options.migrateConnectionGroupPath;
+    if (!migrate) return;
+
+    const oldPrefix = workspaceGroupPathPrefix(oldWorkspaceName);
+    if (oldPrefix === "/" || oldWorkspaceName.trim().length === 0) return;
+
+    for (const connection of this.options.listConnections()) {
+      if (!isConnectionGroupPathInScope(connection.groupPath, oldWorkspaceName)) continue;
+      // Replace `/workspace/{oldName}/sub` → `/server/sub` (preserve sub-path)
+      const subPath = connection.groupPath.slice(oldPrefix.length); // e.g. "/prod" or ""
+      const newGroupPath = subPath ? `/server${subPath}` : "/server";
+      migrate(connection.id, newGroupPath);
+    }
   }
 
   private async withQueue(run: () => Promise<void>): Promise<void> {

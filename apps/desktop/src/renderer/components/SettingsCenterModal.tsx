@@ -507,6 +507,26 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
       return;
     }
 
+    // Detect scope switch: if already enabled with a different API+workspace, warn user
+    const isScopeSwitch =
+      cloudSyncStatus.enabled &&
+      (cloudSyncStatus.apiBaseUrl !== apiBaseUrl || cloudSyncStatus.workspaceName !== workspaceName);
+
+    if (isScopeSwitch) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        modal.confirm({
+          title: "切换云同步工作区",
+          content: `即将从工作区 "${cloudSyncStatus.workspaceName}" 切换到 "${workspaceName}"。`
+            + `\n\n旧工作区下的连接将被移回「服务器」区域，待推送的改动将尝试同步到旧服务器。`,
+          okText: "确认切换",
+          cancelText: "取消",
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false)
+        });
+      });
+      if (!confirmed) return;
+    }
+
     // Step 1: preview remote data to detect merge conflicts
     setCloudSyncBusyAction("configure");
     try {
@@ -589,6 +609,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     cloudSyncWorkspaceName,
     cloudSyncWorkspacePassword,
     message,
+    modal,
     refreshCloudSyncConflicts,
     refreshCloudSyncStatus,
     syncCloudSyncFormFromStatus
