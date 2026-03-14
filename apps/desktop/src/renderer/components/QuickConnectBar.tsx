@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Form, Input, InputNumber, Modal, Select } from "antd";
 import type { ConnectionProfile, SessionDescriptor, SshKeyProfile } from "@nextshell/core";
 import type { QuickCreateConnectionInput } from "../utils/quickConnectInput";
+import {
+  getQuickConnectShortcutLabel,
+  isQuickConnectShortcut,
+  shouldIgnoreQuickConnectShortcutTarget
+} from "../utils/quickConnectShortcut";
 
 interface QuickConnectBarProps {
   connections: ConnectionProfile[];
@@ -58,6 +63,7 @@ export const QuickConnectBar = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isPlusPrefixed = keyword.trimStart().startsWith("+");
+  const shortcutLabel = getQuickConnectShortcutLabel(window.nextshell.platform);
 
   const connectedIds = useMemo(
     () =>
@@ -119,10 +125,17 @@ export const QuickConnectBar = ({
     ];
   }, [filteredResults, isPlusPrefixed, keyword, quickInputMode]);
 
+  const focusInput = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  }, []);
+
   const handleOpen = useCallback(() => {
     setOpen(true);
     setActiveIndex(-1);
-  }, []);
+    focusInput();
+  }, [focusInput]);
 
   const handleClose = useCallback(() => {
     setOpen(false);
@@ -168,6 +181,33 @@ export const QuickConnectBar = ({
 
     quickCreateForm.setFieldValue("password", undefined);
   }, [quickCreateAuthType, quickCreateForm, quickCreateOpen]);
+
+  useEffect(() => {
+    if (quickCreateOpen) {
+      return;
+    }
+
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (!isQuickConnectShortcut(event, window.nextshell.platform)) {
+        return;
+      }
+      if (shouldIgnoreQuickConnectShortcutTarget(event.target, containerRef.current)) {
+        return;
+      }
+
+      event.preventDefault();
+      if (!open) {
+        setOpen(true);
+        setActiveIndex(-1);
+      }
+      focusInput();
+    };
+
+    window.addEventListener("keydown", handleShortcut);
+    return () => {
+      window.removeEventListener("keydown", handleShortcut);
+    };
+  }, [focusInput, open, quickCreateOpen]);
 
   const handleSubmitQuickCreate = useCallback(async (): Promise<void> => {
     if (quickCreateSaving) {
@@ -341,7 +381,7 @@ export const QuickConnectBar = ({
           </button>
         )}
         {!open && (
-          <kbd className="qcb-shortcut">⌘K</kbd>
+          <kbd className="qcb-shortcut">{shortcutLabel}</kbd>
         )}
       </div>
 
