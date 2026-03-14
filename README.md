@@ -70,6 +70,18 @@ bun run dev
 2. 若仍失败，执行 `bun run setup`
 3. 在 Bun / Electron 版本变化后再次执行 `bun run setup`
 
+若本地终端打开时报错 `posix_spawnp failed`：
+
+- 这通常是开发环境或未正确重建原生模块的本地运行问题，不是 shell 配置错误，也不表示业务代码回归。
+- 在标准 `electron-builder` release 打包流程下通常不会命中，因为打包产物会优先使用 `node-pty/build/Release/spawn-helper`。
+- 常见原因是 macOS 开发环境中的 `node-pty/prebuilds/.../spawn-helper` 缺少执行位，导致本地终端无法拉起 shell。
+
+建议按以下顺序恢复：
+
+1. 执行 `bun run rebuild:native`
+2. 若仍失败，执行 `bun run setup`
+3. 若问题仍在，删除依赖后重新安装，再重复执行 `bun run setup`
+
 ## 版本与发布
 
 - 非 tag 本地构建版本格式：`<apps/desktop版本>-dev+<shortSha>`
