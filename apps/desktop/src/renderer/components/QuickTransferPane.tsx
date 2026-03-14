@@ -7,6 +7,7 @@ import { useTransferQueueStore } from "../store/useTransferQueueStore";
 import { pMap } from "../utils/concurrentLimit";
 import { formatErrorMessage } from "../utils/errorMessage";
 import { resolveInitialRemotePath } from "../utils/remoteHomePath";
+import { ConnectionPrompt } from "./ConnectionPrompt";
 
 interface QuickTransferPaneProps {
   sourceConnection?: ConnectionProfile;
@@ -888,11 +889,18 @@ export const QuickTransferPane = ({
   ]);
 
   if (!sourceConnection) {
-    return <Typography.Text className="text-[var(--t3)]">先选择一个连接再使用文件快传。</Typography.Text>;
+    return (
+      <ConnectionPrompt message="先选择一个连接再使用文件快传。" icon="ri-folder-transfer-line" />
+    );
   }
 
   if (!connected) {
-    return <Typography.Text className="text-[var(--t3)]">当前连接未建立会话，请先连接后再使用文件快传。</Typography.Text>;
+    return (
+      <ConnectionPrompt
+        message="当前连接未建立会话，请先连接后再使用文件快传。"
+        icon="ri-links-line"
+      />
+    );
   }
 
   return (

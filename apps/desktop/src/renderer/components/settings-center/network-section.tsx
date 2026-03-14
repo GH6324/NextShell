@@ -15,6 +15,13 @@ export const NetworkSection = ({
 }) => (
   <>
     <SettingsCard title="路由追踪工具" description="配置 nexttrace 可执行文件路径">
+      <SettingsSwitchRow
+        label="显示路由追踪标签卡片"
+        hint="关闭后终端下方不显示「路由追踪」标签选项"
+        checked={traceroute.showTracerouteTab}
+        disabled={loading}
+        onChange={(v) => save({ traceroute: { showTracerouteTab: v } })}
+      />
       <SettingsRow label="nexttrace 可执行文件路径">
         <div className="flex gap-2">
           <Input

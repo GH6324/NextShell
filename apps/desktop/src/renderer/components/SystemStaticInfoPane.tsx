@@ -7,6 +7,7 @@ import type {
   SystemInfoSnapshot,
   SystemNetworkInterfaceTotal
 } from "@nextshell/core";
+import { ConnectionPrompt } from "./ConnectionPrompt";
 import { TableSkeleton } from "./LoadingSkeletons";
 import { formatDiskSize } from "../utils/diskUsage";
 import { formatErrorMessage } from "../utils/errorMessage";
@@ -283,7 +284,9 @@ export const SystemStaticInfoPane = ({
   );
 
   if (!connection) {
-    return <Typography.Text className="text-[var(--t3)]">先选择一个连接再查看系统信息。</Typography.Text>;
+    return (
+      <ConnectionPrompt message="先选择一个连接再查看系统信息。" icon="ri-information-line" />
+    );
   }
 
   if (!monitorEnabled) {
@@ -302,9 +305,10 @@ export const SystemStaticInfoPane = ({
 
   if (!connected || !connectedTerminalSessionId) {
     return (
-      <Typography.Text className="text-[var(--t3)]">
-        当前连接未建立会话，请双击左侧服务器建立 SSH 连接后查看系统信息。
-      </Typography.Text>
+      <ConnectionPrompt
+        message="当前连接未建立会话，请双击左侧服务器建立 SSH 连接后查看系统信息。"
+        icon="ri-links-line"
+      />
     );
   }
 

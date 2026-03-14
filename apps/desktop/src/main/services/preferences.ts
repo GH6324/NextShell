@@ -233,7 +233,11 @@ export const mergePreferences = (
       powProvider:
         patch.traceroute?.powProvider !== undefined
           ? patch.traceroute.powProvider
-          : current.traceroute.powProvider
+          : current.traceroute.powProvider,
+      showTracerouteTab:
+        patch.traceroute?.showTracerouteTab !== undefined
+          ? patch.traceroute.showTracerouteTab
+          : current.traceroute.showTracerouteTab
     },
     audit: {
       enabled:

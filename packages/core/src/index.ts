@@ -473,6 +473,8 @@ export interface AppPreferences {
     language: "cn" | "en";
     /** PoW 服务商（国内用户建议选 sakura） */
     powProvider: "api.nxtrace.org" | "sakura";
+    /** 是否在终端下方显示路由追踪标签卡片 */
+    showTracerouteTab: boolean;
   };
   audit: {
     /** 是否启用审计日志记录 */
@@ -540,6 +542,7 @@ export interface AppPreferencesPatch {
     noRdns?: boolean;
     language?: "cn" | "en";
     powProvider?: "api.nxtrace.org" | "sakura";
+    showTracerouteTab?: boolean;
   };
   audit?: {
     enabled?: boolean;
@@ -689,7 +692,8 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
     dataProvider: "LeoMoeAPI",
     noRdns: false,
     language: "cn",
-    powProvider: "api.nxtrace.org"
+    powProvider: "api.nxtrace.org",
+    showTracerouteTab: true
   },
   audit: {
     enabled: false,

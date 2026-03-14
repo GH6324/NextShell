@@ -457,7 +457,8 @@ export const appPreferencesSchema = z.object({
     dataProvider: z.enum(["LeoMoeAPI", "ip-api.com", "IPInfo", "IPInsight", "IP.SB", "disable-geoip"]).default(DEFAULT_APP_PREFERENCES.traceroute.dataProvider),
     noRdns: z.boolean().default(DEFAULT_APP_PREFERENCES.traceroute.noRdns),
     language: z.enum(["cn", "en"]).default(DEFAULT_APP_PREFERENCES.traceroute.language),
-    powProvider: z.enum(["api.nxtrace.org", "sakura"]).default(DEFAULT_APP_PREFERENCES.traceroute.powProvider)
+    powProvider: z.enum(["api.nxtrace.org", "sakura"]).default(DEFAULT_APP_PREFERENCES.traceroute.powProvider),
+    showTracerouteTab: z.boolean().default(DEFAULT_APP_PREFERENCES.traceroute.showTracerouteTab)
   }).default(DEFAULT_APP_PREFERENCES.traceroute),
   audit: z.object({
     enabled: z.boolean().default(DEFAULT_APP_PREFERENCES.audit.enabled),
@@ -530,7 +531,8 @@ export const appPreferencesPatchSchema = z.object({
     dataProvider: z.enum(["LeoMoeAPI", "ip-api.com", "IPInfo", "IPInsight", "IP.SB", "disable-geoip"]).optional(),
     noRdns: z.boolean().optional(),
     language: z.enum(["cn", "en"]).optional(),
-    powProvider: z.enum(["api.nxtrace.org", "sakura"]).optional()
+    powProvider: z.enum(["api.nxtrace.org", "sakura"]).optional(),
+    showTracerouteTab: z.boolean().optional()
   }).optional(),
   audit: z.object({
     enabled: z.boolean().optional(),

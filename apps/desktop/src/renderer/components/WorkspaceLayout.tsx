@@ -72,12 +72,14 @@ const SessionTabContextMenu = ({
     session,
     displayTitle,
     onClose,
+    onOpenManager,
     onRename,
 }: {
     state: SessionTabContextMenuState;
     session: SessionDescriptor;
     displayTitle: string;
     onClose: () => void;
+    onOpenManager: () => void;
     onRename: (session: SessionDescriptor) => void;
 }) => {
     const menuRef = useRef<HTMLDivElement>(null);
@@ -145,6 +147,18 @@ const SessionTabContextMenu = ({
             style={{ left: pos.left, top: pos.top, visibility: visible ? "visible" : "hidden" }}
             onContextMenu={(event) => event.preventDefault()}
         >
+            <button
+                className="session-tab-menu-item"
+                onClick={() => {
+                    onOpenManager();
+                    onClose();
+                }}
+            >
+                <span className="session-tab-menu-icon">
+                    <i className="ri-server-line" aria-hidden="true" />
+                </span>
+                新建服务器
+            </button>
             <button
                 className="session-tab-menu-item"
                 onClick={() => {
@@ -262,6 +276,9 @@ export const WorkspaceLayout = ({
 }: WorkspaceLayoutProps) => {
     const { modal } = AntdApp.useApp();
     const windowPreferences = usePreferencesStore((state) => state.preferences.window);
+    const showTracerouteTab = usePreferencesStore(
+        (state) => state.preferences.traceroute.showTracerouteTab ?? true,
+    );
     const [draggingSessionId, setDraggingSessionId] = useState<string>();
     const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(() =>
         resolveWorkspacePanelState(
@@ -515,6 +532,96 @@ export const WorkspaceLayout = ({
     }, [bottomCollapsed, setBottomCollapsedWithPersistence]);
 
     const collapsedTransferCount = transferTasks.length > 99 ? "99+" : String(transferTasks.length);
+
+    const effectiveBottomActiveKey =
+        bottomTab === "traceroute" && !showTracerouteTab ? "files" : bottomTab;
+
+    const bottomTabItems = useMemo(() => {
+        const base: Array<{
+            key: string;
+            label: string;
+            children: React.ReactNode;
+        }> = [
+            {
+                key: "files",
+                label: "SFTP",
+                children: (
+                    <FileExplorerPane
+                        connection={activeConnection}
+                        connected={isActiveConnectionTerminalConnected}
+                        followSessionId={followTerminalSessionId}
+                        active={bottomTab === "files"}
+                        onOpenSettings={onOpenSettings}
+                        onOpenEditorTab={onOpenEditorTab}
+                    />
+                ),
+            },
+            {
+                key: "quick-transfer",
+                label: "文件快传",
+                children: bottomTab === "quick-transfer" ? (
+                    <QuickTransferPane
+                        sourceConnection={activeConnection}
+                        connected={isActiveConnectionTerminalConnected}
+                        active
+                        connections={connections}
+                        sessions={sessions}
+                    />
+                ) : null,
+            },
+            {
+                key: "commands",
+                label: "命令",
+                children: (
+                    <CommandCenterPane
+                        connection={activeConnection}
+                        connected={isActiveConnectionTerminalConnected}
+                        connections={connections}
+                        sessions={sessions}
+                        onExecuteCommand={handleExecuteCommand}
+                    />
+                ),
+            },
+            {
+                key: "system-info",
+                label: "系统信息",
+                children: (
+                    <SystemStaticInfoPane
+                        connection={activeConnection}
+                        connected={isActiveConnectionTerminalConnected}
+                        active={bottomTab === "system-info"}
+                        connectedTerminalSessionId={activeConnectionConnectedTerminalSessionId}
+                        onOpenSettings={onOpenSettings}
+                    />
+                ),
+            },
+        ];
+        if (showTracerouteTab) {
+            base.push({
+                key: "traceroute",
+                label: "路由追踪",
+                children: (
+                    <TraceroutePane
+                        connection={activeConnection}
+                        connected={isActiveConnectionTerminalConnected}
+                    />
+                ),
+            });
+        }
+        return base;
+    }, [
+        showTracerouteTab,
+        activeConnection,
+        isActiveConnectionTerminalConnected,
+        followTerminalSessionId,
+        bottomTab,
+        onOpenSettings,
+        onOpenEditorTab,
+        connections,
+        sessions,
+        handleExecuteCommand,
+        activeConnectionConnectedTerminalSessionId,
+    ]);
 
     return (
         <div className="h-screen flex flex-col overflow-hidden">
@@ -838,6 +945,7 @@ export const WorkspaceLayout = ({
                                                 session={contextMenuSession}
                                                 displayTitle={contextMenuSessionTitle ?? contextMenuSession.title}
                                                 onClose={() => setSessionContextMenu(null)}
+                                                onOpenManager={onOpenManager}
                                                 onRename={(session) => {
                                                     void handlePromptRenameSession(session);
                                                 }}
@@ -900,7 +1008,7 @@ export const WorkspaceLayout = ({
                                 >
                                     <div className="bottom-workbench">
                                         <Tabs
-                                            activeKey={bottomTab}
+                                            activeKey={effectiveBottomActiveKey}
                                             onChange={onSetBottomTab}
                                             tabBarExtraContent={{
                                                 right: (
@@ -925,83 +1033,7 @@ export const WorkspaceLayout = ({
                                                     </button>
                                                 ),
                                             }}
-                                            items={[
-                                                {
-                                                    key: "files",
-                                                    label: "SFTP",
-                                                    children: (
-                                                        <FileExplorerPane
-                                                            connection={activeConnection}
-                                                            connected={
-                                                                isActiveConnectionTerminalConnected
-                                                            }
-                                                            followSessionId={followTerminalSessionId}
-                                                            active={bottomTab === "files"}
-                                                            onOpenSettings={onOpenSettings}
-                                                            onOpenEditorTab={onOpenEditorTab}
-                                                        />
-                                                    ),
-                                                },
-                                                {
-                                                    key: "quick-transfer",
-                                                    label: "文件快传",
-                                                    children: bottomTab === "quick-transfer" ? (
-                                                        <QuickTransferPane
-                                                            sourceConnection={activeConnection}
-                                                            connected={
-                                                                isActiveConnectionTerminalConnected
-                                                            }
-                                                            active
-                                                            connections={connections}
-                                                            sessions={sessions}
-                                                        />
-                                                    ) : null,
-                                                },
-                                                {
-                                                    key: "commands",
-                                                    label: "命令",
-                                                    children: (
-                                                        <CommandCenterPane
-                                                            connection={activeConnection}
-                                                            connected={
-                                                                isActiveConnectionTerminalConnected
-                                                            }
-                                                            connections={connections}
-                                                            sessions={sessions}
-                                                            onExecuteCommand={handleExecuteCommand}
-                                                        />
-                                                    ),
-                                                },
-                                                {
-                                                    key: "system-info",
-                                                    label: "系统信息",
-                                                    children: (
-                                                        <SystemStaticInfoPane
-                                                            connection={activeConnection}
-                                                            connected={
-                                                                isActiveConnectionTerminalConnected
-                                                            }
-                                                            active={bottomTab === "system-info"}
-                                                            connectedTerminalSessionId={
-                                                                activeConnectionConnectedTerminalSessionId
-                                                            }
-                                                            onOpenSettings={onOpenSettings}
-                                                        />
-                                                    ),
-                                                },
-                                                {
-                                                    key: "traceroute",
-                                                    label: "路由追踪",
-                                                    children: (
-                                                        <TraceroutePane
-                                                            connection={activeConnection}
-                                                            connected={
-                                                                isActiveConnectionTerminalConnected
-                                                            }
-                                                        />
-                                                    ),
-                                                },
-                                            ]}
+                                            items={bottomTabItems}
                                         />
                                     </div>
                                 </Panel>

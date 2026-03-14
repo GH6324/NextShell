@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Typography } from "antd";
 import type { ConnectionProfile } from "@nextshell/core";
+import { ConnectionPrompt } from "./ConnectionPrompt";
 import type { TracerouteEvent } from "@nextshell/shared";
 
 // ─── ANSI colour renderer ────────────────────────────────────────────────────
@@ -208,17 +209,16 @@ export const TraceroutePane = ({ connection, connected }: TraceroutePaneProps) =
 
   if (!connection) {
     return (
-      <Typography.Text className="text-[var(--t3)]">
-        先选择一个连接再使用路由追踪。
-      </Typography.Text>
+      <ConnectionPrompt message="先选择一个连接再使用路由追踪。" icon="ri-route-line" />
     );
   }
 
   if (!connected) {
     return (
-      <Typography.Text className="text-[var(--t3)]">
-        当前连接未建立会话，请双击左侧服务器建立 SSH 连接。
-      </Typography.Text>
+      <ConnectionPrompt
+        message="当前连接未建立会话，请双击左侧服务器建立 SSH 连接。"
+        icon="ri-links-line"
+      />
     );
   }
 

@@ -718,7 +718,11 @@ const parseAppPreferences = (value: string | null): AppPreferences => {
           parsed.traceroute?.powProvider === "api.nxtrace.org" ||
           parsed.traceroute?.powProvider === "sakura"
             ? parsed.traceroute.powProvider
-            : fallback.traceroute.powProvider
+            : fallback.traceroute.powProvider,
+        showTracerouteTab:
+          typeof parsed.traceroute?.showTracerouteTab === "boolean"
+            ? parsed.traceroute.showTracerouteTab
+            : fallback.traceroute.showTracerouteTab
       },
       audit: {
         enabled:

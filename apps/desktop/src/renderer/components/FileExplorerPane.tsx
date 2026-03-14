@@ -15,6 +15,7 @@ import {
   extractDroppedFilePaths,
   isExternalFileDrag
 } from "../utils/sftpFileDrop";
+import { ConnectionPrompt } from "./ConnectionPrompt";
 import { FILE_EXPLORER_FOLLOW_CWD_DEBOUNCE_MS } from "./FileExplorerPane.follow";
 import { getVisibleFileExplorerToolbarActions } from "./FileExplorerPane.toolbar";
 
@@ -1465,11 +1466,18 @@ export const FileExplorerPane = ({
   };
 
   if (!connection) {
-    return <Typography.Text className="text-[var(--t3)]">先选择一个连接再浏览文件。</Typography.Text>;
+    return (
+      <ConnectionPrompt message="先选择一个连接再浏览文件。" icon="ri-folder-open-line" />
+    );
   }
 
   if (!connected) {
-    return <Typography.Text className="text-[var(--t3)]">当前连接未建立会话，请双击左侧服务器建立 SSH 连接。</Typography.Text>;
+    return (
+      <ConnectionPrompt
+        message="当前连接未建立会话，请双击左侧服务器建立 SSH 连接。"
+        icon="ri-links-line"
+      />
+    );
   }
 
   return (

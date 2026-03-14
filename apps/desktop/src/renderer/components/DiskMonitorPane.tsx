@@ -3,6 +3,7 @@ import { Table, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { CommandExecutionResult, ConnectionProfile } from "@nextshell/core";
 import { useScheduledPoll } from "../hooks/useScheduledPoll";
+import { ConnectionPrompt } from "./ConnectionPrompt";
 import { TableSkeleton } from "./LoadingSkeletons";
 import { formatDiskSize, parseDfOutput, type DiskUsageEntry } from "../utils/diskUsage";
 import { formatErrorMessage } from "../utils/errorMessage";
@@ -239,7 +240,9 @@ export const DiskMonitorPane = ({
   );
 
   if (!connection) {
-    return <Typography.Text className="text-[var(--t3)]">先选择一个连接再查看磁盘。</Typography.Text>;
+    return (
+      <ConnectionPrompt message="先选择一个连接再查看磁盘。" icon="ri-hard-drive-2-line" />
+    );
   }
 
   if (!monitorEnabled) {
@@ -258,9 +261,10 @@ export const DiskMonitorPane = ({
 
   if (!connected || !connectedTerminalSessionId) {
     return (
-      <Typography.Text className="text-[var(--t3)]">
-        当前连接未建立会话，请双击左侧服务器建立 SSH 连接后查看磁盘。
-      </Typography.Text>
+      <ConnectionPrompt
+        message="当前连接未建立会话，请双击左侧服务器建立 SSH 连接后查看磁盘。"
+        icon="ri-links-line"
+      />
     );
   }
 
