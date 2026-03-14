@@ -45,6 +45,8 @@ const isTerminalSession = (session: SessionDescriptor): boolean =>
     !session.type || session.type === "terminal";
 
 const LEFT_SIDEBAR_STORAGE_KEY = "nextshell.workspace.leftSidebarCollapsed";
+const LEFT_SIDEBAR_WIDTH_EXPANDED = 240;
+const LEFT_SIDEBAR_WIDTH_COLLAPSED = 52;
 const BOTTOM_WORKBENCH_STORAGE_KEY = "nextshell.workspace.bottomWorkbenchCollapsed";
 
 const getWorkspaceLayoutStorage = (): Storage | undefined => {
@@ -277,9 +279,7 @@ export const WorkspaceLayout = ({
     const [updateReleaseUrl, setUpdateReleaseUrl] = useState<string | null>(null);
     const [sessionContextMenu, setSessionContextMenu] =
         useState<SessionTabContextMenuState | null>(null);
-    const leftPanelRef = usePanelRef();
     const bottomPanelRef = usePanelRef();
-    const syncingLeftPanelRef = useRef(false);
     const syncingBottomPanelRef = useRef(false);
     const terminalPaneRef = useRef<TerminalPaneHandle | null>(null);
     const resizeFitRafRef = useRef(0);
@@ -437,25 +437,6 @@ export const WorkspaceLayout = ({
     }, [updateReleaseUrl]);
 
     useEffect(() => {
-        const panel = leftPanelRef.current;
-        if (!panel) {
-            return;
-        }
-        if (leftSidebarCollapsed !== panel.isCollapsed()) {
-            syncingLeftPanelRef.current = true;
-            if (leftSidebarCollapsed) {
-                panel.collapse();
-            } else {
-                panel.expand();
-            }
-            const rafId = requestAnimationFrame(() => {
-                syncingLeftPanelRef.current = false;
-            });
-            return () => cancelAnimationFrame(rafId);
-        }
-    }, [leftPanelRef, leftSidebarCollapsed]);
-
-    useEffect(() => {
         const panel = bottomPanelRef.current;
         if (!panel) {
             return;
@@ -480,24 +461,6 @@ export const WorkspaceLayout = ({
             terminalPaneRef.current?.fit();
         });
     }, [bottomCollapsed]);
-
-    const syncLeftSidebarCollapsed = useCallback(
-        (_panelSize?: unknown, _panelId?: string | number, prevPanelSize?: unknown) => {
-        if (prevPanelSize === undefined) {
-            return;
-        }
-        const collapsed = leftPanelRef.current?.isCollapsed() ?? false;
-        setLeftSidebarCollapsed(collapsed);
-        if (syncingLeftPanelRef.current) {
-            syncingLeftPanelRef.current = false;
-            return;
-        }
-        persistWorkspacePanelState(
-            getWorkspaceLayoutStorage(),
-            LEFT_SIDEBAR_STORAGE_KEY,
-            collapsed,
-        );
-    }, [leftPanelRef]);
 
     const syncBottomCollapsed = useCallback(
         (_panelSize?: unknown, _panelId?: string | number, prevPanelSize?: unknown) => {
@@ -592,43 +555,41 @@ export const WorkspaceLayout = ({
             </header>
 
             <main className="flex flex-1 min-w-0 min-h-0 overflow-hidden">
-                <Group orientation="horizontal" className="w-full h-full min-w-0 min-h-0">
-                    <Panel
-                        panelRef={leftPanelRef}
-                        defaultSize={leftSidebarCollapsed ? "5%" : "18%"}
-                        minSize="14%"
-                        maxSize="36%"
-                        collapsible
-                        collapsedSize="5%"
-                        onResize={syncLeftSidebarCollapsed}
-                    >
-                        {leftSidebarCollapsed ? (
-                            <aside className="sidebar-collapsed-shell">
-                                <button
-                                    type="button"
-                                    className="sidebar-collapsed-toggle"
-                                    onClick={handleToggleLeftSidebar}
-                                    title="展开侧栏"
-                                >
-                                    <i className="ri-layout-left-line" aria-hidden="true" />
-                                </button>
+                <aside
+                    className="workspace-left-sidebar flex-shrink-0 flex flex-col h-full overflow-hidden transition-[width] duration-200 ease-out bg-[var(--bg-surface)] border-r border-[var(--border)]"
+                    style={{
+                        width: leftSidebarCollapsed
+                            ? LEFT_SIDEBAR_WIDTH_COLLAPSED
+                            : LEFT_SIDEBAR_WIDTH_EXPANDED,
+                    }}
+                >
+                    {leftSidebarCollapsed ? (
+                        <div className="sidebar-collapsed-shell w-full h-full flex flex-col items-center gap-2">
+                            <button
+                                type="button"
+                                className="sidebar-collapsed-toggle"
+                                onClick={handleToggleLeftSidebar}
+                                title="展开侧栏"
+                            >
+                                <i className="ri-layout-left-line" aria-hidden="true" />
+                            </button>
+                            <div
+                                className={`sidebar-collapsed-status ${headerSessionClass}`}
+                                title={headerSessionText}
+                            >
+                                <span className="sidebar-session-dot" />
+                            </div>
+                            {transferTasks.length > 0 ? (
                                 <div
-                                    className={`sidebar-collapsed-status ${headerSessionClass}`}
-                                    title={headerSessionText}
+                                    className="sidebar-collapsed-badge"
+                                    title={`传输任务 ${transferTasks.length}`}
                                 >
-                                    <span className="sidebar-session-dot" />
+                                    {collapsedTransferCount}
                                 </div>
-                                {transferTasks.length > 0 ? (
-                                    <div
-                                        className="sidebar-collapsed-badge"
-                                        title={`传输任务 ${transferTasks.length}`}
-                                    >
-                                        {collapsedTransferCount}
-                                    </div>
-                                ) : null}
-                            </aside>
-                        ) : (
-                            <aside className="w-full h-full flex flex-col bg-[var(--bg-surface)] border-r border-[var(--border)] overflow-hidden">
+                            ) : null}
+                        </div>
+                    ) : (
+                        <div className="w-full h-full flex flex-col overflow-hidden">
                                 <div className={`sidebar-session-card ${headerSessionClass}`}>
                                     <div className="sidebar-session-row">
                                         <span className="sidebar-session-dot" />
@@ -709,12 +670,10 @@ export const WorkspaceLayout = ({
                                         }
                                     }}
                                 />
-                            </aside>
+                            </div>
                         )}
-                    </Panel>
-                    <Separator className="panel-resize-handle horizontal" />
-                    <Panel minSize="48%">
-                        <section className="w-full h-full min-w-0 min-h-0 flex flex-col overflow-hidden">
+                </aside>
+                <section className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
                             <Group orientation="vertical" className="w-full h-full min-w-0 min-h-0">
                                 <Panel defaultSize="68%" minSize="38%">
                                     <div className="terminal-shell">
@@ -1048,8 +1007,6 @@ export const WorkspaceLayout = ({
                                 </Panel>
                             </Group>
                         </section>
-                    </Panel>
-                </Group>
             </main>
         </div>
     );
