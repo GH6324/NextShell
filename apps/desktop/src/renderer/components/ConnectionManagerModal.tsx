@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { App as AntdApp, Form, Input, InputNumber, Modal, Radio, Select, Switch, Tooltip } from "antd";
 import type { ConnectionProfile, ConnectionImportEntry, SshKeyProfile, ProxyProfile } from "@nextshell/core";
 import { CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX, type ConnectionUpsertInput } from "@nextshell/shared";
@@ -14,6 +14,7 @@ import { ProxyManagerPanel } from "./ProxyManagerPanel";
 import { ConnectionImportModal } from "./ConnectionImportModal";
 import { formatDateTime, formatRelativeTime } from "../utils/formatTime";
 import { formatErrorMessage } from "../utils/errorMessage";
+import { promptModal } from "../utils/promptModal";
 
 type ManagerTab = "connections" | "keys" | "proxies";
 
@@ -124,7 +125,7 @@ const groupPathToSegments = (groupPath: string): string[] => {
   return groupPath.split("/").filter((s) => s.length > 0);
 };
 
-const buildManagerTree = (connections: ConnectionProfile[], keyword: string): MgrGroupNode => {
+const buildManagerTree = (connections: ConnectionProfile[], keyword: string, emptyFolders?: string[]): MgrGroupNode => {
   const lower = keyword.toLowerCase().trim();
   const root: MgrGroupNode = { type: "group", key: "root", label: "全部连接", children: [] };
 
@@ -174,7 +175,63 @@ const buildManagerTree = (connections: ConnectionProfile[], keyword: string): Mg
     ensureGroup(zoneNode, subSegments).children.push({ type: "leaf", connection });
   }
 
+  // Insert empty folders (local-only, transient)
+  if (emptyFolders) {
+    for (const folderPath of emptyFolders) {
+      const segments = groupPathToSegments(folderPath);
+      const zoneName = segments[0] ?? "server";
+      const zone = isValidZone(zoneName) ? zoneName : "server";
+      const zoneNode = zoneNodes.get(zone)!;
+      const subSegments = isValidZone(zoneName) ? segments.slice(1) : segments;
+      ensureGroup(zoneNode, subSegments);
+    }
+  }
+
   return root;
+};
+
+/** Flatten tree leaves in display order (for Shift-range selection). */
+const collectFlatLeafIds = (node: MgrGroupNode, expandedKeys: Set<string>, depth: number): string[] => {
+  const ids: string[] = [];
+  if (depth > 0 && !expandedKeys.has(node.key)) return ids;
+  for (const child of node.children) {
+    if (child.type === "leaf") ids.push(child.connection.id);
+    else ids.push(...collectFlatLeafIds(child, expandedKeys, depth + 1));
+  }
+  return ids;
+};
+
+/** Recursively collect all leaf IDs under a group. */
+const collectGroupLeafIds = (node: MgrGroupNode): string[] => {
+  const ids: string[] = [];
+  for (const child of node.children) {
+    if (child.type === "leaf") ids.push(child.connection.id);
+    else ids.push(...collectGroupLeafIds(child));
+  }
+  return ids;
+};
+
+/** Sort tree children: folders first (alphabetical), then connections by mode. */
+const sortMgrChildren = (node: MgrGroupNode, mode: "name" | "host" | "createdAt"): MgrGroupNode => {
+  const groups: MgrGroupNode[] = [];
+  const leaves: MgrLeafNode[] = [];
+  for (const child of node.children) {
+    if (child.type === "group") groups.push(sortMgrChildren(child, mode));
+    else leaves.push(child);
+  }
+  // Zone nodes keep their ZONE_ORDER; sub-folders sort alphabetically
+  if (!node.zone) {
+    groups.sort((a, b) => {
+      if (a.zone && b.zone) return 0; // keep original zone order
+      return a.label.localeCompare(b.label);
+    });
+  }
+  leaves.sort((a, b) => {
+    if (mode === "host") return a.connection.host.localeCompare(b.connection.host);
+    if (mode === "createdAt") return new Date(a.connection.createdAt).getTime() - new Date(b.connection.createdAt).getTime();
+    return a.connection.name.localeCompare(b.connection.name);
+  });
+  return { ...node, children: [...groups, ...leaves] };
 };
 
 const countMgrLeaves = (node: MgrGroupNode): number => {
@@ -191,20 +248,34 @@ const countMgrLeaves = (node: MgrGroupNode): number => {
 const MgrGroupRow = ({
   node,
   expanded,
-  onToggle
+  onToggle,
+  onContextMenu,
+  onCtrlClick
 }: {
   node: MgrGroupNode;
   expanded: boolean;
   onToggle: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  onCtrlClick?: () => void;
 }) => {
   const { isOver, setNodeRef } = useDroppable({ id: node.key });
+
+  const handleClick = (e: React.MouseEvent) => {
+    if ((e.metaKey || e.ctrlKey) && onCtrlClick) {
+      e.preventDefault();
+      onCtrlClick();
+      return;
+    }
+    onToggle();
+  };
 
   return (
     <button
       ref={setNodeRef}
       type="button"
       className={`mgr-group-row${isOver ? " mgr-group-row--drop-target" : ""}`}
-      onClick={onToggle}
+      onClick={handleClick}
+      onContextMenu={onContextMenu}
     >
       <i
         className={expanded ? "ri-arrow-down-s-line" : "ri-arrow-right-s-line"}
@@ -223,42 +294,73 @@ const MgrGroupRow = ({
 
 const MgrServerRow = ({
   connection,
-  isSelected,
-  isExportSelected,
+  isPrimary,
+  isMultiSelected,
+  isCutPending,
+  isRenaming,
   onSelect,
-  onToggleExportSelect,
   onDoubleClick,
-  onQuickConnect
+  onQuickConnect,
+  onContextMenu,
+  onRenameCommit,
+  onRenameCancel
 }: {
   connection: ConnectionProfile;
-  isSelected: boolean;
-  isExportSelected: boolean;
-  onSelect: () => void;
-  onToggleExportSelect: () => void;
+  isPrimary: boolean;
+  isMultiSelected: boolean;
+  isCutPending: boolean;
+  isRenaming: boolean;
+  onSelect: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onQuickConnect: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+  onRenameCommit: (newName: string) => void;
+  onRenameCancel: () => void;
 }) => {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: connection.id,
     data: { connection }
   });
 
+  const renameRef = useRef<HTMLInputElement>(null);
+
+  const handleRenameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      const val = renameRef.current?.value.trim();
+      onRenameCommit(val || connection.name);
+    } else if (e.key === "Escape") {
+      onRenameCancel();
+    }
+  };
+
+  const handleRenameBlur = () => {
+    const val = renameRef.current?.value.trim();
+    onRenameCommit(val || connection.name);
+  };
+
   return (
     <div
       ref={setNodeRef}
-      className={`mgr-server-row${isSelected ? " selected" : ""}${isDragging ? " mgr-server-row--dragging" : ""}`}
+      className={
+        `mgr-server-row${isPrimary ? " selected" : ""}${isMultiSelected ? " multi-selected" : ""}${isDragging ? " mgr-server-row--dragging" : ""}${isCutPending ? " cut-pending" : ""}`
+      }
       {...attributes}
       {...listeners}
+      onContextMenu={onContextMenu}
     >
       <button
         type="button"
-        className={`mgr-server-check-btn${isExportSelected ? " checked" : ""}`}
-        onClick={onToggleExportSelect}
-        title={isExportSelected ? "取消导出选择" : "加入导出选择"}
-        aria-label={isExportSelected ? "取消导出选择" : "加入导出选择"}
+        className={`mgr-server-check-btn${isMultiSelected ? " checked" : ""}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          // Toggle multi-select via checkbox
+          onSelect({ ...e, ctrlKey: true, metaKey: true } as unknown as React.MouseEvent);
+        }}
+        title={isMultiSelected ? "取消选择" : "选择"}
+        aria-label={isMultiSelected ? "取消选择" : "选择"}
       >
         <i
-          className={isExportSelected ? "ri-checkbox-circle-fill" : "ri-checkbox-blank-circle-line"}
+          className={isMultiSelected ? "ri-checkbox-circle-fill" : "ri-checkbox-blank-circle-line"}
           aria-hidden="true"
         />
       </button>
@@ -273,11 +375,23 @@ const MgrServerRow = ({
         {connection.favorite ? (
           <i className="ri-star-fill mgr-server-star" aria-hidden="true" />
         ) : null}
-        <span className="mgr-server-name">{connection.name}</span>
+        {isRenaming ? (
+          <input
+            ref={renameRef}
+            className="mgr-server-rename-input"
+            defaultValue={connection.name}
+            autoFocus
+            onKeyDown={handleRenameKeyDown}
+            onBlur={handleRenameBlur}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span className="mgr-server-name">{connection.name}</span>
+        )}
         {connection.originKind === "cloud" && (
           <i className="ri-cloud-line" aria-hidden="true" style={{ fontSize: 12, color: "var(--text-tertiary)", marginLeft: 4 }} />
         )}
-        <span className="mgr-server-host">{connection.host}</span>
+        {!isRenaming && <span className="mgr-server-host">{connection.host}</span>}
       </button>
       <button
         type="button"
@@ -297,23 +411,35 @@ const MgrTreeGroup = ({
   depth,
   expanded,
   toggleExpanded,
-  selectedConnectionId,
-  selectedExportIds,
+  primarySelectedId,
+  selectedIds,
+  cutIds,
+  renamingId,
   onSelect,
-  onToggleExportSelect,
   onDoubleClick,
-  onQuickConnect
+  onQuickConnect,
+  onContextMenu,
+  onGroupContextMenu,
+  onGroupCtrlClick,
+  onRenameCommit,
+  onRenameCancel
 }: {
   node: MgrGroupNode;
   depth: number;
   expanded: Set<string>;
   toggleExpanded: (key: string) => void;
-  selectedConnectionId: string | undefined;
-  selectedExportIds: Set<string>;
-  onSelect: (id: string) => void;
-  onToggleExportSelect: (id: string) => void;
+  primarySelectedId: string | undefined;
+  selectedIds: Set<string>;
+  cutIds: Set<string>;
+  renamingId: string | undefined;
+  onSelect: (id: string, e: React.MouseEvent) => void;
   onDoubleClick: (connectionId: string) => void;
   onQuickConnect: (connectionId: string) => void;
+  onContextMenu: (e: React.MouseEvent, connectionId: string) => void;
+  onGroupContextMenu: (e: React.MouseEvent, node: MgrGroupNode) => void;
+  onGroupCtrlClick: (node: MgrGroupNode) => void;
+  onRenameCommit: (connectionId: string, newName: string) => void;
+  onRenameCancel: () => void;
 }) => {
   const isExpanded = expanded.has(node.key);
   return (
@@ -323,6 +449,8 @@ const MgrTreeGroup = ({
           node={node}
           expanded={isExpanded}
           onToggle={() => toggleExpanded(node.key)}
+          onContextMenu={(e) => onGroupContextMenu(e, node)}
+          onCtrlClick={() => onGroupCtrlClick(node)}
         />
       )}
       {(depth === 0 || isExpanded) && (
@@ -335,23 +463,33 @@ const MgrTreeGroup = ({
                 depth={depth + 1}
                 expanded={expanded}
                 toggleExpanded={toggleExpanded}
-                selectedConnectionId={selectedConnectionId}
-                selectedExportIds={selectedExportIds}
+                primarySelectedId={primarySelectedId}
+                selectedIds={selectedIds}
+                cutIds={cutIds}
+                renamingId={renamingId}
                 onSelect={onSelect}
-                onToggleExportSelect={onToggleExportSelect}
                 onDoubleClick={onDoubleClick}
                 onQuickConnect={onQuickConnect}
+                onContextMenu={onContextMenu}
+                onGroupContextMenu={onGroupContextMenu}
+                onGroupCtrlClick={onGroupCtrlClick}
+                onRenameCommit={onRenameCommit}
+                onRenameCancel={onRenameCancel}
               />
             ) : (
               <MgrServerRow
                 key={child.connection.id}
                 connection={child.connection}
-                isSelected={child.connection.id === selectedConnectionId}
-                isExportSelected={selectedExportIds.has(child.connection.id)}
-                onSelect={() => onSelect(child.connection.id)}
-                onToggleExportSelect={() => onToggleExportSelect(child.connection.id)}
+                isPrimary={child.connection.id === primarySelectedId}
+                isMultiSelected={selectedIds.has(child.connection.id)}
+                isCutPending={cutIds.has(child.connection.id)}
+                isRenaming={renamingId === child.connection.id}
+                onSelect={(e) => onSelect(child.connection.id, e)}
                 onDoubleClick={() => onDoubleClick(child.connection.id)}
                 onQuickConnect={() => onQuickConnect(child.connection.id)}
+                onContextMenu={(e) => onContextMenu(e, child.connection.id)}
+                onRenameCommit={(newName) => onRenameCommit(child.connection.id, newName)}
+                onRenameCancel={onRenameCancel}
               />
             )
           )}
@@ -363,14 +501,284 @@ const MgrTreeGroup = ({
 
 /* ── Root drop zone ────────────────────────────────── */
 
-const MgrRootDropZone = ({ children }: { children: React.ReactNode }) => {
+const MgrRootDropZone = ({ children, onContextMenu }: { children: React.ReactNode; onContextMenu?: (e: React.MouseEvent) => void }) => {
   const { isOver, setNodeRef } = useDroppable({ id: "root" });
   return (
     <div
       ref={setNodeRef}
       className={`mgr-tree-wrap${isOver ? " mgr-tree-wrap--drop-target" : ""}`}
+      onContextMenu={onContextMenu}
     >
       {children}
+    </div>
+  );
+};
+
+/* ── Context menu types ────────────────────────────────── */
+
+type MgrContextTarget =
+  | { type: "connection"; connectionId: string }
+  | { type: "group"; groupKey: string; groupPath: string }
+  | { type: "empty" };
+
+interface MgrContextMenuState {
+  x: number;
+  y: number;
+  target: MgrContextTarget;
+}
+
+type MgrClipboard = { mode: "copy" | "cut"; connectionIds: string[] };
+
+interface MgrContextMenuProps {
+  state: MgrContextMenuState;
+  clipboard: MgrClipboard | null;
+  connections: ConnectionProfile[];
+  selectedIds: Set<string>;
+  sortMode: "name" | "host" | "createdAt";
+  onClose: () => void;
+  onConnect: (connectionId: string) => void;
+  onEdit: (connectionId: string) => void;
+  onRename: (connectionId: string) => void;
+  onCopy: () => void;
+  onCut: () => void;
+  onPaste: (targetGroupPath: string) => void;
+  onDelete: () => void;
+  onCopyAddress: (connectionId: string) => void;
+  onNewConnection: (groupPath?: string) => void;
+  onNewFolder: (parentGroupPath: string) => void;
+  onSort: (mode: "name" | "host" | "createdAt") => void;
+  onImportNextShell: () => void;
+  onImportFinalShell: () => void;
+  onExportSelected: () => void;
+  onExportAll: () => void;
+}
+
+const MgrContextMenu = ({
+  state,
+  clipboard,
+  connections,
+  selectedIds,
+  sortMode,
+  onClose,
+  onConnect,
+  onEdit,
+  onRename,
+  onCopy,
+  onCut,
+  onPaste,
+  onDelete,
+  onCopyAddress,
+  onNewConnection,
+  onNewFolder,
+  onSort,
+  onImportNextShell,
+  onImportFinalShell,
+  onExportSelected,
+  onExportAll
+}: MgrContextMenuProps) => {
+  const { x, y, target } = state;
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number }>({ left: x, top: y });
+  const [visible, setVisible] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
+  const [sortOpen, setSortOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const { offsetWidth: w, offsetHeight: h } = el;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const GAP = 4;
+    let top = y - h - GAP;
+    if (top < GAP) top = y + GAP;
+    if (top + h > vh - GAP) top = vh - h - GAP;
+    let left = x;
+    if (left + w > vw - GAP) left = x - w;
+    if (left < GAP) left = GAP;
+    setPos({ left, top });
+    setVisible(true);
+  }, [x, y]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  const run = (fn: () => void) => { fn(); onClose(); };
+
+  const isConnection = target.type === "connection";
+  const conn = isConnection
+    ? connections.find((c) => c.id === target.connectionId)
+    : undefined;
+  const isLocalConn = conn?.originKind !== "cloud";
+  const hasPaste = Boolean(clipboard);
+  const targetGroupPath = target.type === "group"
+    ? target.groupPath
+    : target.type === "connection" && conn
+      ? conn.groupPath
+      : "/server";
+  const multiCount = selectedIds.size;
+
+  return (
+    <div
+      ref={menuRef}
+      className="mgr-ctx-menu"
+      style={{ left: pos.left, top: pos.top, visibility: visible ? "visible" : "hidden" }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {/* Connection-specific items */}
+      {isConnection && conn && (
+        <>
+          <button className="mgr-ctx-item" onClick={() => run(() => onConnect(conn.id))}>
+            <span className="mgr-ctx-icon"><i className="ri-terminal-box-line" aria-hidden="true" /></span> 连接
+          </button>
+          <button className="mgr-ctx-item" onClick={() => run(() => onEdit(conn.id))}>
+            <span className="mgr-ctx-icon"><i className="ri-edit-line" aria-hidden="true" /></span> 编辑
+          </button>
+          <button className="mgr-ctx-item" onClick={() => run(() => onRename(conn.id))}>
+            <span className="mgr-ctx-icon"><i className="ri-pencil-line" aria-hidden="true" /></span> 重命名
+          </button>
+          <div className="mgr-ctx-divider" />
+        </>
+      )}
+
+      {/* Copy / Cut / Paste — only for local connections */}
+      {(isConnection || target.type === "group" || target.type === "empty") && (
+        <>
+          {isConnection && isLocalConn && (
+            <>
+              <button className="mgr-ctx-item" onClick={() => run(onCopy)} disabled={multiCount === 0}>
+                <span className="mgr-ctx-icon"><i className="ri-file-copy-line" aria-hidden="true" /></span> 复制
+                {multiCount > 1 && <span className="mgr-ctx-badge">{multiCount}</span>}
+              </button>
+              <button className="mgr-ctx-item" onClick={() => run(onCut)} disabled={multiCount === 0}>
+                <span className="mgr-ctx-icon"><i className="ri-scissors-cut-line" aria-hidden="true" /></span> 剪切
+                {multiCount > 1 && <span className="mgr-ctx-badge">{multiCount}</span>}
+              </button>
+            </>
+          )}
+          <button className="mgr-ctx-item" onClick={() => run(() => onPaste(targetGroupPath))} disabled={!hasPaste}>
+            <span className="mgr-ctx-icon"><i className="ri-clipboard-line" aria-hidden="true" /></span> 粘贴
+            {hasPaste && clipboard && (
+              <span className="mgr-ctx-badge">{clipboard.mode === "copy" ? "复制" : "剪切"}</span>
+            )}
+          </button>
+          {isConnection && <div className="mgr-ctx-divider" />}
+        </>
+      )}
+
+      {/* Delete */}
+      {isConnection && (
+        <>
+          <button className="mgr-ctx-item mgr-ctx-danger" onClick={() => run(onDelete)}>
+            <span className="mgr-ctx-icon"><i className="ri-delete-bin-6-line" aria-hidden="true" /></span> 删除
+            {multiCount > 1 && <span className="mgr-ctx-badge">{multiCount}</span>}
+          </button>
+          <div className="mgr-ctx-divider" />
+        </>
+      )}
+
+      {/* Copy address */}
+      {isConnection && conn && (
+        <>
+          <button className="mgr-ctx-item" onClick={() => run(() => onCopyAddress(conn.id))}>
+            <span className="mgr-ctx-icon"><i className="ri-link-m" aria-hidden="true" /></span> 复制地址
+          </button>
+          <div className="mgr-ctx-divider" />
+        </>
+      )}
+
+      {/* New submenu */}
+      <div
+        className="mgr-ctx-item mgr-ctx-submenu-trigger"
+        onMouseEnter={() => setNewOpen(true)}
+        onMouseLeave={() => setNewOpen(false)}
+      >
+        <span className="mgr-ctx-icon"><i className="ri-add-line" aria-hidden="true" /></span> 新建
+        <span className="mgr-ctx-arrow">›</span>
+        {newOpen && (
+          <div className="mgr-ctx-submenu">
+            <button className="mgr-ctx-item" onClick={() => run(() => onNewConnection(targetGroupPath))}>
+              <span className="mgr-ctx-icon"><i className="ri-terminal-box-line" aria-hidden="true" /></span> SSH连接(Linux)
+            </button>
+            <button className="mgr-ctx-item" onClick={() => run(() => onNewFolder(targetGroupPath))}>
+              <span className="mgr-ctx-icon"><i className="ri-folder-3-line" aria-hidden="true" /></span> 文件夹
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Sort submenu */}
+      <div
+        className="mgr-ctx-item mgr-ctx-submenu-trigger"
+        onMouseEnter={() => setSortOpen(true)}
+        onMouseLeave={() => setSortOpen(false)}
+      >
+        <span className="mgr-ctx-icon"><i className="ri-sort-asc" aria-hidden="true" /></span> 排序
+        <span className="mgr-ctx-arrow">›</span>
+        {sortOpen && (
+          <div className="mgr-ctx-submenu">
+            <button className={`mgr-ctx-item${sortMode === "name" ? " mgr-ctx-active" : ""}`} onClick={() => run(() => onSort("name"))}>
+              <span className="mgr-ctx-icon"><i className="ri-sort-alphabet-asc" aria-hidden="true" /></span> 按名称
+            </button>
+            <button className={`mgr-ctx-item${sortMode === "host" ? " mgr-ctx-active" : ""}`} onClick={() => run(() => onSort("host"))}>
+              <span className="mgr-ctx-icon"><i className="ri-global-line" aria-hidden="true" /></span> 按地址
+            </button>
+            <button className={`mgr-ctx-item${sortMode === "createdAt" ? " mgr-ctx-active" : ""}`} onClick={() => run(() => onSort("createdAt"))}>
+              <span className="mgr-ctx-icon"><i className="ri-time-line" aria-hidden="true" /></span> 按创建时间
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mgr-ctx-divider" />
+
+      {/* Import submenu */}
+      <div
+        className="mgr-ctx-item mgr-ctx-submenu-trigger"
+        onMouseEnter={() => setImportOpen(true)}
+        onMouseLeave={() => setImportOpen(false)}
+      >
+        <span className="mgr-ctx-icon"><i className="ri-upload-2-line" aria-hidden="true" /></span> 导入
+        <span className="mgr-ctx-arrow">›</span>
+        {importOpen && (
+          <div className="mgr-ctx-submenu">
+            <button className="mgr-ctx-item" onClick={() => run(onImportNextShell)}>
+              <span className="mgr-ctx-icon"><i className="ri-file-line" aria-hidden="true" /></span> NextShell 文件
+            </button>
+            <button className="mgr-ctx-item" onClick={() => run(onImportFinalShell)}>
+              <span className="mgr-ctx-icon"><i className="ri-file-upload-line" aria-hidden="true" /></span> FinalShell 文件
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Export submenu */}
+      <div
+        className="mgr-ctx-item mgr-ctx-submenu-trigger"
+        onMouseEnter={() => setExportOpen(true)}
+        onMouseLeave={() => setExportOpen(false)}
+      >
+        <span className="mgr-ctx-icon"><i className="ri-download-2-line" aria-hidden="true" /></span> 导出
+        <span className="mgr-ctx-arrow">›</span>
+        {exportOpen && (
+          <div className="mgr-ctx-submenu">
+            <button className="mgr-ctx-item" onClick={() => run(onExportSelected)} disabled={multiCount === 0}>
+              <span className="mgr-ctx-icon"><i className="ri-checkbox-multiple-line" aria-hidden="true" /></span> 导出选中
+              {multiCount > 0 && <span className="mgr-ctx-badge">{multiCount}</span>}
+            </button>
+            <button className="mgr-ctx-item" onClick={() => run(onExportAll)} disabled={connections.length === 0}>
+              <span className="mgr-ctx-icon"><i className="ri-download-line" aria-hidden="true" /></span> 导出全部
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
@@ -437,9 +845,15 @@ export const ConnectionManagerModal = ({
   const [activeTab, setActiveTab] = useState<ManagerTab>("connections");
   const [mode, setMode] = useState<"idle" | "new" | "edit">("idle");
   const [keyword, setKeyword] = useState("");
-  const [selectedConnectionId, setSelectedConnectionId] = useState<string>();
-  const [selectedExportIds, setSelectedExportIds] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [primarySelectedId, setPrimarySelectedId] = useState<string>();
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string>();
   const [expanded, setExpanded] = useState<Set<string>>(new Set(["root"]));
+  const [contextMenu, setContextMenu] = useState<MgrContextMenuState | null>(null);
+  const [clipboard, setClipboard] = useState<MgrClipboard | null>(null);
+  const [renamingId, setRenamingId] = useState<string>();
+  const [emptyFolders, setEmptyFolders] = useState<string[]>([]);
+  const [sortMode, setSortMode] = useState<"name" | "host" | "createdAt">("name");
   const [formTab, setFormTab] = useState<FormTab>("basic");
   const [saving, setSaving] = useState(false);
   const [connectingFromForm, setConnectingFromForm] = useState(false);
@@ -456,8 +870,8 @@ export const ConnectionManagerModal = ({
   const appliedFocusConnectionIdRef = useRef<string | undefined>(undefined);
 
   const tree = useMemo(
-    () => buildManagerTree(connections, keyword),
-    [connections, keyword]
+    () => sortMgrChildren(buildManagerTree(connections, keyword, emptyFolders), sortMode),
+    [connections, keyword, emptyFolders, sortMode]
   );
   const hasVisibleConnections = useMemo(
     () => countMgrLeaves(tree) > 0,
@@ -468,8 +882,9 @@ export const ConnectionManagerModal = ({
     if (!open) return;
     form.resetFields();
     form.setFieldsValue(DEFAULT_VALUES);
-    setSelectedConnectionId(undefined);
-    setSelectedExportIds(new Set());
+    setPrimarySelectedId(undefined);
+    setSelectedIds(new Set());
+    setSelectionAnchorId(undefined);
     setExpanded(new Set(["root", ...ZONE_ORDER.map((z) => `mgr-group:${z}`)]));
     setMode("idle");
     setFormTab("basic");
@@ -480,6 +895,11 @@ export const ConnectionManagerModal = ({
     setImportPreviewQueue([]);
     setImportQueueIndex(0);
     setRevealedLoginPassword(undefined);
+    setContextMenu(null);
+    setClipboard(null);
+    setRenamingId(undefined);
+    setEmptyFolders([]);
+    setSortMode("name");
     if (revealPasswordTimeoutRef.current) {
       clearTimeout(revealPasswordTimeoutRef.current);
       revealPasswordTimeoutRef.current = undefined;
@@ -522,8 +942,8 @@ export const ConnectionManagerModal = ({
   }, [authType, form, open]);
 
   const selectedConnection = useMemo(
-    () => connections.find((c) => c.id === selectedConnectionId),
-    [connections, selectedConnectionId]
+    () => connections.find((c) => c.id === primarySelectedId),
+    [connections, primarySelectedId]
   );
 
   useEffect(() => {
@@ -532,7 +952,7 @@ export const ConnectionManagerModal = ({
       clearTimeout(revealPasswordTimeoutRef.current);
       revealPasswordTimeoutRef.current = undefined;
     }
-  }, [authType, selectedConnectionId]);
+  }, [authType, primarySelectedId]);
 
   useEffect(() => {
     return () => {
@@ -542,17 +962,23 @@ export const ConnectionManagerModal = ({
     };
   }, []);
 
-  const selectedExportCount = selectedExportIds.size;
+  const selectedExportCount = selectedIds.size;
   const currentImportBatch = importPreviewQueue[importQueueIndex];
 
+  // Compute the set of cut IDs for styling
+  const cutIds = useMemo(() => {
+    if (!clipboard || clipboard.mode !== "cut") return new Set<string>();
+    return new Set(clipboard.connectionIds);
+  }, [clipboard]);
+
   useEffect(() => {
-    if (selectedExportIds.size === 0) return;
+    if (selectedIds.size === 0) return;
     const validIds = new Set(connections.map((connection) => connection.id));
-    setSelectedExportIds((prev) => {
+    setSelectedIds((prev) => {
       const next = new Set(Array.from(prev).filter((id) => validIds.has(id)));
       return next.size === prev.size ? prev : next;
     });
-  }, [connections, selectedExportIds.size]);
+  }, [connections, selectedIds.size]);
 
   const applyConnectionToForm = useCallback((connection: ConnectionProfile) => {
     const connZone = extractZone(connection.groupPath);
@@ -584,15 +1010,24 @@ export const ConnectionManagerModal = ({
     });
   }, [form]);
 
-  const handleNew = useCallback(() => {
-    setSelectedConnectionId(undefined);
+  const handleNew = useCallback((prefillGroupPath?: string) => {
+    setPrimarySelectedId(undefined);
     form.resetFields();
     form.setFieldsValue(DEFAULT_VALUES);
+    if (prefillGroupPath) {
+      const zone = extractZone(prefillGroupPath);
+      const subPath = getSubPath(prefillGroupPath);
+      (form as any).setFieldsValue({
+        groupPath: prefillGroupPath,
+        groupZone: isValidZone(zone) ? zone : CONNECTION_ZONES.SERVER,
+        groupSubPath: subPath
+      });
+    }
     setFormTab("basic");
     setMode("new");
   }, [form]);
 
-  const handleSelect = useCallback((connectionId: string) => {
+  const handleSelectSingle = useCallback((connectionId: string) => {
     const connection = connections.find((c) => c.id === connectionId);
     if (!connection) return;
     const expandedKeys = new Set<string>(["root"]);
@@ -603,10 +1038,56 @@ export const ConnectionManagerModal = ({
       expandedKeys.add(`mgr-group:${segments.join("/")}`);
     }
     setExpanded(expandedKeys);
-    setSelectedConnectionId(connectionId);
+    setPrimarySelectedId(connectionId);
+    setSelectedIds(new Set([connectionId]));
+    setSelectionAnchorId(connectionId);
     applyConnectionToForm(connection);
     setMode("edit");
   }, [connections, applyConnectionToForm]);
+
+  const handleMultiSelect = useCallback((connectionId: string, e: React.MouseEvent) => {
+    const connection = connections.find((c) => c.id === connectionId);
+    if (!connection) return;
+
+    if (e.shiftKey && selectionAnchorId) {
+      // Range select
+      const flatIds = collectFlatLeafIds(tree, expanded, 0);
+      const anchorIdx = flatIds.indexOf(selectionAnchorId);
+      const currentIdx = flatIds.indexOf(connectionId);
+      if (anchorIdx >= 0 && currentIdx >= 0) {
+        const start = Math.min(anchorIdx, currentIdx);
+        const end = Math.max(anchorIdx, currentIdx);
+        const rangeIds = flatIds.slice(start, end + 1);
+        setSelectedIds(new Set(rangeIds));
+        setPrimarySelectedId(connectionId);
+        applyConnectionToForm(connection);
+        setMode("edit");
+        return;
+      }
+    }
+
+    if (e.metaKey || e.ctrlKey) {
+      // Toggle
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(connectionId)) next.delete(connectionId);
+        else next.add(connectionId);
+        return next;
+      });
+      setPrimarySelectedId(connectionId);
+      setSelectionAnchorId(connectionId);
+      applyConnectionToForm(connection);
+      setMode("edit");
+      return;
+    }
+
+    // Plain click
+    setSelectedIds(new Set([connectionId]));
+    setPrimarySelectedId(connectionId);
+    setSelectionAnchorId(connectionId);
+    applyConnectionToForm(connection);
+    setMode("edit");
+  }, [connections, applyConnectionToForm, selectionAnchorId, tree, expanded]);
 
   useEffect(() => {
     if (!open) {
@@ -620,9 +1101,9 @@ export const ConnectionManagerModal = ({
 
     setActiveTab("connections");
     setKeyword("");
-    handleSelect(focusConnectionId);
+    handleSelectSingle(focusConnectionId);
     appliedFocusConnectionIdRef.current = focusConnectionId;
-  }, [focusConnectionId, handleSelect, open]);
+  }, [focusConnectionId, handleSelectSingle, open]);
 
   const handleReset = useCallback(() => {
     if (selectedConnection) {
@@ -634,26 +1115,36 @@ export const ConnectionManagerModal = ({
   }, [applyConnectionToForm, form, selectedConnection]);
 
   const handleDelete = useCallback(() => {
-    if (!selectedConnectionId) return;
+    const idsToDelete = selectedIds.size > 0 ? Array.from(selectedIds) : (primarySelectedId ? [primarySelectedId] : []);
+    if (idsToDelete.length === 0) return;
+
+    const names = idsToDelete.map((id) => connections.find((c) => c.id === id)?.name ?? id);
+    const content = idsToDelete.length === 1
+      ? `删除「${names[0]}」后会关闭相关会话，是否继续？`
+      : `确认删除 ${idsToDelete.length} 个连接？删除后会关闭相关会话。`;
+
     Modal.confirm({
       title: "确认删除",
-      content: `删除「${selectedConnection?.name ?? ""}」后会关闭相关会话，是否继续？`,
+      content,
       okText: "删除",
       cancelText: "取消",
       okButtonProps: { danger: true },
       onOk: async () => {
-        await onConnectionRemoved(selectedConnectionId);
-        setSelectedConnectionId(undefined);
+        for (const id of idsToDelete) {
+          await onConnectionRemoved(id);
+        }
+        setPrimarySelectedId(undefined);
+        setSelectedIds(new Set());
         form.resetFields();
         form.setFieldsValue(DEFAULT_VALUES);
         setMode("idle");
       }
     });
-  }, [form, onConnectionRemoved, selectedConnection, selectedConnectionId]);
+  }, [connections, form, onConnectionRemoved, primarySelectedId, selectedIds]);
 
   const handleCloseForm = useCallback(() => {
     setMode("idle");
-    setSelectedConnectionId(undefined);
+    setPrimarySelectedId(undefined);
   }, []);
 
   const saveConnection = useCallback(async (values: ConnectionUpsertInput & { groupZone?: string; groupSubPath?: string }): Promise<string | undefined> => {
@@ -714,7 +1205,7 @@ export const ConnectionManagerModal = ({
     setSaving(true);
     try {
       const payload: ConnectionUpsertInput = {
-        id: values.id ?? selectedConnectionId ?? crypto.randomUUID(),
+        id: values.id ?? primarySelectedId ?? crypto.randomUUID(),
         name,
         host,
         port,
@@ -737,8 +1228,8 @@ export const ConnectionManagerModal = ({
         monitorSession: values.monitorSession ?? false
       };
       await onConnectionSaved(payload);
-      message.success(selectedConnectionId ? "连接已更新" : "连接已创建");
-      setSelectedConnectionId(payload.id);
+      message.success(primarySelectedId ? "连接已更新" : "连接已创建");
+      setPrimarySelectedId(payload.id);
       setMode("edit");
       form.setFieldsValue({
         password: undefined
@@ -750,7 +1241,7 @@ export const ConnectionManagerModal = ({
     } finally {
       setSaving(false);
     }
-  }, [form, onConnectionSaved, selectedConnectionId, setFormTab]);
+  }, [form, onConnectionSaved, primarySelectedId, setFormTab]);
 
   const handleSaveAndConnect = useCallback(async () => {
     if (saving || connectingFromForm) {
@@ -818,17 +1309,28 @@ export const ConnectionManagerModal = ({
     if (!conn) return;
 
     const targetPath = groupKeyToPath(overId);
-    if (targetPath === conn.groupPath) return;
-
-    // Enforce zone prefix on the target path
     const safePath = enforceZonePrefix(targetPath);
 
+    // Determine which connections to move: if dragging one that's in selectedIds
+    // and there are multiple selected, move them all
+    const connectionsToMove = selectedIds.has(conn.id) && selectedIds.size > 1
+      ? connections.filter((c) => selectedIds.has(c.id) && c.groupPath !== safePath)
+      : (conn.groupPath !== safePath ? [conn] : []);
+
+    if (connectionsToMove.length === 0) return;
+
     try {
-      await onConnectionSaved(toQuickUpsertInput(conn, { groupPath: safePath }));
+      for (const c of connectionsToMove) {
+        await onConnectionSaved(toQuickUpsertInput(c, { groupPath: safePath }));
+      }
       const targetZone = extractZone(safePath);
       const displayName = isValidZone(targetZone) ? ZONE_DISPLAY_NAMES[targetZone] : targetZone;
-      message.success(`已移动到 ${displayName}${getSubPath(safePath) || ""}`);
-      if (selectedConnectionId === conn.id) {
+      message.success(
+        connectionsToMove.length === 1
+          ? `已移动到 ${displayName}${getSubPath(safePath) || ""}`
+          : `已移动 ${connectionsToMove.length} 个连接到 ${displayName}${getSubPath(safePath) || ""}`
+      );
+      if (primarySelectedId && connectionsToMove.some((c) => c.id === primarySelectedId)) {
         form.setFieldValue("groupPath", safePath);
         (form as any).setFieldValue("groupZone", isValidZone(targetZone) ? targetZone : CONNECTION_ZONES.SERVER);
         (form as any).setFieldValue("groupSubPath", getSubPath(safePath));
@@ -836,7 +1338,7 @@ export const ConnectionManagerModal = ({
     } catch (error) {
       message.error(`移动连接失败：${formatErrorMessage(error, "请稍后重试")}`);
     }
-  }, [form, onConnectionSaved, selectedConnectionId]);
+  }, [connections, form, onConnectionSaved, primarySelectedId, selectedIds]);
 
   const getCachedMasterPassword = useCallback(async (): Promise<string> => {
     try {
@@ -973,23 +1475,152 @@ export const ConnectionManagerModal = ({
     await runSingleExport(connections.map((connection) => connection.id));
   }, [connections, runSingleExport]);
 
-  const handleToggleExportSelect = useCallback((connectionId: string) => {
-    setSelectedExportIds((prev) => {
+  // ── Context menu actions ────────────────────────────
+  const handleConnectionContextMenu = useCallback((e: React.MouseEvent, connectionId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Ensure right-clicked item is in selection
+    if (!selectedIds.has(connectionId)) {
+      setSelectedIds(new Set([connectionId]));
+      setPrimarySelectedId(connectionId);
+      setSelectionAnchorId(connectionId);
+      const conn = connections.find((c) => c.id === connectionId);
+      if (conn) {
+        applyConnectionToForm(conn);
+        setMode("edit");
+      }
+    }
+    setContextMenu({ x: e.clientX, y: e.clientY, target: { type: "connection", connectionId } });
+  }, [applyConnectionToForm, connections, selectedIds]);
+
+  const handleGroupContextMenu = useCallback((e: React.MouseEvent, node: MgrGroupNode) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const groupPath = groupKeyToPath(node.key);
+    setContextMenu({ x: e.clientX, y: e.clientY, target: { type: "group", groupKey: node.key, groupPath } });
+  }, []);
+
+  const handleEmptyContextMenu = useCallback((e: React.MouseEvent) => {
+    // Only trigger if not clicking on a child element
+    if (e.target !== e.currentTarget) return;
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, target: { type: "empty" } });
+  }, []);
+
+  const handleGroupCtrlClick = useCallback((node: MgrGroupNode) => {
+    const leafIds = collectGroupLeafIds(node);
+    setSelectedIds((prev) => {
+      const allSelected = leafIds.every((id) => prev.has(id));
       const next = new Set(prev);
-      if (next.has(connectionId)) {
-        next.delete(connectionId);
+      if (allSelected) {
+        for (const id of leafIds) next.delete(id);
       } else {
-        next.add(connectionId);
+        for (const id of leafIds) next.add(id);
       }
       return next;
     });
   }, []);
 
+  const handleCtxCopy = useCallback(() => {
+    const ids = Array.from(selectedIds).filter((id) => {
+      const c = connections.find((conn) => conn.id === id);
+      return c && c.originKind !== "cloud";
+    });
+    if (ids.length === 0) return;
+    setClipboard({ mode: "copy", connectionIds: ids });
+    message.success(`已复制 ${ids.length} 个连接`);
+  }, [connections, selectedIds]);
+
+  const handleCtxCut = useCallback(() => {
+    const ids = Array.from(selectedIds).filter((id) => {
+      const c = connections.find((conn) => conn.id === id);
+      return c && c.originKind !== "cloud";
+    });
+    if (ids.length === 0) return;
+    setClipboard({ mode: "cut", connectionIds: ids });
+    message.success(`已剪切 ${ids.length} 个连接`);
+  }, [connections, selectedIds]);
+
+  const handleCtxPaste = useCallback(async (targetGroupPath: string) => {
+    if (!clipboard) return;
+    const safePath = enforceZonePrefix(targetGroupPath);
+    try {
+      if (clipboard.mode === "copy") {
+        for (const sourceId of clipboard.connectionIds) {
+          await window.nextshell.resourceOps.copyConnection({
+            sourceId,
+            targetOriginKind: "local",
+            targetGroupSubPath: getSubPath(safePath) || undefined
+          });
+        }
+        message.success(`已粘贴 ${clipboard.connectionIds.length} 个连接`);
+        await onConnectionsImported();
+      } else {
+        // cut = move
+        for (const connId of clipboard.connectionIds) {
+          const conn = connections.find((c) => c.id === connId);
+          if (conn) {
+            await onConnectionSaved(toQuickUpsertInput(conn, { groupPath: safePath }));
+          }
+        }
+        message.success(`已移动 ${clipboard.connectionIds.length} 个连接`);
+        setClipboard(null);
+      }
+    } catch (error) {
+      message.error(`粘贴失败：${formatErrorMessage(error, "请稍后重试")}`);
+    }
+  }, [clipboard, connections, onConnectionSaved, onConnectionsImported]);
+
+  const handleCtxCopyAddress = useCallback((connectionId: string) => {
+    const conn = connections.find((c) => c.id === connectionId);
+    if (!conn) return;
+    const address = `${conn.host}:${conn.port}`;
+    void navigator.clipboard.writeText(address);
+    message.success(`已复制地址：${address}`);
+  }, [connections]);
+
+  const handleCtxNewFolder = useCallback(async (parentGroupPath: string) => {
+    const name = await promptModal(modal, "新建文件夹", "请输入文件夹名称");
+    if (!name) return;
+    if (name.includes("/") || name.includes("\\")) {
+      message.error("文件夹名称不能包含 / 或 \\");
+      return;
+    }
+    const safePath = enforceZonePrefix(parentGroupPath);
+    const folderPath = `${safePath}/${name}`;
+    setEmptyFolders((prev) => [...prev, folderPath]);
+    // Expand parent
+    const parentKey = safePath === "/" ? "root" : `mgr-group:${safePath.slice(1)}`;
+    const folderKey = `mgr-group:${folderPath.slice(1)}`;
+    setExpanded((prev) => new Set([...prev, parentKey, folderKey]));
+    message.success(`已创建文件夹「${name}」`);
+  }, [modal]);
+
+  const handleCtxRename = useCallback((connectionId: string) => {
+    setRenamingId(connectionId);
+  }, []);
+
+  const handleRenameCommit = useCallback(async (connectionId: string, newName: string) => {
+    setRenamingId(undefined);
+    const conn = connections.find((c) => c.id === connectionId);
+    if (!conn || conn.name === newName) return;
+    try {
+      await onConnectionSaved(toQuickUpsertInput(conn, { name: newName }));
+      message.success(`已重命名为「${newName}」`);
+    } catch (error) {
+      message.error(`重命名失败：${formatErrorMessage(error, "请稍后重试")}`);
+    }
+  }, [connections, onConnectionSaved]);
+
+  const handleRenameCancel = useCallback(() => {
+    setRenamingId(undefined);
+  }, []);
+
   const handleExportSelected = useCallback(async () => {
-    if (selectedExportIds.size === 0) return;
+    if (selectedIds.size === 0) return;
     const exportIds = connections
       .map((connection) => connection.id)
-      .filter((id) => selectedExportIds.has(id));
+      .filter((id) => selectedIds.has(id));
     if (exportIds.length === 0) return;
 
     const mode = await promptExportMode();
@@ -1042,7 +1673,7 @@ export const ConnectionManagerModal = ({
     } catch (error) {
       message.error(`导出失败：${formatErrorMessage(error, "请稍后重试")}`);
     }
-  }, [connections, getCachedMasterPassword, promptExportEncryptionPassword, promptExportMode, selectedExportIds]);
+  }, [connections, getCachedMasterPassword, promptExportEncryptionPassword, promptExportMode, selectedIds]);
 
   const promptMasterPasswordForReveal = useCallback((defaultPassword?: string): Promise<string | null> => {
     return new Promise((resolve) => {
@@ -1088,7 +1719,7 @@ export const ConnectionManagerModal = ({
   }, [modal]);
 
   const handleRevealConnectionPassword = useCallback(async () => {
-    if (!selectedConnection || !selectedConnectionId) {
+    if (!selectedConnection || !primarySelectedId) {
       return;
     }
     if (selectedConnection.authType !== "password" && selectedConnection.authType !== "interactive") {
@@ -1105,7 +1736,7 @@ export const ConnectionManagerModal = ({
     try {
       setRevealingLoginPassword(true);
       const result = await window.nextshell.connection.revealPassword({
-        connectionId: selectedConnectionId,
+        connectionId: primarySelectedId,
         masterPassword: inputPassword
       });
       setRevealedLoginPassword(result.password);
@@ -1126,7 +1757,7 @@ export const ConnectionManagerModal = ({
     getCachedMasterPassword,
     promptMasterPasswordForReveal,
     selectedConnection,
-    selectedConnectionId
+    primarySelectedId
   ]);
 
   const resetImportFlow = useCallback(() => {
@@ -1370,7 +2001,7 @@ export const ConnectionManagerModal = ({
               </button>
               <button
                 className="mgr-new-btn"
-                onClick={handleNew}
+                onClick={() => handleNew()}
                 title="新建连接"
               >
                 <i className="ri-add-line" aria-hidden="true" />
@@ -1404,7 +2035,7 @@ export const ConnectionManagerModal = ({
             onDragStart={handleDragStart}
             onDragEnd={(e) => void handleDragEnd(e)}
           >
-          <MgrRootDropZone>
+          <MgrRootDropZone onContextMenu={handleEmptyContextMenu}>
             {!hasVisibleConnections ? (
               <div className="mgr-tree-empty">
                 {keyword ? (
@@ -1425,12 +2056,18 @@ export const ConnectionManagerModal = ({
                 depth={0}
                 expanded={expanded}
                 toggleExpanded={toggleExpanded}
-                selectedConnectionId={selectedConnectionId}
-                selectedExportIds={selectedExportIds}
-                onSelect={handleSelect}
-                onToggleExportSelect={handleToggleExportSelect}
+                primarySelectedId={primarySelectedId}
+                selectedIds={selectedIds}
+                cutIds={cutIds}
+                renamingId={renamingId}
+                onSelect={handleMultiSelect}
                 onDoubleClick={(id) => void handleQuickConnect(id)}
                 onQuickConnect={(id) => void handleQuickConnect(id)}
+                onContextMenu={handleConnectionContextMenu}
+                onGroupContextMenu={handleGroupContextMenu}
+                onGroupCtrlClick={handleGroupCtrlClick}
+                onRenameCommit={(id, name) => void handleRenameCommit(id, name)}
+                onRenameCancel={handleRenameCancel}
               />
             )}
           </MgrRootDropZone>
@@ -1439,10 +2076,57 @@ export const ConnectionManagerModal = ({
               <div className="mgr-drag-overlay">
                 <i className="ri-server-line" aria-hidden="true" />
                 <span>{draggingConnection.name}</span>
+                {selectedIds.has(draggingConnection.id) && selectedIds.size > 1 && (
+                  <span className="mgr-drag-badge">+{selectedIds.size - 1}</span>
+                )}
               </div>
             ) : null}
           </DragOverlay>
           </DndContext>
+
+          {/* Context menu */}
+          {contextMenu && (
+            <MgrContextMenu
+              state={contextMenu}
+              clipboard={clipboard}
+              connections={connections}
+              selectedIds={selectedIds}
+              sortMode={sortMode}
+              onClose={() => setContextMenu(null)}
+              onConnect={(id) => void handleQuickConnect(id)}
+              onEdit={(id) => handleSelectSingle(id)}
+              onRename={handleCtxRename}
+              onCopy={handleCtxCopy}
+              onCut={handleCtxCut}
+              onPaste={(path) => void handleCtxPaste(path)}
+              onDelete={handleDelete}
+              onCopyAddress={handleCtxCopyAddress}
+              onNewConnection={(groupPath) => handleNew(groupPath)}
+              onNewFolder={(path) => void handleCtxNewFolder(path)}
+              onSort={setSortMode}
+              onImportNextShell={handleImportNextShell}
+              onImportFinalShell={handleImportFinalShell}
+              onExportSelected={() => void handleExportSelected()}
+              onExportAll={() => void handleExportAll()}
+            />
+          )}
+
+          {/* Clipboard bar */}
+          {clipboard && (
+            <div className="mgr-clipboard-bar">
+              <span>
+                {clipboard.mode === "copy" ? "已复制" : "已剪切"} {clipboard.connectionIds.length} 个连接
+              </span>
+              <button
+                type="button"
+                className="mgr-clipboard-clear"
+                onClick={() => setClipboard(null)}
+                title="清除"
+              >
+                <i className="ri-close-line" aria-hidden="true" />
+              </button>
+            </div>
+          )}
 
           {/* Footer */}
           <div className="mgr-sidebar-footer">
@@ -1492,7 +2176,7 @@ export const ConnectionManagerModal = ({
             <i className="ri-server-line mgr-empty-icon" aria-hidden="true" />
             <div className="mgr-empty-title">选择或新建连接</div>
             <div className="mgr-empty-hint">从左侧列表选择一个连接进行编辑，或点击下方按钮新建连接</div>
-            <button type="button" className="mgr-empty-new-btn" onClick={handleNew}>
+            <button type="button" className="mgr-empty-new-btn" onClick={() => handleNew()}>
               <i className="ri-add-line" aria-hidden="true" />
               新建连接
             </button>

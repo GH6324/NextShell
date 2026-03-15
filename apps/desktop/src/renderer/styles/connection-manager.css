@@ -994,3 +994,191 @@
   flex-shrink: 0;
 }
 
+/* ── Context menu (.mgr-ctx-*) ─────────────────────────── */
+
+.mgr-ctx-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 180px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+  padding: 4px;
+  user-select: none;
+}
+
+.mgr-ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--t1);
+  font-size: 12.5px;
+  font-family: var(--sans);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.08s, color 0.08s;
+  position: relative;
+}
+
+.mgr-ctx-item:hover:not(:disabled) {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.mgr-ctx-item:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.mgr-ctx-item.mgr-ctx-danger { color: var(--err); }
+
+.mgr-ctx-item.mgr-ctx-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--err);
+}
+
+.mgr-ctx-item.mgr-ctx-active {
+  color: var(--accent);
+}
+
+.mgr-ctx-icon {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.mgr-ctx-icon i {
+  line-height: 1;
+}
+
+.mgr-ctx-badge {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  color: var(--t3);
+  border: 1px solid var(--border-dim);
+}
+
+.mgr-ctx-divider {
+  height: 1px;
+  background: var(--border-dim);
+  margin: 3px 4px;
+}
+
+.mgr-ctx-arrow {
+  margin-left: auto;
+  color: var(--t3);
+  font-size: 12px;
+}
+
+.mgr-ctx-submenu-trigger {
+  position: relative;
+}
+
+.mgr-ctx-submenu {
+  position: absolute;
+  left: 100%;
+  top: -4px;
+  min-width: 150px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  z-index: 10000;
+}
+
+/* ── Inline rename input ───────────────────────────────── */
+
+.mgr-server-rename-input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--bg-base);
+  color: var(--t1);
+  font-size: 12px;
+  font-family: var(--sans);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(77, 159, 255, 0.15);
+}
+
+/* ── Multi-select highlight ────────────────────────────── */
+
+.mgr-server-row.multi-selected .mgr-server-select-btn {
+  background: rgba(77, 159, 255, 0.08);
+}
+
+.mgr-server-row.multi-selected:not(.selected) .mgr-server-select-btn {
+  box-shadow: inset 3px 0 0 rgba(77, 159, 255, 0.35);
+}
+
+/* ── Cut pending (half transparent) ────────────────────── */
+
+.mgr-server-row.cut-pending {
+  opacity: 0.45;
+}
+
+/* ── Drag badge ────────────────────────────────────────── */
+
+.mgr-drag-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  margin-left: 4px;
+}
+
+/* ── Clipboard status bar ──────────────────────────────── */
+
+.mgr-clipboard-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: rgba(77, 159, 255, 0.08);
+  border-top: 1px solid rgba(77, 159, 255, 0.18);
+  font-size: 11px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.mgr-clipboard-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.12s;
+}
+
+.mgr-clipboard-clear:hover {
+  background: rgba(77, 159, 255, 0.18);
+}
+
