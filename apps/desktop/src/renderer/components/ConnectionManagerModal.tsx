@@ -350,22 +350,6 @@ const MgrServerRow = ({
     >
       <button
         type="button"
-        className={`mgr-server-check-btn${isMultiSelected ? " checked" : ""}`}
-        onClick={(e) => {
-          e.stopPropagation();
-          // Toggle multi-select via checkbox
-          onSelect({ ...e, ctrlKey: true, metaKey: true } as unknown as React.MouseEvent);
-        }}
-        title={isMultiSelected ? "取消选择" : "选择"}
-        aria-label={isMultiSelected ? "取消选择" : "选择"}
-      >
-        <i
-          className={isMultiSelected ? "ri-checkbox-circle-fill" : "ri-checkbox-blank-circle-line"}
-          aria-hidden="true"
-        />
-      </button>
-      <button
-        type="button"
         className="mgr-server-select-btn"
         onClick={onSelect}
         onDoubleClick={onDoubleClick}
@@ -864,6 +848,7 @@ export const ConnectionManagerModal = ({
   const [revealedLoginPassword, setRevealedLoginPassword] = useState<string>();
   const [revealingLoginPassword, setRevealingLoginPassword] = useState(false);
   const revealPasswordTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [hasCloudWorkspaces, setHasCloudWorkspaces] = useState(false);
   const [form] = Form.useForm<ConnectionUpsertInput>();
   const authType = Form.useWatch("authType", form);
   const keepAliveSetting = Form.useWatch("keepAliveEnabled", form);
@@ -905,6 +890,15 @@ export const ConnectionManagerModal = ({
       revealPasswordTimeoutRef.current = undefined;
     }
   }, [form, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    window.nextshell.cloudSync.workspaceList().then((list) => {
+      setHasCloudWorkspaces(list.length > 0);
+    }).catch(() => {
+      setHasCloudWorkspaces(false);
+    });
+  }, [open]);
 
   // Auto-expand all groups when keyword is set
   useMemo(() => {
@@ -1168,6 +1162,11 @@ export const ConnectionManagerModal = ({
     const keepAliveIntervalSec = rawKeepAliveInterval == null ? undefined : Number(rawKeepAliveInterval);
     const keepAliveEnabled = values.keepAliveEnabled ?? undefined;
 
+    if (extractZone(groupPath) === CONNECTION_ZONES.WORKSPACE && !hasCloudWorkspaces) {
+      message.warning("请先在设置中配置云同步工作区");
+      return undefined;
+    }
+
     if (values.authType === "privateKey" && !values.sshKeyId) {
       message.error("私钥认证需要选择一个 SSH 密钥。");
       setFormTab("basic");
@@ -1241,7 +1240,7 @@ export const ConnectionManagerModal = ({
     } finally {
       setSaving(false);
     }
-  }, [form, onConnectionSaved, primarySelectedId, setFormTab]);
+  }, [form, hasCloudWorkspaces, onConnectionSaved, primarySelectedId, setFormTab]);
 
   const handleSaveAndConnect = useCallback(async () => {
     if (saving || connectingFromForm) {
@@ -1311,6 +1310,11 @@ export const ConnectionManagerModal = ({
     const targetPath = groupKeyToPath(overId);
     const safePath = enforceZonePrefix(targetPath);
 
+    if (extractZone(safePath) === CONNECTION_ZONES.WORKSPACE && !hasCloudWorkspaces) {
+      message.warning("请先在设置中配置云同步工作区");
+      return;
+    }
+
     // Determine which connections to move: if dragging one that's in selectedIds
     // and there are multiple selected, move them all
     const connectionsToMove = selectedIds.has(conn.id) && selectedIds.size > 1
@@ -1338,7 +1342,7 @@ export const ConnectionManagerModal = ({
     } catch (error) {
       message.error(`移动连接失败：${formatErrorMessage(error, "请稍后重试")}`);
     }
-  }, [connections, form, onConnectionSaved, primarySelectedId, selectedIds]);
+  }, [connections, form, hasCloudWorkspaces, onConnectionSaved, primarySelectedId, selectedIds]);
 
   const getCachedMasterPassword = useCallback(async (): Promise<string> => {
     try {
@@ -1544,6 +1548,10 @@ export const ConnectionManagerModal = ({
   const handleCtxPaste = useCallback(async (targetGroupPath: string) => {
     if (!clipboard) return;
     const safePath = enforceZonePrefix(targetGroupPath);
+    if (extractZone(safePath) === CONNECTION_ZONES.WORKSPACE && !hasCloudWorkspaces) {
+      message.warning("请先在设置中配置云同步工作区");
+      return;
+    }
     try {
       if (clipboard.mode === "copy") {
         for (const sourceId of clipboard.connectionIds) {
@@ -1569,7 +1577,7 @@ export const ConnectionManagerModal = ({
     } catch (error) {
       message.error(`粘贴失败：${formatErrorMessage(error, "请稍后重试")}`);
     }
-  }, [clipboard, connections, onConnectionSaved, onConnectionsImported]);
+  }, [clipboard, connections, hasCloudWorkspaces, onConnectionSaved, onConnectionsImported]);
 
   const handleCtxCopyAddress = useCallback((connectionId: string) => {
     const conn = connections.find((c) => c.id === connectionId);
