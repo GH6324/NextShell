@@ -48,6 +48,10 @@ const LEFT_SIDEBAR_STORAGE_KEY = "nextshell.workspace.leftSidebarCollapsed";
 const LEFT_SIDEBAR_WIDTH_EXPANDED = 240;
 const LEFT_SIDEBAR_WIDTH_COLLAPSED = 52;
 const BOTTOM_WORKBENCH_STORAGE_KEY = "nextshell.workspace.bottomWorkbenchCollapsed";
+const BOTTOM_WORKBENCH_RESIZE_TARGET_MIN_SIZE = {
+    coarse: 12,
+    fine: 4,
+};
 
 const getWorkspaceLayoutStorage = (): Storage | undefined => {
     if (typeof window === "undefined") {
@@ -791,7 +795,11 @@ export const WorkspaceLayout = ({
                         )}
                 </aside>
                 <section className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
-                            <Group orientation="vertical" className="w-full h-full min-w-0 min-h-0">
+                            <Group
+                                orientation="vertical"
+                                className="w-full h-full min-w-0 min-h-0"
+                                resizeTargetMinimumSize={BOTTOM_WORKBENCH_RESIZE_TARGET_MIN_SIZE}
+                            >
                                 <Panel defaultSize="68%" minSize="38%">
                                     <div className="terminal-shell">
                                         <div className="session-tabs">

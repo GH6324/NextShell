@@ -1,12 +1,62 @@
 /* Connection Manager Modal — .mgr-* */
 /* ── Connection Manager Modal ────────────────────────────── */
 
+.mgr-modal-shell {
+  position: relative;
+}
+
+.mgr-modal-shell--drop-target {
+  user-select: none;
+}
+
 /* Two-panel layout */
 .mgr-connections-layout {
   display: grid;
   grid-template-columns: 260px 1fr;
   height: 580px;
   overflow: hidden;
+}
+
+.mgr-drop-overlay {
+  position: absolute;
+  inset: 42px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg-panel, #101826) 78%, rgba(77, 159, 255, 0.18));
+  backdrop-filter: blur(6px);
+  z-index: 8;
+  pointer-events: none;
+}
+
+.mgr-drop-overlay-card {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  min-width: 260px;
+  padding: 22px 28px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 74%, white 8%);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--bg-elevated) 88%, rgba(12, 20, 32, 0.9));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+
+.mgr-drop-overlay-card > i {
+  font-size: 28px;
+  color: var(--accent);
+}
+
+.mgr-drop-overlay-card > span {
+  color: var(--t1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.mgr-drop-overlay-card > code {
+  color: var(--t2);
+  font-size: 12px;
+  font-family: var(--mono);
 }
 
 /* Sidebar */

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent as ReactDragEvent } from "react";
 import { App as AntdApp, Form, Modal } from "antd";
 import type { ConnectionProfile, ProxyProfile, SshKeyProfile } from "@nextshell/core";
 import type { ConnectionUpsertInput } from "@nextshell/shared";
@@ -47,6 +48,11 @@ import {
 } from "./ConnectionManagerModal/utils/connectionForm";
 import { formatErrorMessage } from "../utils/errorMessage";
 import { promptModal } from "../utils/promptModal";
+import { extractDroppedFilePaths, isExternalFileDrag } from "../utils/sftpFileDrop";
+import {
+  canAcceptConnectionManagerExternalDrop,
+  getConnectionManagerDropPathWarning
+} from "./ConnectionManagerModal/utils/connectionManagerDrop";
 
 interface ConnectionManagerModalProps {
   open: boolean;
@@ -96,11 +102,13 @@ export const ConnectionManagerModal = ({
   const [saving, setSaving] = useState(false);
   const [connectingFromForm, setConnectingFromForm] = useState(false);
   const [draggingConnection, setDraggingConnection] = useState<ConnectionProfile | null>(null);
+  const [dropTargetActive, setDropTargetActive] = useState(false);
   const [hasCloudWorkspaces, setHasCloudWorkspaces] = useState(false);
   const [form] = Form.useForm<ConnectionUpsertInput>();
   const authType = Form.useWatch("authType", form);
   const keepAliveSetting = Form.useWatch("keepAliveEnabled", form);
   const appliedFocusConnectionIdRef = useRef<string | undefined>(undefined);
+  const externalDropDepthRef = useRef(0);
 
   const tree = useMemo(
     () => sortMgrChildren(buildManagerTree(connections, keyword, emptyFolders), sortMode),
@@ -120,6 +128,7 @@ export const ConnectionManagerModal = ({
     currentImportBatch,
     handleImportBatchImported,
     handleImportFinalShell,
+    handleImportDroppedNextShellFiles,
     handleImportNextShell,
     importingPreview,
     importModalOpen,
@@ -182,6 +191,12 @@ export const ConnectionManagerModal = ({
       setHasCloudWorkspaces(false);
     });
   }, [open]);
+
+  useEffect(() => {
+    if (open && activeTab === "connections") return;
+    externalDropDepthRef.current = 0;
+    setDropTargetActive(false);
+  }, [activeTab, open]);
 
   useMemo(() => {
     if (keyword.trim()) {
@@ -687,6 +702,61 @@ export const ConnectionManagerModal = ({
   const sourceProgress = importPreviewQueue.length > 1
     ? `${importQueueIndex + 1}/${importPreviewQueue.length}`
     : undefined;
+  const canAcceptExternalDrop = canAcceptConnectionManagerExternalDrop({
+    open,
+    activeTab,
+    importingPreview
+  });
+
+  const handleExternalDragEnter = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(event.dataTransfer) || !canAcceptExternalDrop) {
+      return;
+    }
+    event.preventDefault();
+    externalDropDepthRef.current += 1;
+    if (!dropTargetActive) {
+      setDropTargetActive(true);
+    }
+  }, [canAcceptExternalDrop, dropTargetActive]);
+
+  const handleExternalDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(event.dataTransfer) || !canAcceptExternalDrop) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    if (!dropTargetActive) {
+      setDropTargetActive(true);
+    }
+  }, [canAcceptExternalDrop, dropTargetActive]);
+
+  const handleExternalDragLeave = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!dropTargetActive || !isExternalFileDrag(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    externalDropDepthRef.current = Math.max(0, externalDropDepthRef.current - 1);
+    if (externalDropDepthRef.current === 0) {
+      setDropTargetActive(false);
+    }
+  }, [dropTargetActive]);
+
+  const handleExternalDrop = useCallback(async (event: ReactDragEvent<HTMLDivElement>) => {
+    externalDropDepthRef.current = 0;
+    setDropTargetActive(false);
+    if (!isExternalFileDrag(event.dataTransfer) || !canAcceptExternalDrop) {
+      return;
+    }
+    event.preventDefault();
+    const result = extractDroppedFilePaths(event.dataTransfer, window.nextshell.getFilePathForDrop);
+    if (result.paths.length === 0) {
+      message.warning(getConnectionManagerDropPathWarning({
+        allPathsEmpty: result.allPathsEmpty
+      }));
+      return;
+    }
+    await handleImportDroppedNextShellFiles(result.paths);
+  }, [canAcceptExternalDrop, handleImportDroppedNextShellFiles, message]);
 
   return (
     <>
@@ -703,120 +773,140 @@ export const ConnectionManagerModal = ({
         title={<span className="mgr-modal-title">连接管理器</span>}
         destroyOnHidden
       >
-        <div className="mgr-tab-bar">
-          {MANAGER_TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={`mgr-tab${tab.tabClassName ? ` ${tab.tabClassName}` : ""}${activeTab === tab.key ? " mgr-tab--active" : ""}`}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              <i className={tab.icon} aria-hidden="true" />
-              <span className={tab.labelClassName}>{tab.label}</span>
-            </button>
-          ))}
+        <div
+          className={`mgr-modal-shell${dropTargetActive ? " mgr-modal-shell--drop-target" : ""}`}
+          onDragEnter={handleExternalDragEnter}
+          onDragOver={handleExternalDragOver}
+          onDragLeave={handleExternalDragLeave}
+          onDrop={(event) => {
+            void handleExternalDrop(event);
+          }}
+        >
+          <div className="mgr-tab-bar">
+            {MANAGER_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                className={`mgr-tab${tab.tabClassName ? ` ${tab.tabClassName}` : ""}${activeTab === tab.key ? " mgr-tab--active" : ""}`}
+                onClick={() => setActiveTab(tab.key)}
+              >
+                <i className={tab.icon} aria-hidden="true" />
+                <span className={tab.labelClassName}>{tab.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {activeTab === "connections" ? (
+            <div className="mgr-connections-layout">
+              <ConnectionSidebar
+                connections={connections}
+                keyword={keyword}
+                onKeywordChange={setKeyword}
+                onClearKeyword={() => setKeyword("")}
+                onOpenLocalTerminal={() => {
+                  onOpenLocalTerminal();
+                  onClose();
+                }}
+                onNewConnection={handleNew}
+                tree={tree}
+                expanded={expanded}
+                toggleExpanded={toggleExpanded}
+                primarySelectedId={primarySelectedId}
+                selectedIds={selectedIds}
+                cutIds={cutIds}
+                renamingId={renamingId}
+                hasVisibleConnections={hasVisibleConnections}
+                draggingConnection={draggingConnection}
+                onSelect={handleMultiSelect}
+                onQuickConnect={handleQuickConnect}
+                onConnectionContextMenu={handleConnectionContextMenu}
+                onGroupContextMenu={handleGroupContextMenu}
+                onGroupCtrlClick={handleGroupCtrlClick}
+                onRenameCommit={handleRenameCommit}
+                onRenameCancel={handleRenameCancel}
+                onEmptyContextMenu={handleEmptyContextMenu}
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
+                contextMenu={contextMenu}
+                clipboard={clipboard}
+                sortMode={sortMode}
+                onCloseContextMenu={() => setContextMenu(null)}
+                onEditConnection={handleSelectSingle}
+                onRenameConnection={handleCtxRename}
+                onCopyConnections={handleCtxCopy}
+                onCutConnections={handleCtxCut}
+                onPasteConnections={handleCtxPaste}
+                onDeleteConnections={handleDelete}
+                onCopyAddress={handleCtxCopyAddress}
+                onNewFolder={handleCtxNewFolder}
+                onSortChange={setSortMode}
+                onImportNextShell={handleImportNextShell}
+                onImportFinalShell={handleImportFinalShell}
+                onExportSelected={handleExportSelected}
+                onExportAll={handleExportAll}
+                selectedExportCount={selectedExportCount}
+                importingPreview={importingPreview}
+                onClearClipboard={() => setClipboard(null)}
+              />
+
+              <ConnectionFormPanel
+                form={form}
+                mode={mode}
+                selectedConnection={selectedConnection}
+                formTab={formTab}
+                setFormTab={setFormTab}
+                authType={authType}
+                keepAliveSetting={keepAliveSetting}
+                saving={saving}
+                connectingFromForm={connectingFromForm}
+                sshKeys={sshKeys}
+                proxies={proxies}
+                revealedLoginPassword={revealedLoginPassword}
+                revealingLoginPassword={revealingLoginPassword}
+                onRevealConnectionPassword={() => void handleRevealConnectionPassword()}
+                onSave={async (values) => {
+                  await saveConnection(values);
+                }}
+                onSaveAndConnect={() => void handleSaveAndConnect()}
+                onDelete={handleDelete}
+                onReset={handleReset}
+                onCloseForm={handleCloseForm}
+                onSwitchToIdle={() => setMode("idle")}
+                onNewConnection={() => handleNew()}
+              />
+            </div>
+          ) : null}
+
+          {activeTab === "keys" ? (
+            <SshKeyManagerPanel sshKeys={sshKeys} onReload={onReloadSshKeys} />
+          ) : null}
+
+          {activeTab === "proxies" ? (
+            <ProxyManagerPanel proxies={proxies} onReload={onReloadProxies} />
+          ) : null}
+
+          {activeTab === "cloudSync" ? (
+            <div className="mgr-cloud-sync-panel">
+              <CloudSyncManagerPanel />
+            </div>
+          ) : null}
+
+          {activeTab === "recycleBin" ? (
+            <div className="mgr-recycle-bin-panel">
+              <RecycleBinSection />
+            </div>
+          ) : null}
+
+          {dropTargetActive ? (
+            <div className="mgr-drop-overlay" aria-hidden="true">
+              <div className="mgr-drop-overlay-card">
+                <i className="ri-download-cloud-2-line" aria-hidden="true" />
+                <span>导入 NextShell 连接文件</span>
+                <code>拖到这里后会先打开导入预览</code>
+              </div>
+            </div>
+          ) : null}
         </div>
-
-        {activeTab === "connections" ? (
-          <div className="mgr-connections-layout">
-            <ConnectionSidebar
-              connections={connections}
-              keyword={keyword}
-              onKeywordChange={setKeyword}
-              onClearKeyword={() => setKeyword("")}
-              onOpenLocalTerminal={() => {
-                onOpenLocalTerminal();
-                onClose();
-              }}
-              onNewConnection={handleNew}
-              tree={tree}
-              expanded={expanded}
-              toggleExpanded={toggleExpanded}
-              primarySelectedId={primarySelectedId}
-              selectedIds={selectedIds}
-              cutIds={cutIds}
-              renamingId={renamingId}
-              hasVisibleConnections={hasVisibleConnections}
-              draggingConnection={draggingConnection}
-              onSelect={handleMultiSelect}
-              onQuickConnect={handleQuickConnect}
-              onConnectionContextMenu={handleConnectionContextMenu}
-              onGroupContextMenu={handleGroupContextMenu}
-              onGroupCtrlClick={handleGroupCtrlClick}
-              onRenameCommit={handleRenameCommit}
-              onRenameCancel={handleRenameCancel}
-              onEmptyContextMenu={handleEmptyContextMenu}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-              contextMenu={contextMenu}
-              clipboard={clipboard}
-              sortMode={sortMode}
-              onCloseContextMenu={() => setContextMenu(null)}
-              onEditConnection={handleSelectSingle}
-              onRenameConnection={handleCtxRename}
-              onCopyConnections={handleCtxCopy}
-              onCutConnections={handleCtxCut}
-              onPasteConnections={handleCtxPaste}
-              onDeleteConnections={handleDelete}
-              onCopyAddress={handleCtxCopyAddress}
-              onNewFolder={handleCtxNewFolder}
-              onSortChange={setSortMode}
-              onImportNextShell={handleImportNextShell}
-              onImportFinalShell={handleImportFinalShell}
-              onExportSelected={handleExportSelected}
-              onExportAll={handleExportAll}
-              selectedExportCount={selectedExportCount}
-              importingPreview={importingPreview}
-              onClearClipboard={() => setClipboard(null)}
-            />
-
-            <ConnectionFormPanel
-              form={form}
-              mode={mode}
-              selectedConnection={selectedConnection}
-              formTab={formTab}
-              setFormTab={setFormTab}
-              authType={authType}
-              keepAliveSetting={keepAliveSetting}
-              saving={saving}
-              connectingFromForm={connectingFromForm}
-              sshKeys={sshKeys}
-              proxies={proxies}
-              revealedLoginPassword={revealedLoginPassword}
-              revealingLoginPassword={revealingLoginPassword}
-              onRevealConnectionPassword={() => void handleRevealConnectionPassword()}
-              onSave={async (values) => {
-                await saveConnection(values);
-              }}
-              onSaveAndConnect={() => void handleSaveAndConnect()}
-              onDelete={handleDelete}
-              onReset={handleReset}
-              onCloseForm={handleCloseForm}
-              onSwitchToIdle={() => setMode("idle")}
-              onNewConnection={() => handleNew()}
-            />
-          </div>
-        ) : null}
-
-        {activeTab === "keys" ? (
-          <SshKeyManagerPanel sshKeys={sshKeys} onReload={onReloadSshKeys} />
-        ) : null}
-
-        {activeTab === "proxies" ? (
-          <ProxyManagerPanel proxies={proxies} onReload={onReloadProxies} />
-        ) : null}
-
-        {activeTab === "cloudSync" ? (
-          <div className="mgr-cloud-sync-panel">
-            <CloudSyncManagerPanel />
-          </div>
-        ) : null}
-
-        {activeTab === "recycleBin" ? (
-          <div className="mgr-recycle-bin-panel">
-            <RecycleBinSection />
-          </div>
-        ) : null}
       </Modal>
 
       <ConnectionImportModal

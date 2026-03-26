@@ -37,6 +37,8 @@
   padding: 0 12px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 1;
 }
 
 .bottom-workbench .ant-tabs-tab {
@@ -67,6 +69,14 @@
   cursor: pointer;
   transition: border-color 0.12s, color 0.12s, background 0.12s;
   margin-right: 2px;
+  position: relative;
+  z-index: 3;
+}
+
+.bottom-workbench .ant-tabs-extra-content,
+.bottom-workbench .ant-tabs-extra-content > * {
+  position: relative;
+  z-index: 2;
 }
 
 .bottom-collapse-btn i {
@@ -79,4 +89,3 @@
   border-color: rgba(77, 159, 255, 0.35);
   background: rgba(77, 159, 255, 0.12);
 }
-

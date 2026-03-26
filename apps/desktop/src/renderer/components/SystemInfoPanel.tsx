@@ -16,11 +16,20 @@ const NETWORK_CHART_HEIGHT = 84;
 const NETWORK_HISTORY_CAP = 50;
 const NETWORK_CHART_WIDTH = NETWORK_HISTORY_CAP * 10 + 8;
 
-const barClass = (pct: number) => {
-  if (pct >= 90) return "err";
-  if (pct >= 70) return "warn";
-  return "";
-};
+function getMetricFillClass(
+  percent: number,
+  normalFillClassName: string,
+): string {
+  if (percent > 90) {
+    return "bg-red-500/40";
+  }
+
+  if (percent > 70) {
+    return "bg-amber-500/40";
+  }
+
+  return normalFillClassName;
+}
 
 const summaryLine = (snapshot: MonitorSnapshot): string => {
   return `CPU ${snapshot.cpuPercent.toFixed(0)}% / MEM ${snapshot.memoryPercent.toFixed(0)}%`;
@@ -44,6 +53,13 @@ const formatRate = (mbps: number): string => {
   }
   return `${kbps.toFixed(0)}K`;
 };
+
+interface MetricRowProps {
+  label: string;
+  percent: number;
+  fillClassName: string;
+  detail?: string;
+}
 
 export const SystemInfoPanel = ({
   monitorSessionEnabled,
@@ -134,6 +150,35 @@ export const SystemInfoPanel = ({
     onOpenProcessManager || onOpenNetworkMonitor,
   );
 
+  const renderMetricRow = ({
+    label,
+    percent,
+    fillClassName,
+    detail,
+  }: MetricRowProps) => (
+    <div className="grid grid-cols-[40px_1fr] items-center gap-2.5">
+      <div className="text-[11px] font-semibold text-[var(--t2)] tracking-wide uppercase">
+        {label}
+      </div>
+      <div className="h-6 relative bg-black/5 dark:bg-white/5 border border-[var(--border-dim)] rounded-md overflow-hidden shadow-inner">
+        <div
+          className={`absolute left-0 top-0 bottom-0 transition-all duration-700 ${fillClassName}`}
+          style={{
+            width: `${Math.min(percent, 100)}%`,
+          }}
+        />
+        <div className="absolute inset-0 flex items-center justify-between gap-3 px-2.5 font-mono text-[11px] text-[var(--t1)] drop-shadow-sm">
+          <span className="font-bold text-[11.5px]">{percent.toFixed(0)}%</span>
+          {detail ? (
+            <span className="monitor-inline-detail text-right text-[10.5px] font-medium whitespace-nowrap">
+              {detail}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <section className="monitor-panel">
       <button
@@ -171,107 +216,44 @@ export const SystemInfoPanel = ({
               </div>
 
               <div className="flex flex-col gap-2.5 px-1">
-                <div className="grid grid-cols-[40px_1fr_85px] items-center gap-2.5">
-                  <div className="text-[11px] font-semibold text-[var(--t2)] tracking-wide uppercase">
-                    CPU
-                  </div>
-                  <div className="h-6 relative bg-black/5 dark:bg-white/5 border border-[var(--border-dim)] rounded-md overflow-hidden shadow-inner">
-                    <div
-                      className={`absolute left-0 top-0 bottom-0 transition-all duration-700 ${snapshot.cpuPercent > 90 ? "bg-red-500/40" : snapshot.cpuPercent > 70 ? "bg-amber-500/40" : "bg-blue-500/30"}`}
-                      style={{
-                        width: `${Math.min(snapshot.cpuPercent, 100)}%`,
-                      }}
-                    />
-                    <div className="absolute inset-y-0 left-2.5 flex items-center text-[11.5px] font-mono font-bold text-[var(--t1)] drop-shadow-sm">
-                      {snapshot.cpuPercent.toFixed(0)}%
-                    </div>
-                  </div>
-                  <div className="text-right text-[10.5px] font-mono text-[var(--t3)]" />
-                </div>
+                {renderMetricRow({
+                  label: "CPU",
+                  percent: snapshot.cpuPercent,
+                  fillClassName: getMetricFillClass(
+                    snapshot.cpuPercent,
+                    "bg-blue-500/30",
+                  ),
+                })}
 
-                <div className="grid grid-cols-[40px_1fr_85px] items-center gap-2.5">
-                  <div className="text-[11px] font-semibold text-[var(--t2)] tracking-wide uppercase">
-                    内存
-                  </div>
-                  <div className="h-6 relative bg-black/5 dark:bg-white/5 border border-[var(--border-dim)] rounded-md overflow-hidden shadow-inner">
-                    <div
-                      className={`absolute left-0 top-0 bottom-0 transition-all duration-700 ${snapshot.memoryPercent > 90 ? "bg-red-500/40" : snapshot.memoryPercent > 70 ? "bg-amber-500/40" : "bg-emerald-500/30"}`}
-                      style={{
-                        width: `${Math.min(snapshot.memoryPercent, 100)}%`,
-                      }}
-                    />
-                    <div className="absolute inset-y-0 left-2.5 flex items-center text-[11.5px] font-mono font-bold text-[var(--t1)] drop-shadow-sm">
-                      {snapshot.memoryPercent.toFixed(0)}%
-                    </div>
-                  </div>
-                  <div className="text-right text-[10.5px] font-mono text-[var(--t2)]">
-                    <span className="text-[var(--t1)]">
-                      {formatMemoryShort(snapshot.memoryUsedMb)}
-                    </span>
-                    <span className="text-[var(--t3)] opacity-60 mx-0.5">
-                      /
-                    </span>
-                    <span className="text-[var(--t3)]">
-                      {formatMemoryShort(snapshot.memoryTotalMb)}
-                    </span>
-                  </div>
-                </div>
+                {renderMetricRow({
+                  label: "内存",
+                  percent: snapshot.memoryPercent,
+                  fillClassName: getMetricFillClass(
+                    snapshot.memoryPercent,
+                    "bg-emerald-500/30",
+                  ),
+                  detail: `${formatMemoryShort(snapshot.memoryUsedMb)} / ${formatMemoryShort(snapshot.memoryTotalMb)}`,
+                })}
 
-                <div className="grid grid-cols-[40px_1fr_85px] items-center gap-2.5">
-                  <div className="text-[11px] font-semibold text-[var(--t2)] tracking-wide uppercase">
-                    交换
-                  </div>
-                  <div className="h-6 relative bg-black/5 dark:bg-white/5 border border-[var(--border-dim)] rounded-md overflow-hidden shadow-inner">
-                    <div
-                      className={`absolute left-0 top-0 bottom-0 transition-all duration-700 ${snapshot.swapPercent > 90 ? "bg-red-500/40" : snapshot.swapPercent > 70 ? "bg-amber-500/40" : "bg-indigo-500/30"}`}
-                      style={{
-                        width: `${Math.min(snapshot.swapPercent, 100)}%`,
-                      }}
-                    />
-                    <div className="absolute inset-y-0 left-2.5 flex items-center text-[11.5px] font-mono font-bold text-[var(--t1)] drop-shadow-sm">
-                      {snapshot.swapPercent.toFixed(0)}%
-                    </div>
-                  </div>
-                  <div className="text-right text-[10.5px] font-mono text-[var(--t2)]">
-                    <span className="text-[var(--t1)]">
-                      {formatMemoryShort(snapshot.swapUsedMb)}
-                    </span>
-                    <span className="text-[var(--t3)] opacity-60 mx-0.5">
-                      /
-                    </span>
-                    <span className="text-[var(--t3)]">
-                      {formatMemoryShort(snapshot.swapTotalMb)}
-                    </span>
-                  </div>
-                </div>
+                {renderMetricRow({
+                  label: "交换",
+                  percent: snapshot.swapPercent,
+                  fillClassName: getMetricFillClass(
+                    snapshot.swapPercent,
+                    "bg-indigo-500/30",
+                  ),
+                  detail: `${formatMemoryShort(snapshot.swapUsedMb)} / ${formatMemoryShort(snapshot.swapTotalMb)}`,
+                })}
 
-                <div className="grid grid-cols-[40px_1fr_85px] items-center gap-2.5">
-                  <div className="text-[11px] font-semibold text-[var(--t2)] tracking-wide uppercase">
-                    磁盘
-                  </div>
-                  <div className="h-6 relative bg-black/5 dark:bg-white/5 border border-[var(--border-dim)] rounded-md overflow-hidden shadow-inner">
-                    <div
-                      className={`absolute left-0 top-0 bottom-0 transition-all duration-700 ${snapshot.diskPercent > 90 ? "bg-red-500/40" : snapshot.diskPercent > 70 ? "bg-amber-500/40" : "bg-teal-500/30"}`}
-                      style={{
-                        width: `${Math.min(snapshot.diskPercent, 100)}%`,
-                      }}
-                    />
-                    <div className="absolute inset-y-0 left-2.5 flex items-center text-[11.5px] font-mono font-bold text-[var(--t1)] drop-shadow-sm">
-                      {snapshot.diskPercent.toFixed(0)}%
-                    </div>
-                  </div>
-                  <div className="text-right text-[10.5px] font-mono text-[var(--t2)]">
-                    <span className="text-[var(--t1)]">
-                      {snapshot.diskUsedGb.toFixed(1)}G
-                    </span>
-                    <span className="text-[var(--t3)] opacity-60 mx-0.5">
-                      /
-                    </span>
-                    <span className="text-[var(--t3)]">
-                      {snapshot.diskTotalGb.toFixed(1)}G
-                    </span>
-                  </div>
-                </div>
+                {renderMetricRow({
+                  label: "磁盘",
+                  percent: snapshot.diskPercent,
+                  fillClassName: getMetricFillClass(
+                    snapshot.diskPercent,
+                    "bg-teal-500/30",
+                  ),
+                  detail: `${snapshot.diskUsedGb.toFixed(1)}G / ${snapshot.diskTotalGb.toFixed(1)}G`,
+                })}
               </div>
               <div className="flex items-center gap-1.5 px-1">
                 <div className="text-[10px] font-semibold text-[var(--t3)] tracking-wide uppercase">
