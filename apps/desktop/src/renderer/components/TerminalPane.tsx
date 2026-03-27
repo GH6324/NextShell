@@ -41,6 +41,11 @@ import {
   stripAuthFailurePrefix,
   type TerminalAuthState
 } from "../utils/terminal-auth-flow";
+import {
+  consumeTerminalQueryReplyChunk,
+  createTerminalQueryReplyFilterState,
+  installTerminalQueryCompatibilityGuards
+} from "../utils/terminalControlSequenceCompat";
 
 type LocalAwareSessionDescriptor = SessionDescriptor & {
   target?: "remote" | "local";
@@ -225,6 +230,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
   const frozenSessionIdRef = useRef<string | undefined>(undefined);
   const osc7StateBySessionRef = useRef<Map<string, ReturnType<typeof createOsc7ParserState>>>(new Map());
+  const terminalQueryReplyStateBySessionRef = useRef<Map<string, ReturnType<typeof createTerminalQueryReplyFilterState>>>(new Map());
+  const terminalQuerySuppressionCountBySessionRef = useRef<Map<string, number>>(new Map());
+  const terminalCompatEnabledRef = useRef(false);
   const terminalOptionsRef = useRef<FrozenTerminalOptions>(DEFAULT_TERMINAL_OPTIONS);
   const onRequestSearchModeRef = useRef<TerminalPaneProps["onRequestSearchMode"]>(onRequestSearchMode);
   const onReconnectSessionRef = useRef<TerminalPaneProps["onReconnectSession"]>(onReconnectSession);
@@ -589,6 +597,8 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       authStateBySessionRef.current,
       sessionStatusBySessionRef.current,
       osc7StateBySessionRef.current,
+      terminalQueryReplyStateBySessionRef.current,
+      terminalQuerySuppressionCountBySessionRef.current,
       reconnectPendingSessionIdsRef.current
     ]);
   }, [sessionIds]);
@@ -639,6 +649,18 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
     } catch {
       // webgl acceleration is optional
     }
+
+    const compatibilityGuard = installTerminalQueryCompatibilityGuards(terminal, {
+      isEnabled: () => terminalCompatEnabledRef.current,
+      onSuppressed: () => {
+        const sessionId = sessionIdRef.current;
+        if (!sessionId) {
+          return;
+        }
+        const currentCount = terminalQuerySuppressionCountBySessionRef.current.get(sessionId) ?? 0;
+        terminalQuerySuppressionCountBySessionRef.current.set(sessionId, currentCount + 1);
+      }
+    });
 
     terminal.open(containerRef.current);
     fitAddon.fit();
@@ -747,18 +769,31 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
         return;
       }
 
+      let nextData = data;
+      if (terminalCompatEnabledRef.current) {
+        const currentState =
+          terminalQueryReplyStateBySessionRef.current.get(sessionId)
+            ?? createTerminalQueryReplyFilterState();
+        const filtered = consumeTerminalQueryReplyChunk(currentState, data);
+        terminalQueryReplyStateBySessionRef.current.set(sessionId, filtered.state);
+        if (!filtered.text) {
+          return;
+        }
+        nextData = filtered.text;
+      }
+
       if (authStateBySessionRef.current.has(sessionId)) {
-        handleLocalAuthInput(sessionId, data);
+        handleLocalAuthInput(sessionId, nextData);
         return;
       }
 
-      if (tryReconnectOnEnter(sessionId, data)) {
+      if (tryReconnectOnEnter(sessionId, nextData)) {
         return;
       }
 
       runSessionAction(window.nextshell.session.write({
         sessionId,
-        data
+        data: nextData
       }));
     });
 
@@ -804,6 +839,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
       observer.disconnect();
       dataSub.dispose();
       resizeSub.dispose();
+      compatibilityGuard.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
@@ -920,6 +956,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(({
   useEffect(() => {
     const previousSessionId = sessionIdRef.current;
     const currentSessionId = session?.id;
+    terminalCompatEnabledRef.current = shouldTrackTerminalSessionMetadata(session, connection);
     sessionIdRef.current = currentSessionId;
     if (currentSessionId && session?.status) {
       sessionStatusBySessionRef.current.set(currentSessionId, session.status);
