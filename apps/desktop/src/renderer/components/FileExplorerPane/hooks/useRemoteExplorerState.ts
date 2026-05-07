@@ -4,6 +4,7 @@ import type { ConnectionProfile, RemoteFileEntry } from "@nextshell/core";
 import { FILE_EXPLORER_FOLLOW_CWD_DEBOUNCE_MS } from "../../FileExplorerPane.follow";
 import { formatErrorMessage } from "../../../utils/errorMessage";
 import { resolveInitialRemotePath } from "../../../utils/remoteHomePath";
+import { createRemoteExplorerRequestGate } from "../requestGate";
 import { normalizeRemotePath } from "../shared";
 import type { DirTreeNode } from "../types";
 
@@ -26,6 +27,8 @@ export const useRemoteExplorerState = ({
   followSessionCwd,
   message
 }: UseRemoteExplorerStateParams) => {
+  const connectionId = connection?.id;
+  const fileRequestGate = useMemo(() => createRemoteExplorerRequestGate(), []);
   const [pathName, setPathName] = useState("/");
   const [pathInput, setPathInput] = useState("/");
   const [files, setFiles] = useState<RemoteFileEntry[]>([]);
@@ -39,7 +42,9 @@ export const useRemoteExplorerState = ({
   const [followCwd, setFollowCwd] = useState(false);
   const skipHistoryRef = useRef(false);
   const pathNameRef = useRef(pathName);
+  const connectionIdRef = useRef(connectionId);
   const initialPathRequestIdRef = useRef(0);
+  const treeInitRequestIdRef = useRef(0);
   const followCwdLastRef = useRef<string | null>(null);
   const followCwdDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const navigateRef = useRef<(path: string) => void>(() => {});
@@ -65,14 +70,22 @@ export const useRemoteExplorerState = ({
 
   const navigate = useCallback(
     (path: string) => {
+      const normalizedPath = normalizeRemotePath(path);
+      if (pathNameRef.current === normalizedPath) {
+        skipHistoryRef.current = false;
+        return;
+      }
+
       if (skipHistoryRef.current) {
         skipHistoryRef.current = false;
       } else {
-        pushHistory(path);
+        pushHistory(normalizedPath);
       }
-      setPathName(path);
+      fileRequestGate.invalidate();
+      pathNameRef.current = normalizedPath;
+      setPathName(normalizedPath);
     },
-    [pushHistory]
+    [fileRequestGate, pushHistory]
   );
 
   useEffect(() => {
@@ -84,50 +97,70 @@ export const useRemoteExplorerState = ({
     const prev = pathHistory[historyIndex - 1];
     if (!prev) return;
     skipHistoryRef.current = true;
+    fileRequestGate.invalidate();
+    pathNameRef.current = prev;
     setHistoryIndex((index) => index - 1);
     setPathName(prev);
-  }, [historyIndex, pathHistory]);
+  }, [fileRequestGate, historyIndex, pathHistory]);
 
   const goForward = useCallback(() => {
     if (historyIndex >= pathHistory.length - 1) return;
     const next = pathHistory[historyIndex + 1];
     if (!next) return;
     skipHistoryRef.current = true;
+    fileRequestGate.invalidate();
+    pathNameRef.current = next;
     setHistoryIndex((index) => index + 1);
     setPathName(next);
-  }, [historyIndex, pathHistory]);
+  }, [fileRequestGate, historyIndex, pathHistory]);
 
   const loadFiles = useCallback(async (): Promise<void> => {
-    if (!connection || !connected || !initialPathReady) {
+    if (!connectionId || !connected || !initialPathReady) {
+      fileRequestGate.invalidate();
+      setBusy(false);
       setFiles([]);
       setSelectedPaths([]);
       return;
     }
 
     const normalizedPath = normalizeRemotePath(pathName);
+    const request = fileRequestGate.begin(connectionId, normalizedPath);
+    const isCurrentRequest = (): boolean =>
+      fileRequestGate.isCurrent(request, {
+        connectionId: connectionIdRef.current,
+        path: normalizeRemotePath(pathNameRef.current)
+      });
+
     setBusy(true);
     try {
       const list = await window.nextshell.sftp.list({
-        connectionId: connection.id,
+        connectionId,
         path: normalizedPath
       });
+      if (!isCurrentRequest()) {
+        return;
+      }
       setFiles(list);
       setSelectedPaths([]);
-      setPathName(normalizedPath);
     } catch (error) {
+      if (!isCurrentRequest()) {
+        return;
+      }
       message.error(`读取目录失败：${formatErrorMessage(error, "请检查连接状态")}`);
       setFiles([]);
     } finally {
-      setBusy(false);
+      if (isCurrentRequest()) {
+        setBusy(false);
+      }
     }
-  }, [connection, connected, initialPathReady, message, pathName]);
+  }, [connectionId, connected, fileRequestGate, initialPathReady, message, pathName]);
 
   const loadTreeChildren = useCallback(
     async (parentPath: string): Promise<DirTreeNode[]> => {
-      if (!connection || !connected) return [];
+      if (!connectionId || !connected) return [];
       try {
         const list = await window.nextshell.sftp.list({
-          connectionId: connection.id,
+          connectionId,
           path: parentPath
         });
         return list
@@ -142,7 +175,7 @@ export const useRemoteExplorerState = ({
         return [];
       }
     },
-    [connection, connected]
+    [connectionId, connected]
   );
 
   const updateTreeNode = useCallback(
@@ -158,25 +191,34 @@ export const useRemoteExplorerState = ({
   );
 
   const initTree = useCallback(async () => {
-    if (!connection || !connected) {
+    treeInitRequestIdRef.current += 1;
+    const requestId = treeInitRequestIdRef.current;
+
+    if (!connectionId || !connected) {
       setTreeData([]);
       setExpandedKeys([]);
       return;
     }
     const children = await loadTreeChildren("/");
+    if (treeInitRequestIdRef.current !== requestId || connectionIdRef.current !== connectionId) {
+      return;
+    }
     setTreeData([{ key: "/", title: "/", isLeaf: false, children }]);
     setExpandedKeys(["/"]);
-  }, [connection, connected, loadTreeChildren]);
+  }, [connectionId, connected, loadTreeChildren]);
 
   useEffect(() => {
     initialPathRequestIdRef.current += 1;
     const requestId = initialPathRequestIdRef.current;
+    fileRequestGate.invalidate();
 
     setSelectedPaths([]);
+    setBusy(false);
     skipHistoryRef.current = false;
 
-    if (!connection || !connected) {
+    if (!connectionId || !connected) {
       setInitialPathReady(false);
+      pathNameRef.current = "/";
       setPathName("/");
       setPathHistory([]);
       setHistoryIndex(-1);
@@ -186,23 +228,31 @@ export const useRemoteExplorerState = ({
     }
 
     setInitialPathReady(false);
+    pathNameRef.current = "/";
     setPathName("/");
     setFiles([]);
     void initTree();
 
     void (async () => {
-      const initialPath = await resolveInitialRemotePath(() =>
-        window.nextshell.session.getHomeDir({ connectionId: connection.id })
+      const initialPath = normalizeRemotePath(
+        await resolveInitialRemotePath(() =>
+          window.nextshell.session.getHomeDir({ connectionId })
+        )
       );
       if (initialPathRequestIdRef.current !== requestId) {
         return;
       }
+      pathNameRef.current = initialPath;
       setPathName(initialPath);
       setPathHistory([initialPath]);
       setHistoryIndex(0);
       setInitialPathReady(true);
     })();
-  }, [connection?.id, connected, initTree]);
+  }, [connectionId, connected, fileRequestGate, initTree]);
+
+  useEffect(() => {
+    connectionIdRef.current = connectionId;
+  }, [connectionId]);
 
   useEffect(() => {
     pathNameRef.current = pathName;
@@ -213,21 +263,21 @@ export const useRemoteExplorerState = ({
   }, [pathName]);
 
   useEffect(() => {
-    if (!connection || !connected) setFollowCwd(false);
-  }, [connection?.id, connected]);
+    if (!connectionId || !connected) setFollowCwd(false);
+  }, [connectionId, connected]);
 
   useEffect(() => {
     if (!connection?.monitorSession) {
       setFollowCwd(false);
     }
-  }, [connection?.id, connection?.monitorSession]);
+  }, [connectionId, connection?.monitorSession]);
 
   const followCwdTrackingEnabled = Boolean(
     active &&
       followCwd &&
-      connection &&
+      connectionId &&
       connected &&
-      connection.monitorSession &&
+      connection?.monitorSession &&
       followSessionId
   );
 
@@ -279,13 +329,15 @@ export const useRemoteExplorerState = ({
   }, [followCwdTrackingEnabled, followSessionCwd]);
 
   useEffect(() => {
-    if (!connection || !connected || !initialPathReady) {
+    if (!connectionId || !connected || !initialPathReady) {
+      fileRequestGate.invalidate();
+      setBusy(false);
       setFiles([]);
       setSelectedPaths([]);
       return;
     }
     void loadFiles();
-  }, [connection?.id, connected, initialPathReady, loadFiles, pathName]);
+  }, [connectionId, connected, fileRequestGate, initialPathReady, loadFiles, pathName]);
 
   const handleTreeExpand = useCallback(
     async (keys: string[], info: { node: DirTreeNode; expanded: boolean }) => {
@@ -293,10 +345,12 @@ export const useRemoteExplorerState = ({
       if (!info.expanded) return;
       const node = info.node;
       if (node.children && node.children.length > 0) return;
+      const requestConnectionId = connectionId;
       const children = await loadTreeChildren(node.key);
+      if (connectionIdRef.current !== requestConnectionId) return;
       setTreeData((prev) => updateTreeNode(prev, node.key, children));
     },
-    [loadTreeChildren, updateTreeNode]
+    [connectionId, loadTreeChildren, updateTreeNode]
   );
 
   const toParentPath = useCallback((): void => {

@@ -11,7 +11,7 @@ interface FileExplorerTableProps {
   onSelectionChange: (paths: string[]) => void;
   onNavigate: (path: string) => void;
   onRemoteEdit: (entry: RemoteFileEntry) => void;
-  onContextMenu: (event: ReactMouseEvent, row: RemoteFileEntry) => void;
+  onContextMenu: (event: ReactMouseEvent, row?: RemoteFileEntry) => void;
 }
 
 export const FileExplorerTable = ({
@@ -87,7 +87,7 @@ export const FileExplorerTable = ({
   return (
     <div
       className="fe-table-wrap flex-1 min-h-0 overflow-auto"
-      onContextMenu={(event) => event.stopPropagation()}
+      onContextMenu={(event) => onContextMenu(event)}
     >
       <Table
         size="small"
