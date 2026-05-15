@@ -454,7 +454,7 @@ export const CloudSyncManagerPanel = () => {
 
       <SettingsCard
         title="冲突处理"
-        description="当本地和云端同时修改了同一资源时出现冲突。无论选择哪种解决方式，旧版本都会进入回收站。"
+        description="当本地和云端同时修改了同一资源时出现冲突。保留本地会丢弃云端版本，接受云端会替换当前本地版本。"
       >
         {conflictsLoading ? (
           <Skeleton active paragraph={{ rows: 3 }} />
@@ -506,16 +506,24 @@ export const CloudSyncManagerPanel = () => {
                       >
                         保留本地
                       </Button>
-                      <Button
-                        size="small"
-                        danger
-                        loading={acceptBusy}
-                        onClick={() =>
+                      <Popconfirm
+                        title="接受云端版本？"
+                        description="当前本地版本会被云端版本替换。"
+                        okText="接受云端"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() =>
                           handleResolveConflict(wsId, item.resourceType, item.resourceId, "accept_remote")
                         }
                       >
-                        接受云端
-                      </Button>
+                        <Button
+                          size="small"
+                          danger
+                          loading={acceptBusy}
+                        >
+                          接受云端
+                        </Button>
+                      </Popconfirm>
                     </Space>
                   </div>
                 );
@@ -527,7 +535,7 @@ export const CloudSyncManagerPanel = () => {
           <Alert
             type="info"
             showIcon
-            message="无论选择「保留本地」还是「接受云端」，被替换的版本都会自动保存到回收站。"
+            message="解决冲突会创建新的同步提交；接受云端前请确认当前本地版本不需要保留。"
             style={{ marginTop: 8 }}
           />
         )}

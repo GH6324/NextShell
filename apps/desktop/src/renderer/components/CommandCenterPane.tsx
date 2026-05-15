@@ -203,11 +203,15 @@ export const CommandCenterPane = ({
   }, [loadSavedCommands]);
 
   useEffect(() => {
-    const unsubscribe = window.nextshell.cloudSync.onApplied(() => {
+    const unsubscribeApplied = window.nextshell.cloudSync.onApplied(() => {
+      void loadSavedCommands();
+    });
+    const unsubscribeStatus = window.nextshell.cloudSync.onStatus(() => {
       void loadSavedCommands();
     });
     return () => {
-      unsubscribe();
+      unsubscribeApplied();
+      unsubscribeStatus();
     };
   }, [loadSavedCommands]);
 

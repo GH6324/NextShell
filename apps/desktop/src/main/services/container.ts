@@ -62,6 +62,9 @@ import { MonitorService } from "./monitor-service";
 import { SftpService } from "./sftp-service";
 import { SessionService } from "./session-service";
 
+const cloudSyncWorkspacePasswordRef = (workspaceId: string): string =>
+  `secret://cloud-sync-ws-${workspaceId}`;
+
 // Re-export for consumers (index.ts, register.ts)
 export type { ServiceContainer, CreateServiceContainerOptions } from "./container-types";
 
@@ -472,10 +475,10 @@ export const createServiceContainer = (
       await vault.storeCredential(`cloud-sync-ws-${wId}`, pwd);
     },
     getWorkspacePassword: async (wId) => {
-      try { return await vault.readCredential(`cloud-sync-ws-${wId}`); } catch { return undefined; }
+      try { return await vault.readCredential(cloudSyncWorkspacePasswordRef(wId)); } catch { return undefined; }
     },
     deleteWorkspacePassword: async (wId) => {
-      await vault.deleteCredential(`cloud-sync-ws-${wId}`).catch(() => {});
+      await vault.deleteCredential(cloudSyncWorkspacePasswordRef(wId)).catch(() => {});
     },
     getJsonSetting: (key) => connections.getJsonSetting(key),
     saveJsonSetting: (key, value) => connections.saveJsonSetting(key, value),
@@ -641,15 +644,27 @@ export const createServiceContainer = (
     cloudSyncWorkspaceList: () => cloudSyncManager.listWorkspaces(),
     cloudSyncWorkspaceAdd: (i) => cloudSyncManager.addWorkspace(i),
     cloudSyncWorkspaceUpdate: (i) => cloudSyncManager.updateWorkspace({ ...i, id: i.id }),
-    cloudSyncWorkspaceRemove: (i) => cloudSyncManager.removeWorkspace(i.id),
+    cloudSyncWorkspaceRemove: async (i) => {
+      await cloudSyncManager.removeWorkspace(i.id);
+      return { ok: true as const };
+    },
     cloudSyncWorkspaceExportToken: (i) => cloudSyncManager.exportWorkspaceToken(i.id),
     cloudSyncWorkspaceParseToken: (i) => cloudSyncManager.parseWorkspaceToken(i.token),
     cloudSyncStatus: () => cloudSyncManager.getStatus(),
-    cloudSyncSyncNow: (i) => cloudSyncManager.syncNow(i.workspaceId),
+    cloudSyncSyncNow: async (i) => {
+      await cloudSyncManager.syncNow(i.workspaceId);
+      return { ok: true as const };
+    },
     cloudSyncListConflicts: () => cloudSyncManager.listConflicts(),
     cloudSyncHistory: (i) => cloudSyncManager.history(i.workspaceId, i.limit),
-    cloudSyncRestoreCommit: (i) => cloudSyncManager.restoreCommit(i.workspaceId, i.commitId),
-    cloudSyncResolveConflict: (i) => cloudSyncManager.resolveConflict(i.workspaceId, i.resourceType, i.resourceId, i.strategy),
+    cloudSyncRestoreCommit: async (i) => {
+      await cloudSyncManager.restoreCommit(i.workspaceId, i.commitId);
+      return { ok: true as const };
+    },
+    cloudSyncResolveConflict: async (i) => {
+      await cloudSyncManager.resolveConflict(i.workspaceId, i.resourceType, i.resourceId, i.strategy);
+      return { ok: true as const };
+    },
 
     // Resource Operations
     resourceCopyConnection: (i) => resourceOpsSvc.copyConnection(i),
@@ -661,8 +676,11 @@ export const createServiceContainer = (
     // Recycle Bin
     recycleBinList: () => connections.listRecycleBinEntries(),
     recycleBinRestore: (i) => resourceOpsSvc.restoreFromRecycleBin(i),
-    recycleBinPurge: (i) => { resourceOpsSvc.purgeRecycleBinEntry(i.id); },
-    recycleBinClear: () => { connections.clearRecycleBin(); },
+    recycleBinPurge: (i) => {
+      resourceOpsSvc.purgeRecycleBinEntry(i.id);
+      return { ok: true as const };
+    },
+    recycleBinClear: () => ({ ok: true as const, deleted: connections.clearRecycleBin() }),
 
     dispose,
   };

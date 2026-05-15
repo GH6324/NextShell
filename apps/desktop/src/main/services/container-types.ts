@@ -177,15 +177,15 @@ export interface ServiceContainer {
   cloudSyncWorkspaceList: () => CloudSyncWorkspaceProfile[];
   cloudSyncWorkspaceAdd: (input: CloudSyncWorkspaceAddInput) => Promise<CloudSyncWorkspaceProfile>;
   cloudSyncWorkspaceUpdate: (input: CloudSyncWorkspaceUpdateInput) => Promise<CloudSyncWorkspaceProfile>;
-  cloudSyncWorkspaceRemove: (input: CloudSyncWorkspaceRemoveInput) => Promise<void>;
+  cloudSyncWorkspaceRemove: (input: CloudSyncWorkspaceRemoveInput) => Promise<{ ok: true }>;
   cloudSyncWorkspaceExportToken: (input: CloudSyncWorkspaceExportTokenInput) => Promise<{ token: string }>;
   cloudSyncWorkspaceParseToken: (input: CloudSyncWorkspaceParseTokenInput) => Promise<CloudSyncWorkspaceTokenDraft>;
   cloudSyncStatus: () => { workspaces: WorkspaceRepoStatus[] };
-  cloudSyncSyncNow: (input: CloudSyncSyncNowInput) => Promise<void>;
+  cloudSyncSyncNow: (input: CloudSyncSyncNowInput) => Promise<{ ok: true }>;
   cloudSyncListConflicts: () => Array<WorkspaceRepoConflict & { workspaceName: string }>;
   cloudSyncHistory: (input: CloudSyncHistoryInput) => WorkspaceRepoCommitMeta[];
-  cloudSyncRestoreCommit: (input: CloudSyncRestoreCommitInput) => Promise<void>;
-  cloudSyncResolveConflict: (input: CloudSyncResolveConflictInput) => Promise<void>;
+  cloudSyncRestoreCommit: (input: CloudSyncRestoreCommitInput) => Promise<{ ok: true }>;
+  cloudSyncResolveConflict: (input: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
   openFilesDialog: (
     sender: WebContents,
     input: DialogOpenFilesInput
@@ -319,8 +319,8 @@ export interface ServiceContainer {
   // Recycle Bin
   recycleBinList: () => RecycleBinEntry[];
   recycleBinRestore: (input: RecycleBinRestoreInput) => Promise<ConnectionProfile | SshKeyProfile>;
-  recycleBinPurge: (input: RecycleBinPurgeInput) => void;
-  recycleBinClear: () => void;
+  recycleBinPurge: (input: RecycleBinPurgeInput) => { ok: true };
+  recycleBinClear: () => { ok: true; deleted: number };
 
   dispose: () => Promise<void>;
 }

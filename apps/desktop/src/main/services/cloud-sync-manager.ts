@@ -682,6 +682,14 @@ export class CloudSyncManager {
     const localHeadCommitId = localState.localHeadCommitId;
     const knownRemoteHeadCommitId = localState.remoteHeadCommitId;
 
+    if (this.deps.listWorkspaceRepoConflicts(workspace.id).length > 0) {
+      return {
+        ...localState,
+        remoteHeadCommitId: remoteHeadCommitId ?? knownRemoteHeadCommitId,
+        syncState: "diverged",
+      };
+    }
+
     if (localHeadCommitId && localHeadCommitId === remoteHeadCommitId) {
       return {
         ...localState,
@@ -845,7 +853,7 @@ export class CloudSyncManager {
       if (nextCommit) {
         return this.pushLocalHead(workspace, credentials, {
           ...nextState,
-          remoteHeadCommitId: localState.remoteHeadCommitId,
+          remoteHeadCommitId,
         });
       }
       return {
@@ -855,6 +863,7 @@ export class CloudSyncManager {
       };
     }
 
+    await this.applyWorkspaceSnapshot(workspace, credentials.workspacePassword, mergeResult.snapshot);
     for (const conflict of mergeResult.conflicts) {
       this.deps.saveWorkspaceRepoConflict(conflict);
     }
@@ -885,6 +894,45 @@ export class CloudSyncManager {
 
     const localDirty = (localVersion ?? undefined) !== (lastRemoteVersion ?? undefined);
     const remoteChanged = (remoteVersion ?? undefined) !== (lastRemoteVersion ?? undefined);
+
+    if (localDirty && remoteChanged) {
+      const response = await this.api.pullCommands(credentials, lastRemoteVersion ?? null);
+      if (response.status === "changed") {
+        const mergedCommands = this.mergeWorkspaceCommands(
+          this.deps.listWorkspaceCommands(workspace.id),
+          response.commands.map((command) => ({
+            ...command,
+            workspaceId: workspace.id,
+          })),
+          workspace.id,
+        );
+        const pushResponse = await this.api.pushCommands(
+          credentials,
+          mergedCommands.map((command) => ({
+            ...command,
+            workspaceId: workspace.id,
+          })),
+        );
+        this.deps.replaceWorkspaceCommands(workspace.id, mergedCommands);
+        this.deps.saveWorkspaceCommandsVersion(workspace.id, pushResponse.version);
+        return {
+          ...localState,
+          remoteCommandsVersion: pushResponse.version,
+        };
+      }
+      const pushResponse = await this.api.pushCommands(
+        credentials,
+        this.deps.listWorkspaceCommands(workspace.id).map((command) => ({
+          ...command,
+          workspaceId: workspace.id,
+        })),
+      );
+      this.deps.saveWorkspaceCommandsVersion(workspace.id, pushResponse.version);
+      return {
+        ...localState,
+        remoteCommandsVersion: pushResponse.version,
+      };
+    }
 
     if (localDirty || (!remoteVersion && localVersion)) {
       const response = await this.api.pushCommands(
@@ -933,19 +981,64 @@ export class CloudSyncManager {
     };
   }
 
+  private mergeWorkspaceCommands(
+    localCommands: WorkspaceCommandItem[],
+    remoteCommands: WorkspaceCommandItem[],
+    workspaceId: string,
+  ): WorkspaceCommandItem[] {
+    const now = new Date().toISOString();
+    const merged = new Map<string, WorkspaceCommandItem>();
+
+    for (const command of localCommands) {
+      merged.set(command.id, { ...command, workspaceId });
+    }
+
+    for (const remoteCommand of remoteCommands) {
+      const normalizedRemote = { ...remoteCommand, workspaceId };
+      const localCommand = merged.get(remoteCommand.id);
+      if (!localCommand) {
+        merged.set(remoteCommand.id, normalizedRemote);
+        continue;
+      }
+      if (hashValue(this.toCommandVersionItem(localCommand)) === hashValue(this.toCommandVersionItem(normalizedRemote))) {
+        continue;
+      }
+      const conflictCopyId = randomUUID();
+      merged.set(conflictCopyId, {
+        ...normalizedRemote,
+        id: conflictCopyId,
+        name: `${normalizedRemote.name} (云端版本)`,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    return [...merged.values()].sort((left, right) => {
+      const groupCompare = left.group.localeCompare(right.group);
+      if (groupCompare !== 0) {
+        return groupCompare;
+      }
+      return left.name.localeCompare(right.name);
+    });
+  }
+
+  private toCommandVersionItem(command: WorkspaceCommandItem): Omit<WorkspaceCommandItem, "workspaceId"> {
+    return {
+      id: command.id,
+      name: command.name,
+      description: command.description,
+      group: command.group,
+      command: command.command,
+      isTemplate: command.isTemplate,
+      createdAt: command.createdAt,
+      updatedAt: command.updatedAt,
+    };
+  }
+
   private updateLocalCommandsVersion(workspaceId: string): string | undefined {
     const commands = this.deps
       .listWorkspaceCommands(workspaceId)
-      .map((command) => ({
-        id: command.id,
-        name: command.name,
-        description: command.description,
-        group: command.group,
-        command: command.command,
-        isTemplate: command.isTemplate,
-        createdAt: command.createdAt,
-        updatedAt: command.updatedAt,
-      }))
+      .map((command) => this.toCommandVersionItem(command))
       .sort((left, right) => left.id.localeCompare(right.id));
 
     if (commands.length === 0) {
@@ -1040,13 +1133,13 @@ export class CloudSyncManager {
             const privateKey = await this.mustEncryptCredential(
               key.keyContentRef,
               workspacePassword,
-              `${workspaceId}:sshKey:${uuid}:privateKey`,
+              `${scopeKey}:sshKey:${uuid}:privateKey`,
             );
             const passphrase = key.passphraseRef
               ? await this.encryptCredential(
                   key.passphraseRef,
                   workspacePassword,
-                  `${workspaceId}:sshKey:${uuid}:passphrase`,
+                  `${scopeKey}:sshKey:${uuid}:passphrase`,
                 )
               : undefined;
             return {
@@ -1068,7 +1161,7 @@ export class CloudSyncManager {
               ? await this.encryptCredential(
                   proxy.credentialRef,
                   workspacePassword,
-                  `${workspaceId}:proxy:${uuid}:password`,
+                  `${scopeKey}:proxy:${uuid}:password`,
                 )
               : undefined;
             return {
@@ -1096,7 +1189,7 @@ export class CloudSyncManager {
                 ? await this.encryptCredential(
                     connection.credentialRef,
                     workspacePassword,
-                    `${workspaceId}:connection:${uuid}:password`,
+                    `${scopeKey}:connection:${uuid}:password`,
                   )
                 : undefined;
 
@@ -1363,6 +1456,7 @@ export class CloudSyncManager {
           if (hashValue(localItem) === hashValue(remoteItem)) {
             merged.push(localItem);
           } else {
+            merged.push(localItem);
             conflicts.push({
               workspaceId: local.workspaceId,
               resourceType,
@@ -1393,6 +1487,7 @@ export class CloudSyncManager {
           } else if (remoteHash === baseHash) {
             merged.push(localItem);
           } else {
+            merged.push(localItem);
             conflicts.push({
               workspaceId: local.workspaceId,
               resourceType,
@@ -1426,6 +1521,7 @@ export class CloudSyncManager {
           if (hashValue(localItem) === hashValue(baseItem)) {
             continue;
           }
+          merged.push(localItem);
           conflicts.push({
             workspaceId: local.workspaceId,
             resourceType,

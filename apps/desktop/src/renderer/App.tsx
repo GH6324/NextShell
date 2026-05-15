@@ -242,6 +242,15 @@ export const App = () => {
     });
   }, [refreshSyncResources, initializePreferences]);
 
+  useEffect(() => {
+    const unsubscribe = window.nextshell.cloudSync.onApplied(() => {
+      void refreshSyncResources();
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [refreshSyncResources]);
+
   // Transfer status events
   useEffect(() => {
     const unsubscribe = window.nextshell.sftp.onTransferStatus((event) => {

@@ -255,11 +255,21 @@ export const ConnectionManagerModal = ({
 
   useEffect(() => {
     if (!open) return;
-    window.nextshell.cloudSync.workspaceList().then((list) => {
-      setWorkspaces(list);
-    }).catch(() => {
-      setWorkspaces([]);
-    });
+    const loadWorkspaces = () => {
+      window.nextshell.cloudSync.workspaceList().then((list) => {
+        setWorkspaces(list);
+      }).catch(() => {
+        setWorkspaces([]);
+      });
+    };
+
+    loadWorkspaces();
+    const unsubscribeStatus = window.nextshell.cloudSync.onStatus(loadWorkspaces);
+    const unsubscribeApplied = window.nextshell.cloudSync.onApplied(loadWorkspaces);
+    return () => {
+      unsubscribeStatus();
+      unsubscribeApplied();
+    };
   }, [open]);
 
   useEffect(() => {
