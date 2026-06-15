@@ -15,6 +15,9 @@ dist-electron
 logs
 
 docs/
+!docs/
+docs/*
+!docs/cloud-sync-user-guide.md
 apps/desktop/dist/
 apps/desktop/release/
 

@@ -172,7 +172,7 @@ export interface CloudSyncApiV3Credentials {
 
 export class CloudSyncApiV3Client {
   async resolve(creds: CloudSyncApiV3Credentials): Promise<RepoResolveResponse> {
-    return this.post(creds, "/api/v3/workspaces/resolve", {}, resolveResponseSchema);
+    return this.post(creds, "/api/v1/workspaces/resolve", {}, resolveResponseSchema);
   }
 
   async pull(
@@ -181,7 +181,7 @@ export class CloudSyncApiV3Client {
   ): Promise<RepoPullResponse> {
     return this.post(
       creds,
-      "/api/v3/repo/pull",
+      "/api/v1/repo/pull",
       { knownHeadCommitId: knownHeadCommitId ?? null },
       repoPullResponseSchema,
     );
@@ -195,7 +195,7 @@ export class CloudSyncApiV3Client {
       snapshot: unknown;
     },
   ): Promise<RepoPushResponse> {
-    const raw = await this.postRaw(creds, "/api/v3/repo/push", payload);
+    const raw = await this.postRaw(creds, "/api/v1/repo/push", payload);
     if (raw.status === "accepted") {
       return repoPushAcceptedSchema.parse(raw);
     }
@@ -212,7 +212,7 @@ export class CloudSyncApiV3Client {
   ): Promise<RepoHistoryResponse> {
     return this.post(
       creds,
-      "/api/v3/repo/history",
+      "/api/v1/repo/history",
       { cursor: cursor ?? null, limit },
       repoHistoryResponseSchema,
     );
@@ -224,7 +224,7 @@ export class CloudSyncApiV3Client {
   ): Promise<RepoSnapshotResponse> {
     return this.post(
       creds,
-      "/api/v3/repo/snapshot",
+      "/api/v1/repo/snapshot",
       { commitId },
       repoSnapshotResponseSchema,
     );
@@ -236,7 +236,7 @@ export class CloudSyncApiV3Client {
   ): Promise<CommandsPullResponse> {
     const raw = await this.postRaw(
       creds,
-      "/api/v3/commands/pull",
+      "/api/v1/commands/pull",
       { knownVersion: knownVersion ?? null },
     );
     if (raw.status === "unchanged") {
@@ -254,7 +254,7 @@ export class CloudSyncApiV3Client {
   ): Promise<CommandsPushResponse> {
     return this.post(
       creds,
-      "/api/v3/commands/push",
+      "/api/v1/commands/push",
       { commands },
       commandsPushResponseSchema,
     );
@@ -283,6 +283,14 @@ export class CloudSyncApiV3Client {
     const TIMEOUT_MS = 30_000;
     const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
+    const bearerPayload = Buffer.from(
+      JSON.stringify({
+        workspaceName: creds.workspaceName,
+        credential: creds.workspacePassword,
+      }),
+      "utf8",
+    ).toString("base64url");
+
     const { statusCode, bodyText } = await new Promise<{ statusCode: number; bodyText: string }>((resolve, reject) => {
       let settled = false;
       const abortController = new AbortController();
@@ -301,7 +309,7 @@ export class CloudSyncApiV3Client {
           method: "POST",
           headers: {
             Accept: "application/json",
-            Authorization: `Basic ${Buffer.from(`${creds.workspaceName}:${creds.workspacePassword}`, "utf8").toString("base64")}`,
+            Authorization: `Bearer ${bearerPayload}`,
             "Content-Length": Buffer.byteLength(body),
             "Content-Type": "application/json",
             "X-NextShell-Client-Id": creds.clientId,

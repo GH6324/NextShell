@@ -105,6 +105,12 @@ bun run typecheck
 bun test
 ```
 
+## 相关文档
+
+- [云同步使用手册](./docs/cloud-sync-user-guide.md)
+- [架构说明](./docs/architecture.md)
+- [IPC 契约](./docs/ipc-contract.md)
+
 ## License
 
 本项目使用 GNU GPLv3，详见 [LICENSE](./LICENSE)。
