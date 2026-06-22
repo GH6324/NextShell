@@ -21,8 +21,8 @@ export const NetworkTab = ({ keepAliveSetting, proxies }: NetworkTabProps) => {
             value: proxy.id
           }))}
           notFoundContent={
-            <div style={{ textAlign: "center", padding: "8px 0", color: "var(--text-muted)" }}>
-              暂无代理，请先在「代理管理」中添加
+            <div style={{ textAlign: "center", padding: "8px 0", color: "var(--t3)" }}>
+              暂无代理，请先在「代理」标签页中添加
             </div>
           }
         />

@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from "react";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { SessionDescriptor } from "@nextshell/core";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { formatErrorMessage } from "../utils/errorMessage";
@@ -10,6 +10,7 @@ export function useMonitorLifecycle(
   isActiveConnectionTerminalConnected: boolean,
   sessions: SessionDescriptor[]
 ) {
+  const { message } = AntdApp.useApp();
   const { setMonitor, appendNetworkRate, removeSession } = useWorkspaceStore();
 
   // Receive system monitor snapshots
@@ -112,7 +113,7 @@ export function useMonitorLifecycle(
       }
 
       const name = connection.name || connection.host || "Server";
-      const suffix = type === "processManager" ? "进程管理器" : "网络";
+      const suffix = type === "processManager" ? "进程管理器" : "网络管理器";
       const now = new Date().toISOString();
 
       const session: SessionDescriptor = {

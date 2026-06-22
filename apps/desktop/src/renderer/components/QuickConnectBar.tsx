@@ -544,7 +544,7 @@ export const QuickConnectBar = ({
                 allowClear
                 options={sshKeys.map((key) => ({ label: key.name, value: key.id }))}
                 notFoundContent={
-                  <div style={{ textAlign: "center", padding: "8px 0", color: "var(--text-muted)" }}>
+                  <div style={{ textAlign: "center", padding: "8px 0", color: "var(--t3)" }}>
                     暂无密钥，请先在连接管理器添加
                   </div>
                 }

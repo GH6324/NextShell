@@ -1,4 +1,4 @@
-import { Button, List, Popconfirm, Space, Tag, Typography, Empty, message } from "antd";
+import { App as AntdApp, Button, List, Popconfirm, Space, Tag, Typography, Empty } from "antd";
 import { useState, useEffect, useCallback } from "react";
 import type { RecycleBinEntry } from "@nextshell/core";
 import { SettingsCard } from "./shared-components";
@@ -26,6 +26,7 @@ const formatScopeKey = (scopeKey: string): string => {
 };
 
 export const RecycleBinSection = () => {
+  const { message } = AntdApp.useApp();
   const [entries, setEntries] = useState<RecycleBinEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);

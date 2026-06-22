@@ -302,7 +302,7 @@ export const CommandCenterPane = ({
       return;
     }
     if (!connected) {
-      message.warning("当前连接未建立会话，请双击左侧服务器建立 SSH 连接。");
+      message.warning("当前连接未建立会话，请先连接 SSH 终端。");
       return;
     }
     const normalized = command.trim();

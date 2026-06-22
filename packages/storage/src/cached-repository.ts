@@ -22,10 +22,8 @@ import {
   MAX_COMMAND_HISTORY_ENTRIES,
   type AppPreferences,
   type WorkspaceCommandItem,
-  type WorkspaceRepoCommitMeta,
   type WorkspaceRepoConflict,
   type WorkspaceRepoLocalState,
-  type WorkspaceRepoSnapshot,
   type CloudSyncResourceStateV2,
   type CloudSyncPendingOp,
   type CloudSyncWorkspaceProfile,
@@ -307,21 +305,6 @@ export class CachedConnectionRepository implements ConnectionRepository {
   }
   removeRuntimeCurrentVersion(workspaceId: string): void {
     this.inner.removeRuntimeCurrentVersion(workspaceId);
-  }
-  listWorkspaceRepoCommits(workspaceId: string, limit?: number, cursorCreatedAt?: string): WorkspaceRepoCommitMeta[] {
-    return this.inner.listWorkspaceRepoCommits(workspaceId, limit, cursorCreatedAt);
-  }
-  getWorkspaceRepoCommit(workspaceId: string, commitId: string): WorkspaceRepoCommitMeta | undefined {
-    return this.inner.getWorkspaceRepoCommit(workspaceId, commitId);
-  }
-  saveWorkspaceRepoCommit(commit: WorkspaceRepoCommitMeta): void {
-    this.inner.saveWorkspaceRepoCommit(commit);
-  }
-  getWorkspaceRepoSnapshot(workspaceId: string, snapshotId: string): WorkspaceRepoSnapshot | undefined {
-    return this.inner.getWorkspaceRepoSnapshot(workspaceId, snapshotId);
-  }
-  saveWorkspaceRepoSnapshot(snapshot: WorkspaceRepoSnapshot): void {
-    this.inner.saveWorkspaceRepoSnapshot(snapshot);
   }
   getWorkspaceRepoLocalState(workspaceId: string): WorkspaceRepoLocalState | undefined {
     return this.inner.getWorkspaceRepoLocalState(workspaceId);

@@ -69,17 +69,6 @@ const repoSnapshotSchema = z.object({
   proxies: z.array(repoProxySchema).default([]),
 });
 
-const commitMetaSchema = z.object({
-  workspaceId: z.string().optional(),
-  commitId: z.string(),
-  parentCommitId: z.string().optional(),
-  snapshotId: z.string(),
-  authorName: z.string(),
-  authorKind: z.enum(["system", "user", "reconcile"]),
-  message: z.string(),
-  createdAt: z.string(),
-});
-
 const workspaceCommandItemSchema = z.object({
   id: z.string(),
   workspaceId: z.string().optional(),
@@ -103,34 +92,18 @@ const resolveResponseSchema = z.object({
 const repoPullResponseSchema = z.object({
   unchanged: z.boolean().optional(),
   headCommitId: z.string().nullable().optional(),
-  headCommit: commitMetaSchema.optional(),
   snapshot: repoSnapshotSchema.nullable().optional(),
-  recentCommits: z.array(commitMetaSchema).default([]),
   serverTime: z.string().optional(),
 });
 
 const repoPushAcceptedSchema = z.object({
   status: z.literal("accepted"),
   headCommitId: z.string(),
-  headCommit: commitMetaSchema.optional(),
-  recentCommits: z.array(commitMetaSchema).default([]),
 });
 
 const repoPushDivergedSchema = z.object({
   status: z.literal("diverged"),
   headCommitId: z.string().nullable().optional(),
-  headCommit: commitMetaSchema.optional(),
-  snapshot: repoSnapshotSchema,
-  recentCommits: z.array(commitMetaSchema).default([]),
-});
-
-const repoHistoryResponseSchema = z.object({
-  commits: z.array(commitMetaSchema).default([]),
-  nextCursor: z.string().nullable().optional(),
-});
-
-const repoSnapshotResponseSchema = z.object({
-  commit: commitMetaSchema.optional(),
   snapshot: repoSnapshotSchema,
 });
 
@@ -154,8 +127,6 @@ export type RepoPullResponse = z.infer<typeof repoPullResponseSchema>;
 export type RepoPushAcceptedResponse = z.infer<typeof repoPushAcceptedSchema>;
 export type RepoPushDivergedResponse = z.infer<typeof repoPushDivergedSchema>;
 export type RepoPushResponse = RepoPushAcceptedResponse | RepoPushDivergedResponse;
-export type RepoHistoryResponse = z.infer<typeof repoHistoryResponseSchema>;
-export type RepoSnapshotResponse = z.infer<typeof repoSnapshotResponseSchema>;
 export type CommandsPullResponse =
   | z.infer<typeof commandsPullUnchangedSchema>
   | z.infer<typeof commandsPullChangedSchema>;
@@ -191,7 +162,6 @@ export class CloudSyncApiV3Client {
     creds: CloudSyncApiV3Credentials,
     payload: {
       baseHeadCommitId?: string | null;
-      commitMeta: unknown;
       snapshot: unknown;
     },
   ): Promise<RepoPushResponse> {
@@ -203,31 +173,6 @@ export class CloudSyncApiV3Client {
       return repoPushDivergedSchema.parse(raw);
     }
     throw new Error(`Unexpected repo push response: ${JSON.stringify(raw).slice(0, 500)}`);
-  }
-
-  async history(
-    creds: CloudSyncApiV3Credentials,
-    cursor: string | undefined,
-    limit: number,
-  ): Promise<RepoHistoryResponse> {
-    return this.post(
-      creds,
-      "/api/v1/repo/history",
-      { cursor: cursor ?? null, limit },
-      repoHistoryResponseSchema,
-    );
-  }
-
-  async snapshot(
-    creds: CloudSyncApiV3Credentials,
-    commitId: string,
-  ): Promise<RepoSnapshotResponse> {
-    return this.post(
-      creds,
-      "/api/v1/repo/snapshot",
-      { commitId },
-      repoSnapshotResponseSchema,
-    );
   }
 
   async pullCommands(

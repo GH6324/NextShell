@@ -7,7 +7,7 @@ export const SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif
 /**
  * Three fixed first-level groupPath zones.
  *
- * - `server`    — 本地服务器 (local workspace, not synced)
+ * - `server`    — 我的服务器 (local, not synced to cloud)
  * - `workspace` — 云同步 (cloud-synced servers)
  * - `import`    — 文件导入 (imported from files)
  */
@@ -28,7 +28,7 @@ export const ZONE_ORDER: readonly ConnectionZone[] = [
 
 /** Display names (Chinese) for each zone */
 export const ZONE_DISPLAY_NAMES: Record<ConnectionZone, string> = {
-  [CONNECTION_ZONES.SERVER]: "本地服务器",
+  [CONNECTION_ZONES.SERVER]: "我的服务器",
   [CONNECTION_ZONES.WORKSPACE]: "云同步",
   [CONNECTION_ZONES.IMPORT]: "文件导入",
 } as const;

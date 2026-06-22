@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { SessionDescriptor } from "@nextshell/core";
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
@@ -30,6 +30,7 @@ const SYNTAX_MODE_OPTIONS: Array<{ value: EditorSyntaxMode; label: string }> = [
 ];
 
 export const EditorPane = ({ session }: EditorPaneProps) => {
+  const { message } = AntdApp.useApp();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const languageCompartmentRef = useRef(new Compartment());

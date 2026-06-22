@@ -191,11 +191,11 @@
 }
 
 .monitor-v2-fill.warn {
-  background: rgba(245, 158, 11, 0.45);
+  background: color-mix(in srgb, var(--warn) 45%, transparent);
 }
 
 .monitor-v2-fill.err {
-  background: rgba(248, 113, 113, 0.48);
+  background: color-mix(in srgb, var(--err) 48%, transparent);
 }
 
 .monitor-v2-pct {
@@ -331,9 +331,9 @@
 }
 
 .monitor-manager-btn:hover:not(:disabled) {
-  border-color: rgba(77, 159, 255, 0.45);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--accent);
-  background: rgba(77, 159, 255, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .monitor-manager-btn:disabled {

@@ -223,7 +223,7 @@
 }
 
 .about-debug-entry.fail .about-debug-cmd {
-  color: var(--error, #ff4d4f);
+  color: var(--err);
   opacity: 0.85;
 }
 
@@ -253,13 +253,13 @@
 }
 
 .about-debug-badge.ok {
-  background: rgba(82, 196, 26, 0.15);
-  color: #52c41a;
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+  color: var(--ok);
 }
 
 .about-debug-badge.fail {
-  background: rgba(255, 77, 79, 0.15);
-  color: #ff4d4f;
+  background: color-mix(in srgb, var(--err) 15%, transparent);
+  color: var(--err);
 }
 
 .about-debug-duration {
@@ -311,9 +311,9 @@
 .about-debug-error {
   margin: 4px 0 0 16px;
   padding: 4px 8px;
-  background: rgba(255, 77, 79, 0.08);
-  border-left: 2px solid #ff4d4f;
-  color: #ff4d4f;
+  background: color-mix(in srgb, var(--err) 8%, transparent);
+  border-left: 2px solid var(--err);
+  color: var(--err);
   font-size: 10.5px;
   white-space: pre-wrap;
   word-break: break-all;

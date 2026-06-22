@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Descriptions, Drawer, Input, Popconfirm, Select, Spin, Table, Tooltip, message } from "antd";
+import { Alert, App as AntdApp, Descriptions, Drawer, Input, Popconfirm, Select, Spin, Table, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type {
   MonitorProcess,
@@ -18,6 +18,7 @@ interface ProcessManagerPaneProps {
 type SortKey = "cpu" | "memory" | "pid";
 
 export const ProcessManagerPane = ({ session }: ProcessManagerPaneProps) => {
+  const { message } = AntdApp.useApp();
   const connectionId = session.connectionId;
   if (!connectionId) {
     throw new Error("ProcessManagerPane requires a remote session connectionId");

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from "react";
-import { Button, Tag, Tooltip, message } from "antd";
+import { App as AntdApp, Button, Tag, Tooltip } from "antd";
 import type { ConnectionProfile } from "@nextshell/core";
 import { useScheduledPoll } from "../hooks/useScheduledPoll";
 import { useEditSessionStore } from "../store/useEditSessionStore";
@@ -32,6 +32,7 @@ const statusTag = (status: string): { color: string; text: string } => {
 };
 
 export const LiveEditPane = ({ connections, active, collapsed, onToggle }: LiveEditPaneProps) => {
+  const { message } = AntdApp.useApp();
   const { sessions, loading, fetchSessions, applyEvent, stopSession, stopAllSessions } =
     useEditSessionStore();
 
@@ -40,6 +41,17 @@ export const LiveEditPane = ({ connections, active, collapsed, onToggle }: LiveE
     void fetchSessions();
     const unsub = window.nextshell.sftp.onEditStatus((event) => {
       applyEvent(event);
+      switch (event.status) {
+        case "synced":
+          message.success({ content: `已同步: ${event.remotePath.split("/").pop()}`, duration: 2 });
+          break;
+        case "error":
+          message.error({ content: event.message ?? "同步失败", duration: 4 });
+          break;
+        case "closed":
+          message.info({ content: `编辑已关闭: ${event.remotePath.split("/").pop()}`, duration: 2 });
+          break;
+      }
     });
     return unsub;
   }, [applyEvent, fetchSessions]);

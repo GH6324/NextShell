@@ -339,6 +339,72 @@ export const useRemoteExplorerState = ({
     void loadFiles();
   }, [connectionId, connected, fileRequestGate, initialPathReady, loadFiles, pathName]);
 
+  const findNodeByKey = (nodes: DirTreeNode[], key: string): DirTreeNode | undefined => {
+    for (const node of nodes) {
+      if (node.key === key) return node;
+      if (node.children) {
+        const found = findNodeByKey(node.children, key);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  };
+
+  // 导航后自动把目录树展开/加载到当前路径,使高亮项可见(修复树停在 / 而列表已切换的割裂)
+  useEffect(() => {
+    if (!connectionId || !connected || !initialPathReady || pathName === "/") {
+      return;
+    }
+
+    const expandTreeToPath = async (): Promise<void> => {
+      const normalized = normalizeRemotePath(pathName);
+      const parts = normalized.split("/").filter(Boolean);
+      const ancestorPaths: string[] = ["/"];
+      for (let i = 0; i < parts.length; i++) {
+        ancestorPaths.push("/" + parts.slice(0, i + 1).join("/"));
+      }
+
+      let currentTreeData = treeData;
+      const newExpandedKeys = expandedKeys.slice();
+      let needsUpdate = false;
+
+      // 只展开祖先节点(不含叶子本身),逐级按需懒加载子节点
+      for (let i = 0; i < ancestorPaths.length - 1; i++) {
+        const ancestorPath = ancestorPaths[i];
+        if (!ancestorPath) continue;
+
+        if (!newExpandedKeys.includes(ancestorPath)) {
+          newExpandedKeys.push(ancestorPath);
+          needsUpdate = true;
+        }
+
+        const node = findNodeByKey(currentTreeData, ancestorPath);
+        if (node && (!node.children || node.children.length === 0)) {
+          const children = await loadTreeChildren(ancestorPath);
+          if (connectionIdRef.current !== connectionId) return;
+          currentTreeData = updateTreeNode(currentTreeData, ancestorPath, children);
+          needsUpdate = true;
+        }
+      }
+
+      if (needsUpdate) {
+        setTreeData(currentTreeData);
+        setExpandedKeys(newExpandedKeys);
+      }
+    };
+
+    void expandTreeToPath();
+  }, [
+    connectionId,
+    connected,
+    initialPathReady,
+    pathName,
+    treeData,
+    expandedKeys,
+    loadTreeChildren,
+    updateTreeNode
+  ]);
+
   const handleTreeExpand = useCallback(
     async (keys: string[], info: { node: DirTreeNode; expanded: boolean }) => {
       setExpandedKeys(keys);

@@ -14,17 +14,14 @@ export const MANAGER_TABS: Array<{
   {
     key: "cloudSync",
     label: "云同步",
-    icon: "ri-git-merge-line",
-    tabClassName: "mgr-tab--success",
-    labelClassName: "mgr-tab-label--success"
+    icon: "ri-git-merge-line"
   },
   {
     key: "recycleBin",
     label: "回收站",
-    icon: "ri-delete-bin-line",
-    tabClassName: "mgr-tab--danger",
-    labelClassName: "mgr-tab-label--danger"
-  }
+    icon: "ri-delete-bin-line"
+  },
+  { key: "import", label: "导入", icon: "ri-upload-2-line" }
 ];
 
 export const FIELD_TAB_MAP: Record<string, FormTab> = {

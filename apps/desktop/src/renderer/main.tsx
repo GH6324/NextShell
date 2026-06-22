@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { App as AntdApp, ConfigProvider, theme } from "antd";
+import zhCN from "antd/locale/zh_CN";
 import "antd/dist/reset.css";
 import "@xterm/xterm/css/xterm.css";
 import "remixicon/fonts/remixicon.css";
@@ -26,7 +27,7 @@ const DARK_THEME_CONFIG = {
     colorPrimary: "#4d9fff",
     colorBgContainer: "#1d2435",
     colorBgElevated: "#232d40",
-    colorBorder: "rgba(255,255,255,0.09)",
+    colorBorder: "rgba(255,255,255,0.16)",
     colorText: "#dde4f0",
     colorTextSecondary: "#8893a6",
     colorTextDisabled: "#4a5568",
@@ -48,11 +49,11 @@ const DARK_THEME_CONFIG = {
     },
     Input: {
       colorBgContainer: "#1d2435",
-      colorBorder: "rgba(255,255,255,0.09)"
+      colorBorder: "rgba(255,255,255,0.16)"
     },
     Select: {
       colorBgContainer: "#1d2435",
-      colorBorder: "rgba(255,255,255,0.09)"
+      colorBorder: "rgba(255,255,255,0.16)"
     },
     Table: {
       colorBgContainer: "transparent",
@@ -79,7 +80,7 @@ const LIGHT_THEME_CONFIG = {
     colorPrimary: "#1768d6",
     colorBgContainer: "#ffffff",
     colorBgElevated: "#f7f9fc",
-    colorBorder: "rgba(14, 31, 53, 0.14)",
+    colorBorder: "rgba(14, 31, 53, 0.24)",
     colorText: "#122033",
     colorTextSecondary: "#4d5b73",
     colorTextDisabled: "#8f9bb0",
@@ -101,11 +102,11 @@ const LIGHT_THEME_CONFIG = {
     },
     Input: {
       colorBgContainer: "#ffffff",
-      colorBorder: "rgba(14, 31, 53, 0.14)"
+      colorBorder: "rgba(14, 31, 53, 0.24)"
     },
     Select: {
       colorBgContainer: "#ffffff",
-      colorBorder: "rgba(14, 31, 53, 0.14)"
+      colorBorder: "rgba(14, 31, 53, 0.24)"
     },
     Table: {
       colorBgContainer: "transparent",
@@ -174,7 +175,7 @@ const Root = () => {
   );
 
   return (
-    <ConfigProvider theme={appTheme}>
+    <ConfigProvider theme={appTheme} locale={zhCN}>
       <AntdApp>
         <App />
       </AntdApp>

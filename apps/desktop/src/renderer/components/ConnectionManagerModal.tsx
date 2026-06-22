@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent } from "react";
 import { App as AntdApp, Form, Modal } from "antd";
 import type { CloudSyncWorkspaceProfile, ConnectionProfile, ProxyProfile, SshKeyProfile } from "@nextshell/core";
@@ -18,12 +18,15 @@ import { ConnectionImportModal } from "./ConnectionImportModal";
 import { RecycleBinSection } from "./settings-center";
 import { ConnectionSidebar } from "./ConnectionManagerModal/components/ConnectionSidebar";
 import { ConnectionFormPanel } from "./ConnectionManagerModal/components/ConnectionFormPanel";
+import { ConnectionBatchAuthModal } from "./ConnectionManagerModal/components/ConnectionBatchAuthModal";
+import { ImportManagerPanel } from "./ConnectionManagerModal/components/ImportManagerPanel";
 import { DEFAULT_VALUES, FIELD_TAB_MAP, MANAGER_TABS } from "./ConnectionManagerModal/constants";
 import { useConnectionExportActions } from "./ConnectionManagerModal/hooks/useConnectionExportActions";
 import { useConnectionImportFlow } from "./ConnectionManagerModal/hooks/useConnectionImportFlow";
 import { useConnectionPasswordReveal } from "./ConnectionManagerModal/hooks/useConnectionPasswordReveal";
 import type {
   ManagerTab,
+  BatchAuthTarget,
   FormTab,
   MgrClipboard,
   MgrContextMenuState,
@@ -31,7 +34,8 @@ import type {
   SortMode
 } from "./ConnectionManagerModal/types";
 import {
-  buildManagerTree,
+  buildConnectionSearchIndex,
+  buildManagerTreeResult,
   collectFlatLeafIds,
   collectGroupLeafIds,
   groupKeyToPath,
@@ -111,6 +115,8 @@ const buildExpandedRootKeys = (workspaces: CloudSyncWorkspaceProfile[]): string[
   ...workspaces.map((workspace) => `mgr-group:${buildWorkspaceRootPath(workspace).slice(1)}`)
 ];
 
+const CONNECTION_SEARCH_DEBOUNCE_MS = 220;
+
 export const ConnectionManagerModal = ({
   open,
   focusConnectionId,
@@ -129,6 +135,7 @@ export const ConnectionManagerModal = ({
   const { modal, message } = AntdApp.useApp();
   const [activeTab, setActiveTab] = useState<ManagerTab>("connections");
   const [mode, setMode] = useState<"idle" | "new" | "edit">("idle");
+  const [searchInput, setSearchInput] = useState("");
   const [keyword, setKeyword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [primarySelectedId, setPrimarySelectedId] = useState<string>();
@@ -136,6 +143,7 @@ export const ConnectionManagerModal = ({
   const [expanded, setExpanded] = useState<Set<string>>(new Set(["root"]));
   const [contextMenu, setContextMenu] = useState<MgrContextMenuState | null>(null);
   const [clipboard, setClipboard] = useState<MgrClipboard | null>(null);
+  const [batchAuthTarget, setBatchAuthTarget] = useState<BatchAuthTarget | null>(null);
   const [renamingId, setRenamingId] = useState<string>();
   const [emptyFolders, setEmptyFolders] = useState<string[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>("name");
@@ -153,11 +161,30 @@ export const ConnectionManagerModal = ({
   const appliedFocusConnectionIdRef = useRef<string | undefined>(undefined);
   const externalDropDepthRef = useRef(0);
   const hasCloudWorkspaces = workspaces.length > 0;
+  const deferredKeyword = useDeferredValue(keyword);
+  const searchPending = searchInput.trim() !== deferredKeyword.trim();
 
-  const tree = useMemo(
-    () => sortMgrChildren(buildManagerTree(connections, keyword, workspaces, emptyFolders), sortMode),
-    [connections, emptyFolders, keyword, sortMode, workspaces]
+  const searchIndex = useMemo(
+    () => buildConnectionSearchIndex(connections, workspaces),
+    [connections, workspaces]
   );
+  const treeBuildResult = useMemo(
+    () => {
+      const result = buildManagerTreeResult(
+        connections,
+        deferredKeyword,
+        workspaces,
+        emptyFolders,
+        searchIndex
+      );
+      return {
+        ...result,
+        tree: sortMgrChildren(result.tree, sortMode)
+      };
+    },
+    [connections, deferredKeyword, emptyFolders, searchIndex, sortMode, workspaces]
+  );
+  const tree = treeBuildResult.tree;
   const hasVisibleConnections = useMemo(() => countMgrLeaves(tree) > 0, [tree]);
   const selectedConnection = useMemo(
     () => connections.find((connection) => connection.id === primarySelectedId),
@@ -198,8 +225,10 @@ export const ConnectionManagerModal = ({
     currentImportBatch,
     handleImportBatchImported,
     handleImportFinalShell,
+    handleImportFinalShellDirectory,
     handleImportDroppedNextShellFiles,
     handleImportNextShell,
+    handleImportNextShellDirectory,
     importingPreview,
     importModalOpen,
     importPreviewQueue,
@@ -242,16 +271,28 @@ export const ConnectionManagerModal = ({
     setExpanded(new Set(buildExpandedRootKeys(workspaces)));
     setMode("idle");
     setFormTab("basic");
+    setSearchInput("");
     setKeyword("");
     setActiveTab("connections");
     setContextMenu(null);
     setClipboard(null);
+    setBatchAuthTarget(null);
     setRenamingId(undefined);
     setEmptyFolders([]);
     setSortMode("name");
     resetImportFlow();
     clearRevealConnectionPassword();
   }, [clearRevealConnectionPassword, form, open, resetImportFlow]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const timer = window.setTimeout(() => {
+      startTransition(() => {
+        setKeyword(searchInput);
+      });
+    }, CONNECTION_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [open, searchInput]);
 
   useEffect(() => {
     if (!open) return;
@@ -273,9 +314,9 @@ export const ConnectionManagerModal = ({
   }, [open]);
 
   useEffect(() => {
-    if (!open || keyword.trim()) return;
+    if (!open || deferredKeyword.trim()) return;
     setExpanded((prev) => new Set([...prev, ...buildExpandedRootKeys(workspaces)]));
-  }, [keyword, open, workspaces]);
+  }, [deferredKeyword, open, workspaces]);
 
   useEffect(() => {
     if (open && activeTab === "connections") return;
@@ -283,8 +324,9 @@ export const ConnectionManagerModal = ({
     setDropTargetActive(false);
   }, [activeTab, open]);
 
-  useMemo(() => {
-    if (keyword.trim()) {
+  useEffect(() => {
+    if (!open) return;
+    if (deferredKeyword.trim()) {
       const keys = new Set<string>(["root"]);
       const walk = (node: MgrGroupNode) => {
         keys.add(node.key);
@@ -295,7 +337,7 @@ export const ConnectionManagerModal = ({
       walk(tree);
       setExpanded(keys);
     }
-  }, [keyword, tree]);
+  }, [deferredKeyword, open, tree]);
 
   useEffect(() => {
     if (!open || groupZone !== CONNECTION_ZONES.WORKSPACE) {
@@ -490,7 +532,7 @@ export const ConnectionManagerModal = ({
       ? `删除「${names[0]}」后会关闭相关会话，是否继续？`
       : `确认删除 ${idsToDelete.length} 个连接？删除后会关闭相关会话。`;
 
-    Modal.confirm({
+    modal.confirm({
       title: "确认删除",
       content,
       okText: "删除",
@@ -819,6 +861,39 @@ export const ConnectionManagerModal = ({
     }
   }, [clipboard, connections, hasCloudWorkspaces, message, onConnectionSaved, onConnectionsImported, workspaces]);
 
+  const handleOpenBatchAuth = useCallback(() => {
+    if (!contextMenu) return;
+
+    if (contextMenu.target.type === "connection") {
+      const ids = Array.from(selectedIds).filter((id) =>
+        connections.some((connection) => connection.id === id)
+      );
+      const targetIds = ids.length > 0 ? ids : [contextMenu.target.connectionId];
+      setBatchAuthTarget({
+        type: "connections",
+        connectionIds: targetIds,
+        label: targetIds.length === 1 ? "选中的 1 个连接" : `选中的 ${targetIds.length} 个连接`,
+      });
+      return;
+    }
+
+    if (contextMenu.target.type === "group") {
+      const groupPath = contextMenu.target.groupPath;
+      const count = connections.filter((connection) =>
+        connection.groupPath === groupPath || connection.groupPath.startsWith(`${groupPath}/`)
+      ).length;
+      if (count === 0) {
+        message.warning("该文件夹下没有可批量绑定的连接");
+        return;
+      }
+      setBatchAuthTarget({
+        type: "group",
+        groupPath,
+        label: `${groupPath} 下的 ${count} 个连接`,
+      });
+    }
+  }, [connections, contextMenu, message, selectedIds]);
+
   const handleCtxCopyAddress = useCallback((connectionId: string) => {
     const connection = connections.find((item) => item.id === connectionId);
     if (!connection) return;
@@ -964,9 +1039,19 @@ export const ConnectionManagerModal = ({
             <div className="mgr-connections-layout">
               <ConnectionSidebar
                 connections={connections}
-                keyword={keyword}
-                onKeywordChange={setKeyword}
-                onClearKeyword={() => setKeyword("")}
+                keyword={searchInput}
+                appliedKeyword={deferredKeyword}
+                searchPending={searchPending}
+                searchLimited={treeBuildResult.limited}
+                searchTotalMatches={treeBuildResult.totalMatches}
+                searchVisibleMatches={treeBuildResult.visibleMatches}
+                onKeywordChange={setSearchInput}
+                onClearKeyword={() => {
+                  setSearchInput("");
+                  startTransition(() => {
+                    setKeyword("");
+                  });
+                }}
                 onOpenLocalTerminal={() => {
                   onOpenLocalTerminal();
                   onClose();
@@ -1000,16 +1085,18 @@ export const ConnectionManagerModal = ({
                 onCopyConnections={handleCtxCopy}
                 onCutConnections={handleCtxCut}
                 onPasteConnections={handleCtxPaste}
+                onBatchAuth={handleOpenBatchAuth}
                 onDeleteConnections={handleDelete}
                 onCopyAddress={handleCtxCopyAddress}
                 onNewFolder={handleCtxNewFolder}
                 onSortChange={setSortMode}
                 onImportNextShell={handleImportNextShell}
+                onImportNextShellDirectory={handleImportNextShellDirectory}
                 onImportFinalShell={handleImportFinalShell}
+                onImportFinalShellDirectory={handleImportFinalShellDirectory}
                 onExportSelected={handleExportSelected}
                 onExportAll={handleExportAll}
                 selectedExportCount={selectedExportCount}
-                importingPreview={importingPreview}
                 onClearClipboard={() => setClipboard(null)}
               />
 
@@ -1063,6 +1150,16 @@ export const ConnectionManagerModal = ({
             </div>
           ) : null}
 
+          {activeTab === "import" ? (
+            <ImportManagerPanel
+              importingPreview={importingPreview}
+              onImportNextShell={handleImportNextShell}
+              onImportNextShellDirectory={handleImportNextShellDirectory}
+              onImportFinalShell={handleImportFinalShell}
+              onImportFinalShellDirectory={handleImportFinalShellDirectory}
+            />
+          ) : null}
+
           {dropTargetActive ? (
             <div className="mgr-drop-overlay" aria-hidden="true">
               <div className="mgr-drop-overlay-card">
@@ -1083,6 +1180,15 @@ export const ConnectionManagerModal = ({
         sourceProgress={sourceProgress}
         onClose={resetImportFlow}
         onImported={handleImportBatchImported}
+      />
+
+      <ConnectionBatchAuthModal
+        open={Boolean(batchAuthTarget)}
+        target={batchAuthTarget}
+        connections={connections}
+        sshKeys={sshKeys}
+        onClose={() => setBatchAuthTarget(null)}
+        onUpdated={onConnectionsImported}
       />
     </>
   );

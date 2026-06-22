@@ -27,7 +27,6 @@ import type {
   SystemInfoSnapshot,
   CommandExecutionResult,
   TerminalEncoding,
-  WorkspaceRepoCommitMeta,
   WorkspaceRepoConflict,
   WorkspaceRepoStatus,
 } from "../../../../../packages/core/src/index";
@@ -35,9 +34,13 @@ import type { SshShellChannel } from "../../../../../packages/ssh/src/index";
 import type { IPty } from "node-pty";
 import type {
   CommandBatchExecInput,
+  ConnectionBatchAuthUpdateInput,
+  ConnectionBatchAuthUpdateResult,
   ConnectionExportInput,
   ConnectionExportBatchInput,
   ConnectionExportBatchResult,
+  ConnectionImportDirectoryPreviewInput,
+  ConnectionImportDirectoryPreviewResult,
   ConnectionImportFinalShellPreviewInput,
   ConnectionImportPreviewInput,
   ConnectionImportExecuteInput,
@@ -68,8 +71,7 @@ import type {
   CloudSyncWorkspaceTokenDraft,
   CloudSyncWorkspaceExportTokenInput,
   CloudSyncWorkspaceParseTokenInput,
-  CloudSyncHistoryInput,
-  CloudSyncRestoreCommitInput,
+  CloudSyncTestConnectionInput,
   CloudSyncSyncNowInput,
   CloudSyncResolveConflictInput,
   ResourceCopyConnectionInput,
@@ -148,6 +150,7 @@ export interface AdhocSessionRuntime {
 export interface ServiceContainer {
   listConnections: (query: ConnectionListQuery) => ConnectionProfile[];
   upsertConnection: (input: ConnectionUpsertInput) => Promise<ConnectionProfile>;
+  batchUpdateConnectionAuth: (input: ConnectionBatchAuthUpdateInput) => Promise<ConnectionBatchAuthUpdateResult>;
   removeConnection: (id: string) => Promise<{ ok: true }>;
   exportConnections: (
     sender: WebContents,
@@ -157,6 +160,7 @@ export interface ServiceContainer {
   revealConnectionPassword: (connectionId: string, masterPassword?: string) => Promise<{ password: string }>;
   importConnectionsPreview: (input: ConnectionImportPreviewInput) => Promise<ConnectionImportEntry[]>;
   importFinalShellConnectionsPreview: (input: ConnectionImportFinalShellPreviewInput) => Promise<ConnectionImportEntry[]>;
+  importConnectionsDirectoryPreview: (input: ConnectionImportDirectoryPreviewInput) => Promise<ConnectionImportDirectoryPreviewResult>;
   importConnectionsExecute: (input: ConnectionImportExecuteInput) => Promise<ConnectionImportResult>;
   listSshKeys: () => SshKeyProfile[];
   upsertSshKey: (input: SshKeyUpsertInput) => Promise<SshKeyProfile>;
@@ -183,8 +187,7 @@ export interface ServiceContainer {
   cloudSyncStatus: () => { workspaces: WorkspaceRepoStatus[] };
   cloudSyncSyncNow: (input: CloudSyncSyncNowInput) => Promise<{ ok: true }>;
   cloudSyncListConflicts: () => Array<WorkspaceRepoConflict & { workspaceName: string }>;
-  cloudSyncHistory: (input: CloudSyncHistoryInput) => WorkspaceRepoCommitMeta[];
-  cloudSyncRestoreCommit: (input: CloudSyncRestoreCommitInput) => Promise<{ ok: true }>;
+  cloudSyncTestConnection: (input: CloudSyncTestConnectionInput) => Promise<{ ok: true; displayName?: string }>;
   cloudSyncResolveConflict: (input: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
   openFilesDialog: (
     sender: WebContents,

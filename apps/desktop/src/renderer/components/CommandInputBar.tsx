@@ -6,7 +6,7 @@ import {
   useState,
   type KeyboardEvent
 } from "react";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { SessionDescriptor } from "@nextshell/core";
 import type {
   useCommandHistory,
@@ -36,6 +36,7 @@ export const CommandInputBar = ({
   onTerminalSearchNext,
   onTerminalSearchPrevious
 }: CommandInputBarProps) => {
+  const { message } = AntdApp.useApp();
   const {
     entries,
     push,
@@ -368,12 +369,10 @@ export const CommandInputBar = ({
           type="button"
           className={`cib-history-toggle${panelOpen && panelMode === "history" ? " active" : ""}`}
           onClick={openHistoryPanel}
+          aria-label="命令历史"
           title="命令历史"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
+          <i className="ri-history-line" aria-hidden="true" style={{ fontSize: 15 }} />
           {entries.length > 0 && (
             <span className="cib-badge">{entries.length}</span>
           )}
@@ -387,6 +386,7 @@ export const CommandInputBar = ({
             ref={inputRef}
             className="cib-input"
             type="text"
+            aria-label={searchMode ? "搜索终端输出" : "命令输入"}
             value={searchMode ? terminalSearchTerm : commandInput}
             onChange={(event) => handleInputChange(event.target.value)}
             onKeyDown={handleKeyDown}
@@ -419,6 +419,7 @@ export const CommandInputBar = ({
           className={`cib-send-btn${searchMode || !isConnected || !commandInput.trim() ? " disabled" : ""}`}
           disabled={searchMode || !isConnected || !commandInput.trim()}
           onClick={() => sendCommand(commandInput)}
+          aria-label="发送命令"
           title="发送命令"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -438,6 +439,7 @@ export const CommandInputBar = ({
               openSearchMode();
             }
           }}
+          aria-label="终端搜索"
           title="终端搜索"
         >
           <i className="ri-search-line" aria-hidden="true" />

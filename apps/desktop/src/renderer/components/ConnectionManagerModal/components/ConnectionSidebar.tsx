@@ -13,6 +13,11 @@ import type {
 interface ConnectionSidebarProps {
   connections: ConnectionProfile[];
   keyword: string;
+  appliedKeyword: string;
+  searchPending: boolean;
+  searchLimited: boolean;
+  searchTotalMatches: number;
+  searchVisibleMatches: number;
   onKeywordChange: (value: string) => void;
   onClearKeyword: () => void;
   onOpenLocalTerminal: () => void;
@@ -45,22 +50,29 @@ interface ConnectionSidebarProps {
   onCopyConnections: () => void;
   onCutConnections: () => void;
   onPasteConnections: (targetGroupPath: string) => void | Promise<void>;
+  onBatchAuth: () => void;
   onDeleteConnections: () => void;
   onCopyAddress: (connectionId: string) => void;
   onNewFolder: (parentGroupPath: string) => void | Promise<void>;
   onSortChange: (mode: SortMode) => void;
   onImportNextShell: () => void | Promise<void>;
+  onImportNextShellDirectory: () => void | Promise<void>;
   onImportFinalShell: () => void | Promise<void>;
+  onImportFinalShellDirectory: () => void | Promise<void>;
   onExportSelected: () => void | Promise<void>;
   onExportAll: () => void | Promise<void>;
   selectedExportCount: number;
-  importingPreview: boolean;
   onClearClipboard: () => void;
 }
 
 export const ConnectionSidebar = ({
   connections,
   keyword,
+  appliedKeyword,
+  searchPending,
+  searchLimited,
+  searchTotalMatches,
+  searchVisibleMatches,
   onKeywordChange,
   onClearKeyword,
   onOpenLocalTerminal,
@@ -93,18 +105,23 @@ export const ConnectionSidebar = ({
   onCopyConnections,
   onCutConnections,
   onPasteConnections,
+  onBatchAuth,
   onDeleteConnections,
   onCopyAddress,
   onNewFolder,
   onSortChange,
   onImportNextShell,
+  onImportNextShellDirectory,
   onImportFinalShell,
+  onImportFinalShellDirectory,
   onExportSelected,
   onExportAll,
   selectedExportCount,
-  importingPreview,
   onClearClipboard
 }: ConnectionSidebarProps) => {
+  const trimmedKeyword = keyword.trim();
+  const hasAppliedKeyword = appliedKeyword.trim().length > 0;
+
   return (
     <div className="mgr-sidebar">
       <div className="mgr-sidebar-head">
@@ -150,6 +167,20 @@ export const ConnectionSidebar = ({
           </button>
         ) : null}
       </div>
+      {trimmedKeyword || hasAppliedKeyword ? (
+        <div className="mgr-search-status">
+          {searchPending ? (
+            <>
+              <i className="ri-loader-4-line ri-spin" aria-hidden="true" />
+              <span>正在搜索...</span>
+            </>
+          ) : searchLimited ? (
+            <span>显示前 {searchVisibleMatches} / {searchTotalMatches} 个匹配，请继续输入缩小范围</span>
+          ) : hasAppliedKeyword ? (
+            <span>{searchTotalMatches} 个匹配</span>
+          ) : null}
+        </div>
+      ) : null}
 
       <ManagerTree
         tree={tree}
@@ -158,7 +189,7 @@ export const ConnectionSidebar = ({
         selectedIds={selectedIds}
         cutIds={cutIds}
         renamingId={renamingId}
-        keyword={keyword}
+        keyword={appliedKeyword}
         hasVisibleConnections={hasVisibleConnections}
         draggingConnection={draggingConnection}
         toggleExpanded={toggleExpanded}
@@ -189,13 +220,16 @@ export const ConnectionSidebar = ({
           onCopy={onCopyConnections}
           onCut={onCutConnections}
           onPaste={(path) => void onPasteConnections(path)}
+          onBatchAuth={onBatchAuth}
           onDelete={onDeleteConnections}
           onCopyAddress={onCopyAddress}
           onNewConnection={onNewConnection}
           onNewFolder={(path) => void onNewFolder(path)}
           onSort={onSortChange}
           onImportNextShell={() => void onImportNextShell()}
+          onImportNextShellDirectory={() => void onImportNextShellDirectory()}
           onImportFinalShell={() => void onImportFinalShell()}
+          onImportFinalShellDirectory={() => void onImportFinalShellDirectory()}
           onExportSelected={() => void onExportSelected()}
           onExportAll={() => void onExportAll()}
         />
@@ -223,21 +257,6 @@ export const ConnectionSidebar = ({
           {selectedExportCount > 0 ? ` · 已选 ${selectedExportCount}` : ""}
         </span>
         <div className="mgr-sidebar-footer-actions">
-          <Tooltip title="导入 NextShell 文件">
-            <button type="button" className="mgr-action-btn" onClick={() => void onImportNextShell()} disabled={importingPreview}>
-              <i className={importingPreview ? "ri-loader-4-line ri-spin" : "ri-upload-2-line"} />
-            </button>
-          </Tooltip>
-          <Tooltip title="导入 FinalShell 文件">
-            <button
-              type="button"
-              className="mgr-action-btn"
-              onClick={() => void onImportFinalShell()}
-              disabled={importingPreview}
-            >
-              <i className="ri-file-upload-line" />
-            </button>
-          </Tooltip>
           <Tooltip title="导出选中连接">
             <button
               type="button"

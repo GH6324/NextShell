@@ -82,8 +82,8 @@ export const BasicTab = ({
             allowClear
             options={sshKeys.map((key) => ({ label: key.name, value: key.id }))}
             notFoundContent={
-              <div style={{ textAlign: "center", padding: "8px 0", color: "var(--text-muted)" }}>
-                暂无密钥，请先在「密钥管理」中添加
+              <div style={{ textAlign: "center", padding: "8px 0", color: "var(--t3)" }}>
+                暂无密钥，请先在「密钥」标签页中添加
               </div>
             }
           />

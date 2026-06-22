@@ -41,12 +41,14 @@ const api: NextShellApi = {
   connection: {
     list: (query) => ipcRenderer.invoke(IPCChannel.ConnectionList, query),
     upsert: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionUpsert, payload),
+    batchUpdateAuth: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionBatchAuthUpdate, payload),
     remove: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionRemove, payload),
     exportToFile: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionExport, payload),
     exportBatch: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionExportBatch, payload),
     revealPassword: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionRevealPassword, payload),
     importPreview: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionImportPreview, payload),
     importFinalShellPreview: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionImportFinalShellPreview, payload),
+    importDirectoryPreview: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionImportDirectoryPreview, payload),
     importExecute: (payload) => ipcRenderer.invoke(IPCChannel.ConnectionImportExecute, payload)
   },
   session: {
@@ -239,8 +241,7 @@ const api: NextShellApi = {
     status: () => ipcRenderer.invoke(IPCChannel.CloudSyncStatus, {}),
     syncNow: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncSyncNow, payload ?? {}),
     listConflicts: () => ipcRenderer.invoke(IPCChannel.CloudSyncListConflicts, {}),
-    history: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncHistory, payload),
-    restoreCommit: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncRestoreCommit, payload),
+    testConnection: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncTestConnection, payload),
     resolveConflict: (payload) => ipcRenderer.invoke(IPCChannel.CloudSyncResolveConflict, payload),
     onStatus: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: CloudSyncManagerStatusEvent) => {

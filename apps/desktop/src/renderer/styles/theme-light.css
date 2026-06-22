@@ -24,10 +24,6 @@
   background: var(--accent-dim);
 }
 
-:root[data-theme="light"] .tab-drag {
-  color: var(--t3);
-}
-
 :root[data-theme="light"] .tab-close {
   color: var(--t3);
 }

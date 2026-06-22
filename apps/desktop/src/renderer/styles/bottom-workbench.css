@@ -86,6 +86,6 @@
 
 .bottom-collapse-btn:hover {
   color: #8ec8ff;
-  border-color: rgba(77, 159, 255, 0.35);
-  background: rgba(77, 159, 255, 0.12);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }

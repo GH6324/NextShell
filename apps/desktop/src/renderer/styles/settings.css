@@ -312,8 +312,8 @@
   justify-content: center;
   width: 20px;
   height: 20px;
-  background: var(--success-bg, rgba(82, 196, 26, 0.1));
-  color: var(--success, #52c41a);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
   border-radius: 50%;
   font-size: 12px;
 }
@@ -355,7 +355,7 @@
 }
 
 .cloud-sync-conflict-deleted {
-  color: var(--error, #ff4d4f);
+  color: var(--err);
 }
 
 .cloud-sync-conflict-actions {

@@ -98,29 +98,18 @@ export interface WorkspaceRepoSnapshot {
   proxies: WorkspaceRepoProxySnapshotItem[];
 }
 
-export interface WorkspaceRepoCommitMeta {
-  workspaceId: string;
-  commitId: string;
-  parentCommitId?: string;
-  snapshotId: string;
-  authorName: string;
-  authorKind: "system" | "user" | "reconcile";
-  message: string;
-  createdAt: string;
-}
-
 export interface WorkspaceRepoLocalState {
   workspaceId: string;
-  localHeadCommitId?: string;
-  remoteHeadCommitId?: string;
+  /** Serialized last-synced snapshot; the common ancestor for three-way merge. */
+  baseSnapshotJson?: string;
+  /** Opaque server head token from the last successful sync. */
+  remoteVersion?: string;
   remoteCommandsVersion?: string;
   lastSyncAt?: string;
   lastError?: string;
   syncState:
     | "idle"
     | "syncing"
-    | "ahead"
-    | "behind"
     | "diverged"
     | "error"
     | "disabled"
@@ -140,17 +129,7 @@ export interface WorkspaceRepoConflict {
 
 export interface WorkspaceRepoStatus {
   workspaceId: string;
-  state: "idle" | "syncing" | "error" | "disabled" | "diverged";
-  syncState:
-    | "synced"
-    | "ahead"
-    | "behind"
-    | "diverged"
-    | "syncing"
-    | "error"
-    | "disabled";
-  localHeadCommitId?: string;
-  remoteHeadCommitId?: string;
+  state: "idle" | "syncing" | "synced" | "error" | "disabled" | "diverged";
   lastSyncAt?: string;
   lastError?: string;
   conflictCount: number;
@@ -777,6 +756,8 @@ export interface ConnectionExportFile {
 export interface ConnectionImportEntry extends ExportedConnection {
   passwordUnavailable?: boolean;
   sourceFormat: "nextshell" | "finalshell";
+  sourceFileName?: string;
+  sourceRelativePath?: string;
 }
 
 export type ImportConflictPolicy = "skip" | "overwrite" | "duplicate";

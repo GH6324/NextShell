@@ -452,11 +452,6 @@ export const createServiceContainer = (
     listWorkspaces: () => connections.listCloudSyncWorkspaces(),
     saveWorkspace: (ws) => connections.saveCloudSyncWorkspace(ws),
     removeWorkspace: (id) => connections.removeCloudSyncWorkspace(id),
-    listWorkspaceRepoCommits: (wId, limit, cursor) => connections.listWorkspaceRepoCommits(wId, limit, cursor),
-    getWorkspaceRepoCommit: (wId, commitId) => connections.getWorkspaceRepoCommit(wId, commitId),
-    saveWorkspaceRepoCommit: (commit) => connections.saveWorkspaceRepoCommit(commit),
-    getWorkspaceRepoSnapshot: (wId, snapshotId) => connections.getWorkspaceRepoSnapshot(wId, snapshotId),
-    saveWorkspaceRepoSnapshot: (snapshot) => connections.saveWorkspaceRepoSnapshot(snapshot),
     getWorkspaceRepoLocalState: (wId) => connections.getWorkspaceRepoLocalState(wId),
     saveWorkspaceRepoLocalState: (state) => connections.saveWorkspaceRepoLocalState(state),
     listWorkspaceRepoConflicts: (wId) => connections.listWorkspaceRepoConflicts(wId),
@@ -528,6 +523,7 @@ export const createServiceContainer = (
     // Connection CRUD
     listConnections: (q) => connectionSvc.listConnections(q),
     upsertConnection: (i) => connectionSvc.upsertConnection(i),
+    batchUpdateConnectionAuth: (i) => connectionSvc.batchUpdateConnectionAuth(i),
     removeConnection: async (id) => {
       // 1. Snapshot to recycle bin + DB remove + push tombstone + delete credentials
       await resourceOpsSvc.deleteConnection({ id });
@@ -554,6 +550,7 @@ export const createServiceContainer = (
     exportConnectionsBatch: (i) => importExportSvc.exportConnectionsBatch(i),
     importConnectionsPreview: (i) => importExportSvc.importConnectionsPreview(i),
     importFinalShellConnectionsPreview: (i) => importExportSvc.importFinalShellConnectionsPreview(i),
+    importConnectionsDirectoryPreview: (i) => importExportSvc.importConnectionsDirectoryPreview(i),
     importConnectionsExecute: (i) => importExportSvc.importConnectionsExecute(i),
 
     // Session
@@ -656,11 +653,7 @@ export const createServiceContainer = (
       return { ok: true as const };
     },
     cloudSyncListConflicts: () => cloudSyncManager.listConflicts(),
-    cloudSyncHistory: (i) => cloudSyncManager.history(i.workspaceId, i.limit),
-    cloudSyncRestoreCommit: async (i) => {
-      await cloudSyncManager.restoreCommit(i.workspaceId, i.commitId);
-      return { ok: true as const };
-    },
+    cloudSyncTestConnection: (i) => cloudSyncManager.testConnection(i),
     cloudSyncResolveConflict: async (i) => {
       await cloudSyncManager.resolveConflict(i.workspaceId, i.resourceType, i.resourceId, i.strategy);
       return { ok: true as const };

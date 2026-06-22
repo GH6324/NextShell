@@ -12,6 +12,8 @@ import type {
   ConnectionExportInput,
   ConnectionExportBatchInput,
   ConnectionExportBatchResult,
+  ConnectionImportDirectoryPreviewInput,
+  ConnectionImportDirectoryPreviewResult,
   ConnectionImportPreviewInput,
   ConnectionImportFinalShellPreviewInput,
   ConnectionImportExecuteInput,
@@ -32,6 +34,7 @@ import {
   obfuscatePassword,
 } from "./connection-export-crypto";
 import { exportConnectionsBatchToDirectory } from "./connection-export-batch";
+import { scanConnectionImportDirectory } from "./connection-import-directory";
 
 interface ImportExportServiceOptions {
   connections: CachedConnectionRepository;
@@ -180,6 +183,66 @@ export class ImportExportService {
     return parseFinalShellImport(data);
   }
 
+  async importConnectionsDirectoryPreview(
+    input: ConnectionImportDirectoryPreviewInput,
+  ): Promise<ConnectionImportDirectoryPreviewResult> {
+    const scan = await scanConnectionImportDirectory(input.directoryPath);
+    const result: ConnectionImportDirectoryPreviewResult = {
+      directoryPath: scan.directoryPath,
+      source: input.source,
+      totalFiles: scan.files.length,
+      importedFiles: 0,
+      skippedFiles: 0,
+      entries: [],
+      files: [],
+      warnings: [...scan.warnings],
+    };
+
+    for (const file of scan.files) {
+      try {
+        const raw = await fs.promises.readFile(file.filePath, "utf-8");
+        const entries = input.source === "nextshell"
+          ? await this.parseNextShellDirectoryFile(raw, file.groupPath, input.decryptionPassword)
+          : this.parseFinalShellDirectoryFile(raw, file.groupPath);
+
+        if (entries.length === 0) {
+          result.skippedFiles++;
+          result.warnings.push(`${file.relativePath}：文件中没有可导入的连接`);
+          continue;
+        }
+
+        const entriesWithSource = entries.map((entry) => ({
+          ...entry,
+          sourceFileName: file.fileName,
+          sourceRelativePath: file.relativePath,
+        }));
+
+        result.importedFiles++;
+        result.entries.push(...entriesWithSource);
+        result.files.push({
+          filePath: file.filePath,
+          fileName: file.fileName,
+          relativePath: file.relativePath,
+          groupPath: file.groupPath,
+          entries: entriesWithSource,
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "未知错误";
+        if (
+          input.source === "nextshell" &&
+          !input.decryptionPassword &&
+          reason.startsWith(CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX)
+        ) {
+          throw error;
+        }
+        result.skippedFiles++;
+        result.warnings.push(`${file.relativePath}：${stripImportPromptPrefix(reason)}`);
+      }
+    }
+
+    return result;
+  }
+
   async importConnectionsExecute(
     input: ConnectionImportExecuteInput,
   ): Promise<ConnectionImportResult> {
@@ -321,6 +384,29 @@ export class ImportExportService {
     return JSON.parse(normalizedText);
   }
 
+  private async parseNextShellDirectoryFile(
+    rawText: string,
+    groupPath: string,
+    decryptionPassword?: string,
+  ): Promise<ConnectionImportEntry[]> {
+    const data = await this.parseImportPayloadText(rawText, decryptionPassword);
+    if (!isNextShellFormat(data)) {
+      throw new Error("该文件不是 NextShell 导出格式");
+    }
+    return parseNextShellImport(data, { groupPathOverride: groupPath });
+  }
+
+  private parseFinalShellDirectoryFile(
+    rawText: string,
+    groupPath: string,
+  ): ConnectionImportEntry[] {
+    const data = parseJsonPayloadText(rawText);
+    if (!isFinalShellFormat(data)) {
+      throw new Error("该文件不是 FinalShell 配置格式");
+    }
+    return parseFinalShellImport(data, { groupPathOverride: groupPath });
+  }
+
   private async buildExportedConnection(conn: ConnectionProfile): Promise<ExportedConnection> {
     let password: string | undefined;
     if (
@@ -361,4 +447,10 @@ export class ImportExportService {
 function parseJsonPayloadText(rawText: string): unknown {
   const normalizedText = trimBomAndWhitespace(rawText);
   return JSON.parse(normalizedText);
+}
+
+function stripImportPromptPrefix(reason: string): string {
+  return reason.startsWith(CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX)
+    ? reason.slice(CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX.length).trim()
+    : reason;
 }

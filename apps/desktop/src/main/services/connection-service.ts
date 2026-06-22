@@ -12,6 +12,8 @@ import type {
 } from "@nextshell/core";
 import { buildResourceId, buildScopeKey, LOCAL_DEFAULT_SCOPE_KEY } from "@nextshell/core";
 import type {
+  ConnectionBatchAuthUpdateInput,
+  ConnectionBatchAuthUpdateResult,
   ConnectionUpsertInput,
   SessionAuthOverrideInput,
   SessionStatusEvent,
@@ -124,6 +126,76 @@ export class ConnectionService {
 
   listConnections(query: ConnectionListQuery): ConnectionProfile[] {
     return this.options.connections.list(query);
+  }
+
+  private getConnectionScopeKey(connection: ConnectionProfile): string {
+    return connection.originScopeKey ?? LOCAL_DEFAULT_SCOPE_KEY;
+  }
+
+  private getBatchAuthTargets(input: ConnectionBatchAuthUpdateInput): ConnectionProfile[] {
+    const allConnections = this.options.connections.list({});
+    if (input.target.type === "connections") {
+      const seen = new Set<string>();
+      const targets: ConnectionProfile[] = [];
+      for (const id of input.target.connectionIds) {
+        if (seen.has(id)) {
+          continue;
+        }
+        seen.add(id);
+        const connection = this.options.connections.getById(id);
+        if (!connection) {
+          throw new Error(`连接不存在：${id}`);
+        }
+        targets.push(connection);
+      }
+      return targets;
+    }
+
+    const targetPath = enforceZonePrefix(input.target.groupPath);
+    return allConnections.filter((connection) =>
+      connection.groupPath === targetPath || connection.groupPath.startsWith(`${targetPath}/`)
+    );
+  }
+
+  private assertSingleScope(connections: ConnectionProfile[]): string {
+    const scopeKeys = new Set(connections.map((connection) => this.getConnectionScopeKey(connection)));
+    if (scopeKeys.size > 1) {
+      throw new Error("批量绑定认证要求所有目标连接属于同一来源范围");
+    }
+    return connections[0] ? this.getConnectionScopeKey(connections[0]) : LOCAL_DEFAULT_SCOPE_KEY;
+  }
+
+  private buildBatchAuthUpsertInput(
+    connection: ConnectionProfile,
+    auth: ConnectionBatchAuthUpdateInput["auth"],
+  ): ConnectionUpsertInput {
+    return {
+      id: connection.id,
+      workspaceId: connection.originKind === "cloud" ? connection.originWorkspaceId : undefined,
+      name: connection.name,
+      host: connection.host,
+      port: connection.port,
+      username: connection.username,
+      authType: auth.authType,
+      password:
+        auth.authType === "password" || auth.authType === "interactive"
+          ? auth.password
+          : undefined,
+      sshKeyId: auth.authType === "privateKey" ? auth.sshKeyId : undefined,
+      hostFingerprint: connection.hostFingerprint,
+      strictHostKeyChecking: connection.strictHostKeyChecking,
+      proxyId: connection.proxyId,
+      keepAliveEnabled: connection.keepAliveEnabled,
+      keepAliveIntervalSec: connection.keepAliveIntervalSec,
+      terminalEncoding: connection.terminalEncoding,
+      backspaceMode: connection.backspaceMode,
+      deleteMode: connection.deleteMode,
+      groupPath: connection.groupPath,
+      tags: connection.tags,
+      notes: connection.notes,
+      favorite: connection.favorite,
+      monitorSession: connection.monitorSession,
+    };
   }
 
   async upsertConnection(input: ConnectionUpsertInput): Promise<ConnectionProfile> {
@@ -259,6 +331,60 @@ export class ConnectionService {
       },
     });
     return profile;
+  }
+
+  async batchUpdateConnectionAuth(
+    input: ConnectionBatchAuthUpdateInput,
+  ): Promise<ConnectionBatchAuthUpdateResult> {
+    const targets = this.getBatchAuthTargets(input);
+    if (targets.length === 0) {
+      throw new Error("没有找到可批量绑定的连接");
+    }
+
+    const targetScopeKey = this.assertSingleScope(targets);
+    if (input.auth.authType === "privateKey") {
+      const keyProfile = this.options.sshKeyRepo.getById(input.auth.sshKeyId);
+      if (!keyProfile) {
+        throw new Error("选择的 SSH 密钥不存在");
+      }
+      const keyScopeKey = keyProfile.originScopeKey ?? LOCAL_DEFAULT_SCOPE_KEY;
+      if (keyScopeKey !== targetScopeKey) {
+        throw new Error("选择的 SSH 密钥与目标连接不属于同一来源范围");
+      }
+    }
+
+    const result: ConnectionBatchAuthUpdateResult = {
+      total: targets.length,
+      updated: 0,
+      failed: 0,
+      errors: [],
+    };
+
+    for (const connection of targets) {
+      try {
+        await this.upsertConnection(this.buildBatchAuthUpsertInput(connection, input.auth));
+        result.updated++;
+      } catch (error) {
+        result.failed++;
+        const reason = error instanceof Error ? error.message : "未知错误";
+        result.errors.push(`${connection.name} (${connection.host}:${connection.port})：${reason}`);
+      }
+    }
+
+    this.options.appendAuditLogIfEnabled({
+      action: "connection.batch_auth_update",
+      level: result.failed > 0 ? "warn" : "info",
+      message: `Batch updated auth for ${result.updated}/${result.total} connections`,
+      metadata: {
+        targetType: input.target.type,
+        authType: input.auth.authType,
+        total: result.total,
+        updated: result.updated,
+        failed: result.failed,
+      },
+    });
+
+    return result;
   }
 
   async removeConnectionRecord(

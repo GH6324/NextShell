@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { SessionDescriptor } from "@nextshell/core";
 import type { ConnectionUpsertInput } from "@nextshell/shared";
 import { ConnectionManagerModal } from "./components/ConnectionManagerModal";
@@ -38,6 +38,7 @@ const getSessionConnectionId = (session?: SessionDescriptor): string | undefined
   (session as LocalAwareSessionDescriptor | undefined)?.connectionId;
 
 export const App = () => {
+  const { message } = AntdApp.useApp();
   const {
     connections,
     sshKeys,

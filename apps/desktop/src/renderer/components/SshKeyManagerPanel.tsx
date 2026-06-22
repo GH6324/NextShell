@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Form, Input, Modal, Select, Tooltip, Typography, message } from "antd";
+import { App as AntdApp, Form, Input, Select, Tooltip, Typography } from "antd";
 import type { CloudSyncWorkspaceProfile, SshKeyProfile } from "@nextshell/core";
 import { formatErrorMessage } from "../utils/errorMessage";
 
@@ -19,6 +19,7 @@ interface SshKeyFormValues {
 }
 
 export const SshKeyManagerPanel = ({ sshKeys, workspaces, onReload }: SshKeyManagerPanelProps) => {
+  const { message, modal } = AntdApp.useApp();
   const [mode, setMode] = useState<"idle" | "new" | "edit">("idle");
   const [selectedKeyId, setSelectedKeyId] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -106,7 +107,7 @@ export const SshKeyManagerPanel = ({ sshKeys, workspaces, onReload }: SshKeyMana
 
   const handleDelete = useCallback(() => {
     if (!selectedKeyId) return;
-    Modal.confirm({
+    modal.confirm({
       title: "确认删除",
       content: `删除密钥「${selectedKey?.name ?? ""}」？如果仍有连接引用将无法删除。`,
       okText: "删除",

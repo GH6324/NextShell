@@ -32,7 +32,7 @@
 .panel-resize-handle[data-resizing="true"],
 .panel-resize-handle[data-resize-handle-state="hover"],
 .panel-resize-handle[data-resize-handle-state="drag"] {
-  background: rgba(77, 159, 255, 0.22);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 /* ── Workspace ───────────────────────────────────────────── */

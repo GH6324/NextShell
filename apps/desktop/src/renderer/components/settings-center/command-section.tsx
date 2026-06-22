@@ -11,7 +11,7 @@ export const CommandSection = ({
   batchRetryCount: number;
   save: SaveFn;
 }) => (
-  <SettingsCard title="命令中心" description="模板参数与批量执行默认参数">
+  <SettingsCard title="命令中心 · 批量与模板" description="配置命令库的模板参数与批量执行默认参数">
     <SettingsSwitchRow
       label="记住模板参数"
       checked={rememberTemplateParams}

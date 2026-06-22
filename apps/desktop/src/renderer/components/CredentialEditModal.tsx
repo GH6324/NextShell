@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Form, Input, Modal, Select, Typography, message } from "antd";
+import { App as AntdApp, Form, Input, Modal, Select, Typography } from "antd";
 import type { ConnectionProfile, SshKeyProfile } from "@nextshell/core";
 import type { ConnectionUpsertInput } from "@nextshell/shared";
 import { formatErrorMessage } from "../utils/errorMessage";
@@ -64,6 +64,7 @@ export const CredentialEditModal = ({
   onClose,
   onSave
 }: CredentialEditModalProps) => {
+  const { message } = AntdApp.useApp();
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm<CredentialEditFormValues>();
   const authType = Form.useWatch("authType", form);
@@ -203,7 +204,7 @@ export const CredentialEditModal = ({
               allowClear
               options={sshKeys.map((key) => ({ label: key.name, value: key.id }))}
               notFoundContent={
-                <div style={{ textAlign: "center", padding: "8px 0", color: "var(--text-muted)" }}>
+                <div style={{ textAlign: "center", padding: "8px 0", color: "var(--t3)" }}>
                   暂无密钥，请先在连接管理器添加
                 </div>
               }

@@ -5,11 +5,11 @@ import { useTransferQueueStore } from "../../store/useTransferQueueStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { ConnectionPrompt } from "../ConnectionPrompt";
 import { getVisibleFileExplorerToolbarActions } from "../FileExplorerPane.toolbar";
-import { EDITOR_PRESETS, normalizeRemotePath } from "./shared";
+import { normalizeRemotePath } from "./shared";
 import type { DirTreeNode, FileExplorerPaneProps } from "./types";
+import { DeleteConfirmDialog } from "./components/DeleteConfirmDialog";
 import { FileExplorerContextMenu } from "./components/FileExplorerContextMenu";
 import { FileExplorerDropOverlay } from "./components/FileExplorerDropOverlay";
-import { FileExplorerEditorModal } from "./components/FileExplorerEditorModal";
 import { FileExplorerTable } from "./components/FileExplorerTable";
 import { FileExplorerToolbar } from "./components/FileExplorerToolbar";
 import { useFileActions } from "./hooks/useFileActions";
@@ -92,7 +92,7 @@ export const FileExplorerPane = ({
   if (!connected) {
     return (
       <ConnectionPrompt
-        message="当前连接未建立会话，请双击左侧服务器建立 SSH 连接。"
+        message="当前连接未建立会话，请先连接 SSH 终端。"
         icon="ri-links-line"
       />
     );
@@ -150,11 +150,15 @@ export const FileExplorerPane = ({
           onBack={explorer.goBack}
           onForward={explorer.goForward}
           onParent={explorer.toParentPath}
-          onCreateDirectory={() => void actions.handleCreateDirectory()}
+          onUpload={() => void transfers.handleUpload()}
+          onPackedUpload={() => void transfers.handlePackedUpload()}
+          onDownload={() => void transfers.handleDownload(explorer.selectedEntries)}
+          onPackedDownload={() => void transfers.handlePackedDownload(explorer.selectedEntries)}
+          onNewFolder={() => void actions.handleCreateDirectory()}
+          onNewFile={() => void actions.handleCreateFile()}
           onRename={() => void actions.handleRename()}
-          onDelete={() => actions.handleDelete()}
+          onDelete={() => actions.requestDelete(explorer.selectedEntries)}
           onPaste={() => void actions.handlePaste()}
-          onClearClipboard={actions.clearClipboard}
         />
 
         {actions.clipboard && (
@@ -205,22 +209,19 @@ export const FileExplorerPane = ({
           onNewFolder={() => void actions.handleCreateDirectory()}
           onNewFile={() => void actions.handleCreateFile()}
           onRename={(entry) => void actions.handleRename(entry)}
-          onDelete={actions.handleDelete}
-          onQuickDelete={actions.handleQuickDelete}
+          onDelete={actions.requestDelete}
           onRemoteEdit={actions.handleRemoteEdit}
         />
       )}
 
-      {transfers.dropTargetActive && <FileExplorerDropOverlay pathName={explorer.pathName} />}
-
-      <FileExplorerEditorModal
-        open={actions.editorModalOpen}
-        value={actions.editorModalValue}
-        presets={EDITOR_PRESETS}
-        onChange={actions.setEditorModalValue}
-        onOk={actions.handleEditorModalOk}
-        onCancel={actions.handleEditorModalCancel}
+      <DeleteConfirmDialog
+        open={Boolean(actions.deleteTargets)}
+        targets={actions.deleteTargets ?? []}
+        onCancel={actions.cancelDelete}
+        onConfirm={actions.confirmDelete}
       />
+
+      {transfers.dropTargetActive && <FileExplorerDropOverlay pathName={explorer.pathName} />}
     </div>
   );
 };

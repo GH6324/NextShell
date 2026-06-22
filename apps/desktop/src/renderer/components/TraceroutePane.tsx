@@ -216,7 +216,7 @@ export const TraceroutePane = ({ connection, connected }: TraceroutePaneProps) =
   if (!connected) {
     return (
       <ConnectionPrompt
-        message="当前连接未建立会话，请双击左侧服务器建立 SSH 连接。"
+        message="当前连接未建立会话，请先连接 SSH 终端。"
         icon="ri-links-line"
       />
     );

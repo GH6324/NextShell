@@ -9,6 +9,8 @@ import {
 } from "@nextshell/shared";
 import type { MgrGroupNode, MgrLeafNode } from "../types";
 
+export const MANAGER_SEARCH_RESULT_LIMIT = 400;
+
 const workspaceRootSlug = (workspaceName: string): string => {
   const normalized = workspaceName
     .trim()
@@ -23,6 +25,18 @@ interface WorkspaceRootMeta {
   slug: string;
   label: string;
   workspaceId?: string;
+}
+
+export interface ManagerConnectionSearchEntry {
+  connectionId: string;
+  text: string;
+}
+
+export interface ManagerTreeBuildResult {
+  tree: MgrGroupNode;
+  totalMatches: number;
+  visibleMatches: number;
+  limited: boolean;
 }
 
 export const normalizeGroupPath = (value: string | undefined): string => {
@@ -45,13 +59,101 @@ export const groupPathToSegments = (groupPath: string): string[] => {
   return groupPath.split("/").filter((segment) => segment.length > 0);
 };
 
-export const buildManagerTree = (
+const normalizeSearchText = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[\\/]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const tokenizeSearchQuery = (keyword: string): string[] =>
+  normalizeSearchText(keyword).split(" ").filter((token) => token.length > 0);
+
+const buildWorkspaceLabelBySlug = (
+  workspaces: CloudSyncWorkspaceProfile[]
+): Map<string, string> => {
+  const labels = new Map<string, string>();
+  for (const workspace of workspaces) {
+    labels.set(workspaceRootSlug(workspace.workspaceName), workspace.displayName || workspace.workspaceName);
+  }
+  return labels;
+};
+
+const getFolderSearchParts = (
+  groupPath: string,
+  workspaceLabelBySlug: Map<string, string>
+): string[] => {
+  const segments = groupPathToSegments(groupPath);
+  if (segments.length === 0) {
+    return [];
+  }
+  const rootSegment = segments[0];
+  if (!rootSegment) {
+    return [];
+  }
+  if (rootSegment === CONNECTION_ZONES.WORKSPACE) {
+    const slug = segments[1];
+    const workspaceLabel = slug ? workspaceLabelBySlug.get(slug) : undefined;
+    return [
+      ...(slug ? [slug] : []),
+      ...(workspaceLabel && workspaceLabel !== slug ? [workspaceLabel] : []),
+      ...segments.slice(2)
+    ];
+  }
+  return isValidZone(rootSegment) ? segments.slice(1) : segments;
+};
+
+export const buildConnectionSearchIndex = (
+  connections: ConnectionProfile[],
+  workspaces: CloudSyncWorkspaceProfile[] = []
+): Map<string, ManagerConnectionSearchEntry> => {
+  const workspaceLabelBySlug = buildWorkspaceLabelBySlug(workspaces);
+  const index = new Map<string, ManagerConnectionSearchEntry>();
+  for (const connection of connections) {
+    const text = normalizeSearchText([
+      connection.name,
+      connection.host,
+      ...getFolderSearchParts(connection.groupPath, workspaceLabelBySlug),
+      connection.notes ?? ""
+    ].join(" "));
+    index.set(connection.id, { connectionId: connection.id, text });
+  }
+  return index;
+};
+
+const matchesSearchTokens = (
+  connection: ConnectionProfile,
+  tokens: string[],
+  searchIndex?: Map<string, ManagerConnectionSearchEntry>
+): boolean => {
+  if (tokens.length === 0) {
+    return true;
+  }
+  const entry = searchIndex?.get(connection.id);
+  const text = entry?.text ?? buildConnectionSearchIndex([connection]).get(connection.id)?.text ?? "";
+  return tokens.every((token) => text.includes(token));
+};
+
+const assignLeafCounts = (node: MgrGroupNode): number => {
+  let count = 0;
+  for (const child of node.children) {
+    count += child.type === "leaf" ? 1 : assignLeafCounts(child);
+  }
+  node.leafCount = count;
+  return count;
+};
+
+export const buildManagerTreeResult = (
   connections: ConnectionProfile[],
   keyword: string,
   workspaces: CloudSyncWorkspaceProfile[] = [],
-  emptyFolders?: string[]
-): MgrGroupNode => {
-  const lower = keyword.toLowerCase().trim();
+  emptyFolders?: string[],
+  searchIndex?: Map<string, ManagerConnectionSearchEntry>,
+  resultLimit = MANAGER_SEARCH_RESULT_LIMIT
+): ManagerTreeBuildResult => {
+  const tokens = tokenizeSearchQuery(keyword);
+  const hasSearch = tokens.length > 0;
+  const effectiveSearchIndex = searchIndex ?? (hasSearch ? buildConnectionSearchIndex(connections, workspaces) : undefined);
   const root: MgrGroupNode = { type: "group", key: "root", label: "全部连接", children: [] };
 
   const zoneNodes = new Map<string, MgrGroupNode>();
@@ -148,9 +250,14 @@ export const buildManagerTree = (
     return pointer;
   };
 
+  let totalMatches = 0;
+  let visibleMatches = 0;
+
   for (const connection of connections) {
-    const text = `${connection.name} ${connection.host} ${connection.groupPath} ${connection.tags.join(" ")}`.toLowerCase();
-    if (lower && !text.includes(lower)) continue;
+    if (!matchesSearchTokens(connection, tokens, effectiveSearchIndex)) continue;
+    totalMatches += 1;
+    if (hasSearch && visibleMatches >= resultLimit) continue;
+    visibleMatches += 1;
 
     const segments = groupPathToSegments(connection.groupPath);
     const zoneName = segments[0] ?? CONNECTION_ZONES.SERVER;
@@ -166,7 +273,7 @@ export const buildManagerTree = (
     ensureGroup(zoneNode, subSegments).children.push({ type: "leaf", connection });
   }
 
-  if (emptyFolders) {
+  if (emptyFolders && !hasSearch) {
     for (const folderPath of emptyFolders) {
       const segments = groupPathToSegments(folderPath);
       const zoneName = segments[0] ?? CONNECTION_ZONES.SERVER;
@@ -182,7 +289,31 @@ export const buildManagerTree = (
     }
   }
 
-  return root;
+  assignLeafCounts(root);
+  return {
+    tree: root,
+    totalMatches: hasSearch ? totalMatches : connections.length,
+    visibleMatches: hasSearch ? visibleMatches : connections.length,
+    limited: hasSearch && totalMatches > visibleMatches
+  };
+};
+
+export const buildManagerTree = (
+  connections: ConnectionProfile[],
+  keyword: string,
+  workspaces: CloudSyncWorkspaceProfile[] = [],
+  emptyFolders?: string[],
+  searchIndex?: Map<string, ManagerConnectionSearchEntry>,
+  resultLimit = MANAGER_SEARCH_RESULT_LIMIT
+): MgrGroupNode => {
+  return buildManagerTreeResult(
+    connections,
+    keyword,
+    workspaces,
+    emptyFolders,
+    searchIndex,
+    resultLimit
+  ).tree;
 };
 
 export const collectFlatLeafIds = (
@@ -232,6 +363,9 @@ export const sortMgrChildren = (node: MgrGroupNode, mode: "name" | "host" | "cre
 };
 
 export const countMgrLeaves = (node: MgrGroupNode): number => {
+  if (typeof node.leafCount === "number") {
+    return node.leafCount;
+  }
   let count = 0;
   for (const child of node.children) {
     if (child.type === "leaf") count += 1;

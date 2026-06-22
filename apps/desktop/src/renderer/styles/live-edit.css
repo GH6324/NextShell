@@ -63,7 +63,7 @@
 
 .live-edit-stop-all-btn.ant-btn:hover {
   color: var(--err) !important;
-  background: rgba(248, 113, 113, 0.12) !important;
+  background: color-mix(in srgb, var(--err) 12%, transparent) !important;
 }
 
 .live-edit-list {
@@ -125,8 +125,8 @@
 }
 
 .live-edit-item:hover {
-  border-color: rgba(77, 159, 255, 0.25);
-  background: rgba(77, 159, 255, 0.05);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 .live-edit-item-header {
@@ -186,7 +186,7 @@
 }
 
 .live-edit-close-btn:hover {
-  background: rgba(248, 113, 113, 0.12);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
   color: var(--err);
 }
 

@@ -7,6 +7,7 @@ import {
   auditClearSchema,
   commandBatchExecSchema,
   commandExecSchema,
+  connectionBatchAuthUpdateSchema,
   commandHistoryClearSchema,
   commandHistoryListSchema,
   commandHistoryPushSchema,
@@ -14,6 +15,7 @@ import {
   connectionExportSchema,
   connectionExportBatchSchema,
   connectionRevealPasswordSchema,
+  connectionImportDirectoryPreviewSchema,
   connectionImportFinalShellPreviewSchema,
   connectionImportPreviewSchema,
   connectionImportExecuteSchema,
@@ -76,8 +78,7 @@ import {
   cloudSyncStatusSchema,
   cloudSyncSyncNowSchema,
   cloudSyncListConflictsSchema,
-  cloudSyncHistorySchema,
-  cloudSyncRestoreCommitSchema,
+  cloudSyncTestConnectionSchema,
   cloudSyncResolveConflictSchema,
   masterPasswordSetSchema,
   masterPasswordUnlockSchema,
@@ -152,6 +153,11 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
     return services.upsertConnection(input);
   });
 
+  ipcMain.handle(IPCChannel.ConnectionBatchAuthUpdate, (_event, payload) => {
+    const input = parsePayload(connectionBatchAuthUpdateSchema, payload, "批量绑定认证");
+    return services.batchUpdateConnectionAuth(input);
+  });
+
   ipcMain.handle(IPCChannel.ConnectionRemove, (_event, payload) => {
     const input = parsePayload(connectionRemoveSchema, payload, "连接删除");
     return services.removeConnection(input.id);
@@ -180,6 +186,11 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
   ipcMain.handle(IPCChannel.ConnectionImportFinalShellPreview, (_event, payload) => {
     const input = parsePayload(connectionImportFinalShellPreviewSchema, payload, "FinalShell 导入预览");
     return services.importFinalShellConnectionsPreview(input);
+  });
+
+  ipcMain.handle(IPCChannel.ConnectionImportDirectoryPreview, (_event, payload) => {
+    const input = parsePayload(connectionImportDirectoryPreviewSchema, payload, "连接目录导入预览");
+    return services.importConnectionsDirectoryPreview(input);
   });
 
   ipcMain.handle(IPCChannel.ConnectionImportExecute, (_event, payload) => {
@@ -592,14 +603,9 @@ export const registerIpcHandlers = (services: ServiceContainer): void => {
     return services.cloudSyncListConflicts();
   });
 
-  ipcMain.handle(IPCChannel.CloudSyncHistory, (_event, payload) => {
-    const input = parsePayload(cloudSyncHistorySchema, payload, "云同步历史");
-    return services.cloudSyncHistory(input);
-  });
-
-  ipcMain.handle(IPCChannel.CloudSyncRestoreCommit, (_event, payload) => {
-    const input = parsePayload(cloudSyncRestoreCommitSchema, payload, "云同步历史恢复");
-    return services.cloudSyncRestoreCommit(input);
+  ipcMain.handle(IPCChannel.CloudSyncTestConnection, (_event, payload) => {
+    const input = parsePayload(cloudSyncTestConnectionSchema, payload, "云同步连接测试");
+    return services.cloudSyncTestConnection(input);
   });
 
   ipcMain.handle(IPCChannel.CloudSyncResolveConflict, (_event, payload) => {

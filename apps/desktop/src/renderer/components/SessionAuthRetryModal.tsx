@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Form, Input, Modal, Select, Typography, message } from "antd";
+import { App as AntdApp, Form, Input, Modal, Select, Typography } from "antd";
 import type { SshKeyProfile } from "@nextshell/core";
 import type { SessionAuthOverrideInput } from "@nextshell/shared";
 
@@ -46,6 +46,7 @@ export const SessionAuthRetryModal = ({
   onCancel,
   onSubmit
 }: SessionAuthRetryModalProps) => {
+  const { message } = AntdApp.useApp();
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm<SessionAuthFormValues>();
   const authType = Form.useWatch("authType", form);
@@ -188,7 +189,7 @@ export const SessionAuthRetryModal = ({
                 allowClear
                 options={sshKeys.map((k) => ({ label: k.name, value: k.id }))}
                 notFoundContent={
-                  <div style={{ textAlign: "center", padding: "8px 0", color: "var(--text-muted)" }}>
+                  <div style={{ textAlign: "center", padding: "8px 0", color: "var(--t3)" }}>
                     暂无密钥
                   </div>
                 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Input, Spin, Table, Tooltip, message } from "antd";
+import { App as AntdApp, Input, Spin, Table, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type {
   NetworkConnection,
@@ -23,6 +23,7 @@ const getListenerKey = (listener: NetworkListener): string => {
 };
 
 export const NetworkMonitorPane = ({ session }: NetworkMonitorPaneProps) => {
+  const { message } = AntdApp.useApp();
   const connectionId = session.connectionId;
   if (!connectionId) {
     throw new Error("NetworkMonitorPane requires a remote session connectionId");

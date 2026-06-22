@@ -120,7 +120,6 @@ const ServerRow = ({
         onDoubleClick={onDoubleClick}
         title={`${connection.name} (${connection.host}:${connection.port})`}
       >
-        <span className="mgr-server-status" />
         {connection.favorite ? (
           <i className="ri-star-fill mgr-server-star" aria-hidden="true" />
         ) : null}
@@ -138,9 +137,9 @@ const ServerRow = ({
           <span className="mgr-server-name">{connection.name}</span>
         )}
         {connection.originKind === "cloud" ? (
-          <i className="ri-cloud-line" aria-hidden="true" style={{ fontSize: 12, color: "var(--text-tertiary)", marginLeft: 4 }} />
+          <i className="ri-cloud-line" aria-hidden="true" style={{ fontSize: 12, color: "var(--t3)", marginLeft: 4 }} />
         ) : null}
-        {!isRenaming ? <span className="mgr-server-host">{connection.host}</span> : null}
+        {!isRenaming ? <span className="mgr-server-host">{connection.host}:{connection.port}</span> : null}
       </button>
       <button
         type="button"

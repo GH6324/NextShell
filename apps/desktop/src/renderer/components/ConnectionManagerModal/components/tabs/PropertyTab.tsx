@@ -51,7 +51,7 @@ export const PropertyTab = ({ workspaces, scopeLocked }: PropertyTabProps) => {
             }))}
             notFoundContent={
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                暂无可用 workspace，请先在「Workspace Repos」中添加。
+                暂无可用工作区，请先在「云工作区」标签页中添加。
               </Typography.Text>
             }
           />

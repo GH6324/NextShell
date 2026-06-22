@@ -1,13 +1,12 @@
 import {
   useCallback,
   useEffect,
-  useRef,
   useState,
   type Dispatch,
   type MouseEvent as ReactMouseEvent,
   type SetStateAction
 } from "react";
-import { App as AntdApp, Modal } from "antd";
+import { App as AntdApp } from "antd";
 import type { AppPreferences, ConnectionProfile, RemoteFileEntry } from "@nextshell/core";
 import { usePreferencesStore } from "../../../store/usePreferencesStore";
 import { pMap } from "../../../utils/concurrentLimit";
@@ -59,35 +58,13 @@ export const useFileActions = ({
 }: UseFileActionsParams) => {
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [editorModalOpen, setEditorModalOpen] = useState(false);
-  const [editorModalValue, setEditorModalValue] = useState(remoteEditPreferences.defaultEditorCommand);
-  const pendingEditRef = useRef<RemoteFileEntry | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<RemoteFileEntry[] | null>(null);
 
   useEffect(() => {
     setClipboard(null);
     setContextMenu(null);
+    setDeleteTargets(null);
   }, [connection?.id, connected]);
-
-  useEffect(() => {
-    setEditorModalValue(remoteEditPreferences.defaultEditorCommand);
-  }, [remoteEditPreferences.defaultEditorCommand]);
-
-  useEffect(() => {
-    const unsub = window.nextshell.sftp.onEditStatus((event) => {
-      switch (event.status) {
-        case "synced":
-          message.success({ content: `已同步: ${event.remotePath.split("/").pop()}`, duration: 2 });
-          break;
-        case "error":
-          message.error({ content: event.message ?? "同步失败", duration: 4 });
-          break;
-        case "closed":
-          message.info({ content: `编辑已关闭: ${event.remotePath.split("/").pop()}`, duration: 2 });
-          break;
-      }
-    });
-    return unsub;
-  }, [message]);
 
   const clearClipboard = useCallback(() => {
     setClipboard(null);
@@ -150,71 +127,72 @@ export const useFileActions = ({
     }
   }, [connection, loadFiles, message, modal, setBusy, singleSelected]);
 
-  const handleDelete = useCallback((targets: RemoteFileEntry[] = selectedEntries): void => {
-    if (!connection || targets.length === 0) return;
-    Modal.confirm({
-      title: "删除远端文件",
-      content:
-        targets.length === 1
-          ? `确认删除 ${targets[0]?.path} ?`
-          : `确认删除选中的 ${targets.length} 项?`,
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        const prevFiles = [...files];
-        const targetPaths = new Set(targets.map((target) => target.path));
-        setFiles((prev) => prev.filter((file) => !targetPaths.has(file.path)));
+  // 安全删除：走 SFTP remove，带乐观更新（失败回滚）。
+  const runSafeDelete = useCallback(async (targets: RemoteFileEntry[]): Promise<void> => {
+    if (!connection) return;
+    const prevFiles = [...files];
+    const targetPaths = new Set(targets.map((target) => target.path));
+    setFiles((prev) => prev.filter((file) => !targetPaths.has(file.path)));
 
-        try {
-          setBusy(true);
-          await pMap(
-            targets,
-            async (entry) => {
-              await window.nextshell.sftp.remove({
-                connectionId: connection.id,
-                path: entry.path,
-                type: entry.type
-              });
-            },
-            5
-          );
-          message.success("删除成功");
-          await loadFiles();
-        } catch (error) {
-          message.error(`删除失败：${formatErrorMessage(error, "请稍后重试")}`);
-          setFiles(prevFiles);
-        } finally {
-          setBusy(false);
-        }
-      }
-    });
-  }, [connection, files, loadFiles, message, selectedEntries, setBusy, setFiles]);
+    try {
+      setBusy(true);
+      await pMap(
+        targets,
+        async (entry) => {
+          await window.nextshell.sftp.remove({
+            connectionId: connection.id,
+            path: entry.path,
+            type: entry.type
+          });
+        },
+        5
+      );
+      message.success("删除成功");
+      await loadFiles();
+    } catch (error) {
+      message.error(`删除失败：${formatErrorMessage(error, "请稍后重试")}`);
+      setFiles(prevFiles);
+    } finally {
+      setBusy(false);
+    }
+  }, [connection, files, loadFiles, message, setBusy, setFiles]);
 
-  const handleQuickDelete = useCallback((targets: RemoteFileEntry[]): void => {
-    if (!connection || targets.length === 0) return;
-    Modal.confirm({
-      title: "快速删除（rm 命令）",
-      content: (
-        <div>
-          <p>
-            将在远端执行 <code>rm -rf</code> 命令，<strong>不可撤销</strong>！
-          </p>
-          <p>{targets.length === 1 ? targets[0]?.path : `${targets.length} 个文件/目录`}</p>
-        </div>
-      ),
-      okButtonProps: { danger: true },
-      okText: "强制删除",
-      onOk: async () => {
-        const paths = targets.map((entry) => shellEscape(entry.path)).join(" ");
-        setBusy(true);
-        const { ok } = await execSSH(`rm -rf ${paths}`);
-        setBusy(false);
-        if (ok) {
-          message.success("已删除");
-          await loadFiles();
-        }
-      }
-    });
+  // 强制删除：远端执行 rm -rf（可删只读/非空目录，不可恢复）。
+  const runForceDelete = useCallback(async (targets: RemoteFileEntry[]): Promise<void> => {
+    if (!connection) return;
+    const paths = targets.map((entry) => shellEscape(entry.path)).join(" ");
+    setBusy(true);
+    const { ok } = await execSSH(`rm -rf ${paths}`);
+    setBusy(false);
+    if (ok) {
+      message.success("已删除");
+      await loadFiles();
+    }
   }, [connection, execSSH, loadFiles, message, setBusy]);
+
+  const requestDelete = useCallback((targets: RemoteFileEntry[] = selectedEntries): void => {
+    if (!connection || targets.length === 0) return;
+    setDeleteTargets(targets);
+  }, [connection, selectedEntries]);
+
+  const cancelDelete = useCallback(() => {
+    setDeleteTargets(null);
+  }, []);
+
+  const confirmDelete = useCallback(async (force: boolean): Promise<void> => {
+    const targets = deleteTargets;
+    if (!targets || targets.length === 0) {
+      setDeleteTargets(null);
+      return;
+    }
+    // 保持对话框开启（显示确认 loading）直到操作完成后再关闭。
+    if (force) {
+      await runForceDelete(targets);
+    } else {
+      await runSafeDelete(targets);
+    }
+    setDeleteTargets(null);
+  }, [deleteTargets, runForceDelete, runSafeDelete]);
 
   const handleCopy = useCallback((entries: RemoteFileEntry[]) => {
     if (!connection) return;
@@ -296,27 +274,6 @@ export const useFileActions = ({
     void doRemoteEdit(entry, editor);
   }, [connection, doRemoteEdit, onOpenEditorTab, remoteEditPreferences.defaultEditorCommand, remoteEditPreferences.editorMode]);
 
-  const handleEditorModalOk = useCallback(() => {
-    const cmd = editorModalValue.trim();
-    if (!cmd) return;
-    void updatePreferences({
-      remoteEdit: {
-        defaultEditorCommand: cmd
-      }
-    });
-    setEditorModalOpen(false);
-    const pending = pendingEditRef.current;
-    pendingEditRef.current = null;
-    if (pending) {
-      void doRemoteEdit(pending, cmd);
-    }
-  }, [doRemoteEdit, editorModalValue, updatePreferences]);
-
-  const handleEditorModalCancel = useCallback(() => {
-    setEditorModalOpen(false);
-    pendingEditRef.current = null;
-  }, []);
-
   const handleContextMenu = useCallback((event: ReactMouseEvent, row?: RemoteFileEntry) => {
     event.preventDefault();
     event.stopPropagation();
@@ -337,21 +294,18 @@ export const useFileActions = ({
     clipboard,
     closeContextMenu,
     contextMenu,
-    editorModalOpen,
-    editorModalValue,
+    deleteTargets,
+    requestDelete,
+    cancelDelete,
+    confirmDelete,
     handleContextMenu,
     handleCopy,
     handleCopyPath,
     handleCreateDirectory,
     handleCreateFile,
     handleCut,
-    handleDelete,
-    handleEditorModalCancel,
-    handleEditorModalOk,
     handlePaste,
-    handleQuickDelete,
     handleRemoteEdit,
-    handleRename,
-    setEditorModalValue
+    handleRename
   };
 };

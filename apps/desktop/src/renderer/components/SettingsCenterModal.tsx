@@ -235,7 +235,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
       return;
     }
     if (!changeAckRisk) {
-      message.warning("请先确认已知晓修改主密码对云存档的影响。");
+      message.warning("请先确认已知晓修改主密码对数据备份的影响。");
       return;
     }
 
@@ -254,7 +254,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
       if (sameAsOld) {
         message.success("主密码已更新（与原密码相同）。");
       } else {
-        message.success("主密码已修改。旧云存档可能无法还原，请重新备份。");
+        message.success("主密码已修改。旧备份可能无法还原，请重新备份。");
       }
       setChangeOldPwd("");
       setChangeNewPwd("");
@@ -274,7 +274,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
       const result = await window.nextshell.backup.run({ conflictPolicy: backupConflictPolicy });
       message.success(result.fileName ? `备份完成: ${result.fileName}` : "备份完成");
     } catch (error) {
-      message.error(`备份失败：${formatErrorMessage(error, "请检查云存档配置")}`);
+      message.error(`备份失败：${formatErrorMessage(error, "请检查数据备份配置")}`);
     } finally { setBackupRunning(false); }
   };
 
@@ -285,7 +285,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
       const list = await window.nextshell.backup.list();
       setArchiveList(list);
     } catch (error) {
-      message.error(`获取存档列表失败：${formatErrorMessage(error, "请检查云存档配置")}`);
+      message.error(`获取备份列表失败：${formatErrorMessage(error, "请检查数据备份配置")}`);
     } finally { setArchiveListLoading(false); }
   };
 
@@ -302,7 +302,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
           await window.nextshell.backup.restore({ archiveId, conflictPolicy: restoreConflictPolicy });
           message.success("还原文件已准备，重启应用后生效。");
         } catch (error) {
-          message.error(`还原失败：${formatErrorMessage(error, "请检查云存档配置")}`);
+          message.error(`还原失败：${formatErrorMessage(error, "请检查数据备份配置")}`);
         } finally { setRestoring(null); }
       },
     });

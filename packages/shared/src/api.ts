@@ -24,7 +24,6 @@ import type {
   SessionDescriptor,
   SystemInfoSnapshot,
   SshKeyProfile,
-  WorkspaceRepoCommitMeta,
   WorkspaceRepoConflict,
   WorkspaceRepoStatus
 } from "../../core/src/index";
@@ -43,6 +42,8 @@ import type {
   BackupRunInput,
   CommandBatchExecInput,
   CommandExecInput,
+  ConnectionBatchAuthUpdateInput,
+  ConnectionBatchAuthUpdateResult,
   CommandHistoryClearInput,
   CommandHistoryListInput,
   CommandHistoryPushInput,
@@ -53,6 +54,8 @@ import type {
   ConnectionRevealPasswordInput,
   ConnectionRevealPasswordResult,
   ConnectionImportExecuteInput,
+  ConnectionImportDirectoryPreviewInput,
+  ConnectionImportDirectoryPreviewResult,
   ConnectionImportFinalShellPreviewInput,
   ConnectionImportPreviewInput,
   MasterPasswordCachedResult,
@@ -128,8 +131,7 @@ import type {
   CloudSyncWorkspaceTokenDraft,
   CloudSyncWorkspaceExportTokenInput,
   CloudSyncWorkspaceParseTokenInput,
-  CloudSyncHistoryInput,
-  CloudSyncRestoreCommitInput,
+  CloudSyncTestConnectionInput,
   CloudSyncSyncNowInput,
   CloudSyncResolveConflictInput,
   ResourceCopyConnectionInput,
@@ -171,12 +173,14 @@ export interface NextShellApi {
   connection: {
     list: (query: ConnectionListQuery) => Promise<ConnectionProfile[]>;
     upsert: (payload: ConnectionUpsertInput) => Promise<ConnectionProfile>;
+    batchUpdateAuth: (payload: ConnectionBatchAuthUpdateInput) => Promise<ConnectionBatchAuthUpdateResult>;
     remove: (payload: ConnectionRemoveInput) => Promise<{ ok: true }>;
     exportToFile: (payload: ConnectionExportInput) => Promise<{ ok: true; filePath: string } | { ok: false; canceled: true }>;
     exportBatch: (payload: ConnectionExportBatchInput) => Promise<ConnectionExportBatchResult>;
     revealPassword: (payload: ConnectionRevealPasswordInput) => Promise<ConnectionRevealPasswordResult>;
     importPreview: (payload: ConnectionImportPreviewInput) => Promise<ConnectionImportEntry[]>;
     importFinalShellPreview: (payload: ConnectionImportFinalShellPreviewInput) => Promise<ConnectionImportEntry[]>;
+    importDirectoryPreview: (payload: ConnectionImportDirectoryPreviewInput) => Promise<ConnectionImportDirectoryPreviewResult>;
     importExecute: (payload: ConnectionImportExecuteInput) => Promise<ConnectionImportResult>;
   };
   session: {
@@ -280,8 +284,7 @@ export interface NextShellApi {
     status: () => Promise<{ workspaces: WorkspaceRepoStatus[] }>;
     syncNow: (payload?: CloudSyncSyncNowInput) => Promise<{ ok: true }>;
     listConflicts: () => Promise<Array<WorkspaceRepoConflict & { workspaceName: string }>>;
-    history: (payload: CloudSyncHistoryInput) => Promise<WorkspaceRepoCommitMeta[]>;
-    restoreCommit: (payload: CloudSyncRestoreCommitInput) => Promise<{ ok: true }>;
+    testConnection: (payload: CloudSyncTestConnectionInput) => Promise<{ ok: true; displayName?: string }>;
     resolveConflict: (payload: CloudSyncResolveConflictInput) => Promise<{ ok: true }>;
     onStatus: (listener: (event: CloudSyncManagerStatusEvent) => void) => SessionEventUnsubscribe;
     onApplied: (listener: (event: { workspaceId: string }) => void) => SessionEventUnsubscribe;

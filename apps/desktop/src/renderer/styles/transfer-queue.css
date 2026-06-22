@@ -89,8 +89,8 @@
 }
 
 .transfer-task-item.openable:hover {
-  border-color: rgba(77, 159, 255, 0.35);
-  background: rgba(77, 159, 255, 0.05);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 .transfer-task-main {
@@ -144,7 +144,7 @@
 
 .transfer-task-error {
   font-size: 11px;
-  color: var(--error);
+  color: var(--err);
   line-height: 1.4;
   margin-top: 2px;
 }

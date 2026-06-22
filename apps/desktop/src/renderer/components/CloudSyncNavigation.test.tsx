@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 describe("cloud sync navigation placement", () => {
-  test("shows cloud sync in connection manager after proxies with green styling", async () => {
+  test("shows cloud sync in connection manager after proxies", async () => {
     (globalThis as Record<string, unknown>).__APP_VERSION__ = "test";
     (globalThis as Record<string, unknown>).__GITHUB_REPO__ = "owner/repo";
 
@@ -15,8 +15,7 @@ describe("cloud sync navigation placement", () => {
     expect(cloudSyncIndex).toBe(proxiesIndex + 1);
     expect(cloudSyncTab).toMatchObject({
       label: "云同步",
-      icon: "ri-git-merge-line",
-      labelClassName: "mgr-tab-label--success"
+      icon: "ri-git-merge-line"
     });
   });
 

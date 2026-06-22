@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Modal, Radio, Table, Tag, message } from "antd";
+import { App as AntdApp, Modal, Radio, Table, Tag } from "antd";
 import type { ConnectionImportEntry, ConnectionProfile, ImportConflictPolicy } from "@nextshell/core";
 import { formatErrorMessage } from "../utils/errorMessage";
 
@@ -22,6 +22,7 @@ export const ConnectionImportModal = ({
   onClose,
   onImported
 }: ConnectionImportModalProps) => {
+  const { message } = AntdApp.useApp();
   const [conflictPolicy, setConflictPolicy] = useState<ImportConflictPolicy>("skip");
   const [importing, setImporting] = useState(false);
 
@@ -53,6 +54,21 @@ export const ConnectionImportModal = ({
       key: "username",
       width: 120,
       ellipsis: true
+    },
+    {
+      title: "分组",
+      dataIndex: "groupPath",
+      key: "groupPath",
+      width: 180,
+      ellipsis: true
+    },
+    {
+      title: "来源文件",
+      key: "sourceFile",
+      width: 160,
+      ellipsis: true,
+      render: (_: unknown, record: ConnectionImportEntry) =>
+        record.sourceRelativePath ?? record.sourceFileName ?? "-"
     },
     {
       title: "认证",
@@ -137,7 +153,7 @@ export const ConnectionImportModal = ({
       open={open}
       onCancel={onClose}
       title={sourceProgress ? `导入连接 (${sourceProgress})` : "导入连接"}
-      width={720}
+      width={920}
       okText="确认导入"
       cancelText="取消"
       onOk={handleConfirm}
@@ -146,7 +162,7 @@ export const ConnectionImportModal = ({
     >
       {sourceName ? (
         <div style={{ marginBottom: 8, color: "var(--t3)", fontSize: 12, fontFamily: "var(--mono)" }}>
-          文件：{sourceName}
+          来源：{sourceName}
         </div>
       ) : null}
       <div style={{ marginBottom: 12 }}>
@@ -165,7 +181,7 @@ export const ConnectionImportModal = ({
       <Table
         dataSource={entries}
         columns={columns}
-        rowKey={(record, index) => `${record.host}:${record.port}:${record.username}:${index}`}
+        rowKey={(record, index) => `${record.sourceRelativePath ?? ""}:${record.host}:${record.port}:${record.username}:${index}`}
         size="small"
         pagination={false}
         scroll={{ y: 360 }}

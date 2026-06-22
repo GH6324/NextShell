@@ -20,7 +20,7 @@ function summaryLine(
     const ms = result.avgMs;
     return ms === 0 ? "0 ms" : ms < 1 ? "<1 ms" : `${Math.round(ms)} ms`;
   }
-  if (result && !result.ok) return result.error;
+  if (result && !result.ok) return "不可达";
   return "展开以启用 Ping";
 }
 
@@ -30,7 +30,7 @@ export const PingCard = ({ host }: PingCardProps) => {
     { ok: true; avgMs: number } | { ok: false; error: string } | null
   >(null);
   const [loading, setLoading] = useState(false);
-  const [pingHistory, setPingHistory] = useState<number[]>([]);
+  const [pingHistory, setPingHistory] = useState<(number | null)[]>([]);
   const prevHostRef = useRef<string | undefined>(undefined);
   const requestIdRef = useRef(0);
   const pollEnabled = Boolean(host && !collapsed);
@@ -77,14 +77,15 @@ export const PingCard = ({ host }: PingCardProps) => {
         setPingHistory((prev) => [...prev.slice(-(PING_HISTORY_CAP - 1)), res.avgMs]);
       } else {
         console.warn("[PingCard]", host, res.error);
-        setResult({ ok: true, avgMs: 0 });
-        setPingHistory((prev) => [...prev.slice(-(PING_HISTORY_CAP - 1)), 0]);
+        setResult(res);
+        setPingHistory((prev) => [...prev.slice(-(PING_HISTORY_CAP - 1)), null]);
       }
     } catch (err) {
       if (requestIdRef.current !== requestId) return;
       console.warn("[PingCard]", host, err);
-      setResult({ ok: true, avgMs: 0 });
-      setPingHistory((prev) => [...prev.slice(-(PING_HISTORY_CAP - 1)), 0]);
+      const error = err instanceof Error ? err.message : "Ping 失败";
+      setResult({ ok: false, error });
+      setPingHistory((prev) => [...prev.slice(-(PING_HISTORY_CAP - 1)), null]);
     } finally {
       if (requestIdRef.current === requestId) {
         setLoading(false);
@@ -109,13 +110,16 @@ export const PingCard = ({ host }: PingCardProps) => {
     return null;
   }
 
-  const chartMax = Math.max(50, ...pingHistory);
+  // 仅用成功样本计算纵轴上限，失败采样(null)不参与
+  const successfulMs = pingHistory.filter((ms): ms is number => ms !== null);
+  const chartMax = Math.max(50, ...successfulMs);
 
   // Fixed 50-slot queue: always render 50 columns, right-aligned (newest on right)
-  const slots: number[] = Array.from<number>({ length: PING_HISTORY_CAP }).fill(0);
+  // null = 失败采样，渲染为缺口
+  const slots: (number | null)[] = Array.from<number | null>({ length: PING_HISTORY_CAP }).fill(null);
   const offset = PING_HISTORY_CAP - pingHistory.length;
   for (let i = 0; i < pingHistory.length; i++) {
-    slots[offset + i] = pingHistory[i]!;
+    slots[offset + i] = pingHistory[i] ?? null;
   }
 
   const CHART_WIDTH = PING_HISTORY_CAP * 10 + 8;
@@ -151,6 +155,13 @@ export const PingCard = ({ host }: PingCardProps) => {
                 </span>
                 <span className="text-[10px] text-[var(--t3)]">每 1 秒刷新</span>
               </>
+            ) : result?.ok === false ? (
+              <span
+                className="font-mono font-semibold text-[var(--err)]"
+                title={result.error}
+              >
+                不可达
+              </span>
             ) : (
               <span className="text-[var(--t3)]">展开后开始采样，折叠暂停</span>
             )}
@@ -183,7 +194,7 @@ export const PingCard = ({ host }: PingCardProps) => {
                     />
                   ))}
                   {slots.map((ms, index) => {
-                    if (ms === 0) return null;
+                    if (ms === null || ms === 0) return null;
                     const x = index * 10 + 4;
                     const barHeight = (ms / chartMax) * (PING_CHART_HEIGHT - 4);
                     return (

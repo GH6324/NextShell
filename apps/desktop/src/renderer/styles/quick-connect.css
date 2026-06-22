@@ -33,7 +33,7 @@
 
 .qcb-wrap.qcb-open .qcb-field {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(77, 159, 255, 0.15);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
   background: var(--bg-surface);
 }
 
@@ -215,8 +215,8 @@
 }
 
 .qcb-dot.online {
-  background: var(--green, #52c41a);
-  box-shadow: 0 0 0 2px rgba(82, 196, 26, 0.2);
+  background: var(--ok);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 22%, transparent);
 }
 
 .qcb-dot-create {
@@ -325,7 +325,7 @@
 }
 
 .qcb-hl {
-  background: rgba(77, 159, 255, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
   color: var(--accent);
   border-radius: 2px;
   font-style: normal;
@@ -347,7 +347,7 @@
   width: 24px;
   height: 24px;
   border-radius: 6px;
-  background: linear-gradient(135deg, #4d9fff 0%, #1a5ec7 100%);
+  background: linear-gradient(135deg, var(--accent) 0%, #1a5ec7 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -404,7 +404,7 @@
 
 .header-session-status.connected .header-session-dot {
   background: var(--ok);
-  box-shadow: 0 0 4px rgba(61, 214, 140, 0.5);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--ok) 50%, transparent);
 }
 
 .header-session-status.connecting .header-session-dot {

@@ -53,7 +53,7 @@ export const SecuritySection = ({
   save: SaveFn;
 }) => (
   <>
-  <SettingsCard title="主密码" description="用于云同步备份、导出加密默认填充和连接密码查看授权">
+  <SettingsCard title="主密码" description="用于数据备份、导出加密默认填充和连接密码查看授权">
     <div className="flex items-center gap-2 mb-2">
       <Typography.Text style={{ fontSize: 12 }}>状态: </Typography.Text>
       {pwdStatusLoading ? (
@@ -122,7 +122,7 @@ export const SecuritySection = ({
           修改主密码
         </Typography.Text>
         <div className="stg-note" style={{ marginTop: 4 }}>
-          修改后旧云存档可能无法还原，建议尽快重新备份。
+          修改后旧备份可能无法还原，建议尽快重新备份。
         </div>
 
         <SettingsRow label="原密码">
@@ -158,7 +158,7 @@ export const SecuritySection = ({
             disabled={changeBusy}
             onChange={(e) => setChangeAckRisk(e.target.checked)}
           >
-            我已知晓修改后旧云存档可能无法还原，需要重新备份。
+            我已知晓修改后旧备份可能无法还原，需要重新备份。
           </Checkbox>
         </div>
 
@@ -203,7 +203,7 @@ export const SecuritySection = ({
         : "审计日志当前未启用，不会新增记录。历史日志仍可查看和清空，保留天数仅用于启动时清理旧记录。"}
     </div>
     <div className="stg-note">
-      审计日志不包含在云同步备份中。
+      审计日志不包含在数据备份中。
     </div>
   </SettingsCard>
   </>

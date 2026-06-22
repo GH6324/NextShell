@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Select } from "antd";
 import type { MonitorSnapshot } from "@nextshell/core";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
@@ -21,11 +22,11 @@ function getMetricFillClass(
   normalFillClassName: string,
 ): string {
   if (percent > 90) {
-    return "bg-red-500/40";
+    return "bg-red-500/60";
   }
 
   if (percent > 70) {
-    return "bg-amber-500/40";
+    return "bg-amber-500/60";
   }
 
   return normalFillClassName;
@@ -221,7 +222,7 @@ export const SystemInfoPanel = ({
                   percent: snapshot.cpuPercent,
                   fillClassName: getMetricFillClass(
                     snapshot.cpuPercent,
-                    "bg-blue-500/30",
+                    "bg-blue-500/50",
                   ),
                 })}
 
@@ -230,38 +231,56 @@ export const SystemInfoPanel = ({
                   percent: snapshot.memoryPercent,
                   fillClassName: getMetricFillClass(
                     snapshot.memoryPercent,
-                    "bg-emerald-500/30",
+                    "bg-emerald-500/50",
                   ),
                   detail: `${formatMemoryShort(snapshot.memoryUsedMb)} / ${formatMemoryShort(snapshot.memoryTotalMb)}`,
                 })}
 
-                {renderMetricRow({
-                  label: "交换",
-                  percent: snapshot.swapPercent,
-                  fillClassName: getMetricFillClass(
-                    snapshot.swapPercent,
-                    "bg-indigo-500/30",
-                  ),
-                  detail: `${formatMemoryShort(snapshot.swapUsedMb)} / ${formatMemoryShort(snapshot.swapTotalMb)}`,
-                })}
+                {snapshot.swapTotalMb > 0
+                  ? renderMetricRow({
+                      label: "交换",
+                      percent: snapshot.swapPercent,
+                      fillClassName: getMetricFillClass(
+                        snapshot.swapPercent,
+                        "bg-indigo-500/50",
+                      ),
+                      detail: `${formatMemoryShort(snapshot.swapUsedMb)} / ${formatMemoryShort(snapshot.swapTotalMb)}`,
+                    })
+                  : null}
 
                 {renderMetricRow({
                   label: "磁盘",
                   percent: snapshot.diskPercent,
                   fillClassName: getMetricFillClass(
                     snapshot.diskPercent,
-                    "bg-teal-500/30",
+                    "bg-teal-500/50",
                   ),
                   detail: `${snapshot.diskUsedGb.toFixed(1)}G / ${snapshot.diskTotalGb.toFixed(1)}G`,
                 })}
               </div>
-              <div className="flex items-center gap-1.5 px-1">
+              <div className="flex items-center justify-between gap-1.5 px-1">
                 <div className="text-[10px] font-semibold text-[var(--t3)] tracking-wide uppercase">
-                  网络 · {snapshot.networkInterface}
-                  {interfaceOptions.length > 1 ? (
-                    <span className="font-normal opacity-60 ml-1">(右击流量图切换网卡)</span>
-                  ) : null}
+                  网络
                 </div>
+                {interfaceOptions.length > 1 ? (
+                  <Select
+                    value={snapshot.networkInterface}
+                    onChange={(value) => onSelectNetworkInterface?.(value)}
+                    options={interfaceOptions.map((iface) => ({
+                      label: iface,
+                      value: iface,
+                    }))}
+                    size="small"
+                    variant="borderless"
+                    popupMatchSelectWidth={false}
+                    className="monitor-net-iface-select"
+                    title="切换监控网卡"
+                  />
+                ) : (
+                  <span className="text-[10px] font-mono text-[var(--t2)]">
+                    {snapshot.networkInterface}
+                  </span>
+                )}
               </div>
 
               <div

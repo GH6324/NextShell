@@ -7,7 +7,6 @@ import type {
   RecycleBinEntry,
   SshKeyProfile,
   WorkspaceCommandItem,
-  WorkspaceRepoCommitMeta,
   WorkspaceRepoConflict,
   WorkspaceRepoLocalState,
   WorkspaceRepoSnapshot,
@@ -47,15 +46,6 @@ const createDeps = (
   listWorkspaces: (): CloudSyncWorkspaceProfile[] => [workspace],
   saveWorkspace: (_ws): void => undefined,
   removeWorkspace: (_id): void => undefined,
-  listWorkspaceRepoCommits: (
-    _workspaceId: string,
-    _limit?: number,
-    _cursorCreatedAt?: string,
-  ): WorkspaceRepoCommitMeta[] => [],
-  getWorkspaceRepoCommit: (_workspaceId: string, _commitId: string): WorkspaceRepoCommitMeta | undefined => undefined,
-  saveWorkspaceRepoCommit: (_commit: WorkspaceRepoCommitMeta): void => undefined,
-  getWorkspaceRepoSnapshot: (_workspaceId: string, _snapshotId: string): WorkspaceRepoSnapshot | undefined => undefined,
-  saveWorkspaceRepoSnapshot: (_snapshot: WorkspaceRepoSnapshot): void => undefined,
   getWorkspaceRepoLocalState: (_workspaceId: string): WorkspaceRepoLocalState | undefined => undefined,
   saveWorkspaceRepoLocalState: (_state: WorkspaceRepoLocalState): void => undefined,
   listWorkspaceRepoConflicts: (_workspaceId: string): WorkspaceRepoConflict[] => [],
@@ -123,8 +113,6 @@ interface MutableCloudSyncState {
   proxies: ProxyProfile[];
   commands: WorkspaceCommandItem[];
   commandsVersion?: string;
-  commits: Map<string, WorkspaceRepoCommitMeta>;
-  snapshots: Map<string, WorkspaceRepoSnapshot>;
   localState?: WorkspaceRepoLocalState;
   conflicts: WorkspaceRepoConflict[];
   credentials: Map<string, string>;
@@ -140,8 +128,6 @@ const createMutableState = (
   sshKeys: [],
   proxies: [],
   commands: [],
-  commits: new Map(),
-  snapshots: new Map(),
   conflicts: [],
   credentials: new Map(),
   ...overrides,
@@ -183,20 +169,6 @@ const createMutableDeps = (state: MutableCloudSyncState): CloudSyncManagerDeps =
     state.workspace = ws;
   },
   removeWorkspace: (_id): void => undefined,
-  listWorkspaceRepoCommits: (
-    _workspaceId: string,
-    limit = 50,
-  ): WorkspaceRepoCommitMeta[] => [...state.commits.values()].slice(0, limit),
-  getWorkspaceRepoCommit: (_workspaceId: string, commitId: string): WorkspaceRepoCommitMeta | undefined =>
-    state.commits.get(commitId),
-  saveWorkspaceRepoCommit: (commit): void => {
-    state.commits.set(commit.commitId, commit);
-  },
-  getWorkspaceRepoSnapshot: (_workspaceId: string, snapshotId: string): WorkspaceRepoSnapshot | undefined =>
-    state.snapshots.get(snapshotId),
-  saveWorkspaceRepoSnapshot: (snapshot): void => {
-    state.snapshots.set(snapshot.snapshotId, snapshot);
-  },
   getWorkspaceRepoLocalState: (_workspaceId: string): WorkspaceRepoLocalState | undefined => state.localState,
   saveWorkspaceRepoLocalState: (nextState): void => {
     state.localState = nextState;
@@ -242,6 +214,25 @@ const createMutableDeps = (state: MutableCloudSyncState): CloudSyncManagerDeps =
   broadcastStatus: (_status): void => undefined,
   broadcastApplied: (_workspaceId): void => undefined,
 });
+
+const testCredentials = (workspace: CloudSyncWorkspaceProfile) => ({
+  apiBaseUrl: workspace.apiBaseUrl,
+  workspaceName: workspace.workspaceName,
+  workspacePassword: "workspace-password",
+  ignoreTlsErrors: false,
+  clientId: "test-client",
+  clientVersion: "test",
+});
+
+type MergeAndSettle = (
+  workspace: CloudSyncWorkspaceProfile,
+  credentials: ReturnType<typeof testCredentials>,
+  localState: WorkspaceRepoLocalState,
+  base: WorkspaceRepoSnapshot,
+  localSnapshot: WorkspaceRepoSnapshot,
+  remoteSnapshot: WorkspaceRepoSnapshot,
+  remoteVersion: string | undefined,
+) => Promise<WorkspaceRepoLocalState>;
 
 describe("CloudSyncManager workspace token", () => {
   test("exports a v1 token and parses it back into a workspace draft", async () => {
@@ -335,91 +326,45 @@ describe("CloudSyncManager workspace token", () => {
 });
 
 describe("CloudSyncManager workspace repo sync", () => {
-  test("auto-merges non-conflicting divergence against the pulled remote head", async () => {
+  test("auto-merges non-conflicting divergence and pushes against the remote version", async () => {
     const workspace = { ...createWorkspace(), enabled: true };
-    const baseSnapshot = repoSnapshot(workspace.id, "base-snapshot", []);
-    const localSnapshot = repoSnapshot(workspace.id, "local-snapshot", [
+    const base = repoSnapshot(workspace.id, "base-snapshot", []);
+    const local = repoSnapshot(workspace.id, "local-snapshot", [
       snapshotConnection("local-conn", "Local", "local.example.com"),
     ]);
-    const remoteSnapshot = repoSnapshot(workspace.id, "remote-snapshot", [
+    const remote = repoSnapshot(workspace.id, "remote-snapshot", [
       snapshotConnection("remote-conn", "Remote", "remote.example.com"),
     ]);
     const localState: WorkspaceRepoLocalState = {
       workspaceId: workspace.id,
-      localHeadCommitId: "local-head",
-      remoteHeadCommitId: "base-head",
-      syncState: "ahead",
+      baseSnapshotJson: JSON.stringify(base),
+      remoteVersion: "base-version",
+      syncState: "idle",
     };
     const state = createMutableState(workspace, { localState });
-    state.snapshots.set(baseSnapshot.snapshotId, baseSnapshot);
-    state.snapshots.set(localSnapshot.snapshotId, localSnapshot);
-    state.commits.set("base-head", {
-      workspaceId: workspace.id,
-      commitId: "base-head",
-      snapshotId: baseSnapshot.snapshotId,
-      authorName: "remote",
-      authorKind: "system",
-      message: "base",
-      createdAt: now,
-    });
-    state.commits.set("local-head", {
-      workspaceId: workspace.id,
-      commitId: "local-head",
-      parentCommitId: "base-head",
-      snapshotId: localSnapshot.snapshotId,
-      authorName: "NextShell",
-      authorKind: "user",
-      message: "local",
-      createdAt: now,
-    });
 
     const manager = new CloudSyncManager(createMutableDeps(state));
     let pushedBaseHead: string | null | undefined;
     (manager as unknown as { api: unknown }).api = {
-      push: async (_credentials: unknown, payload: {
-        baseHeadCommitId?: string | null;
-        commitMeta: WorkspaceRepoCommitMeta;
-      }) => {
+      push: async (_credentials: unknown, payload: { baseHeadCommitId?: string | null }) => {
         pushedBaseHead = payload.baseHeadCommitId;
-        return {
-          status: "accepted" as const,
-          headCommitId: payload.commitMeta.commitId,
-          recentCommits: [],
-        };
+        return { status: "accepted" as const, headCommitId: "merged-version" };
       },
     };
 
-    await (manager as unknown as {
-      registerDivergence: (
-        workspace: CloudSyncWorkspaceProfile,
-        credentials: {
-          apiBaseUrl: string;
-          workspaceName: string;
-          workspacePassword: string;
-          ignoreTlsErrors: boolean;
-          clientId: string;
-          clientVersion: string;
-        },
-        localState: WorkspaceRepoLocalState,
-        remoteHeadCommitId: string,
-        remoteSnapshot: WorkspaceRepoSnapshot,
-      ) => Promise<WorkspaceRepoLocalState>;
-    }).registerDivergence(
+    const result = await (manager as unknown as { mergeAndSettle: MergeAndSettle }).mergeAndSettle(
       workspace,
-      {
-        apiBaseUrl: workspace.apiBaseUrl,
-        workspaceName: workspace.workspaceName,
-        workspacePassword: "workspace-password",
-        ignoreTlsErrors: false,
-        clientId: "test-client",
-        clientVersion: "test",
-      },
+      testCredentials(workspace),
       localState,
-      "remote-head",
-      remoteSnapshot,
+      base,
+      local,
+      remote,
+      "remote-version",
     );
 
-    expect(pushedBaseHead).toBe("remote-head");
+    expect(pushedBaseHead).toBe("remote-version");
+    expect(result.syncState).toBe("synced");
+    expect(result.remoteVersion).toBe("merged-version");
     expect(state.connections.map((connection) => connection.host).sort()).toEqual([
       "local.example.com",
       "remote.example.com",
@@ -428,77 +373,44 @@ describe("CloudSyncManager workspace repo sync", () => {
 
   test("keeps non-conflicting remote resources while conflicts remain", async () => {
     const workspace = { ...createWorkspace(), enabled: true };
-    const baseSnapshot = repoSnapshot(workspace.id, "base-snapshot", [
+    const base = repoSnapshot(workspace.id, "base-snapshot", [
       snapshotConnection("conflict-conn", "Conflict", "base.example.com"),
     ]);
-    const localSnapshot = repoSnapshot(workspace.id, "local-snapshot", [
+    const local = repoSnapshot(workspace.id, "local-snapshot", [
       snapshotConnection("conflict-conn", "Conflict", "local.example.com"),
     ]);
-    const remoteSnapshot = repoSnapshot(workspace.id, "remote-snapshot", [
+    const remote = repoSnapshot(workspace.id, "remote-snapshot", [
       snapshotConnection("conflict-conn", "Conflict", "remote.example.com"),
       snapshotConnection("remote-conn", "Remote", "remote.example.com"),
     ]);
     const localState: WorkspaceRepoLocalState = {
       workspaceId: workspace.id,
-      localHeadCommitId: "local-head",
-      remoteHeadCommitId: "base-head",
-      syncState: "ahead",
+      baseSnapshotJson: JSON.stringify(base),
+      remoteVersion: "base-version",
+      syncState: "idle",
     };
     const state = createMutableState(workspace, { localState });
-    state.snapshots.set(baseSnapshot.snapshotId, baseSnapshot);
-    state.snapshots.set(localSnapshot.snapshotId, localSnapshot);
-    state.commits.set("base-head", {
-      workspaceId: workspace.id,
-      commitId: "base-head",
-      snapshotId: baseSnapshot.snapshotId,
-      authorName: "remote",
-      authorKind: "system",
-      message: "base",
-      createdAt: now,
-    });
-    state.commits.set("local-head", {
-      workspaceId: workspace.id,
-      commitId: "local-head",
-      parentCommitId: "base-head",
-      snapshotId: localSnapshot.snapshotId,
-      authorName: "NextShell",
-      authorKind: "user",
-      message: "local",
-      createdAt: now,
-    });
 
     const manager = new CloudSyncManager(createMutableDeps(state));
-    const result = await (manager as unknown as {
-      registerDivergence: (
-        workspace: CloudSyncWorkspaceProfile,
-        credentials: {
-          apiBaseUrl: string;
-          workspaceName: string;
-          workspacePassword: string;
-          ignoreTlsErrors: boolean;
-          clientId: string;
-          clientVersion: string;
-        },
-        localState: WorkspaceRepoLocalState,
-        remoteHeadCommitId: string,
-        remoteSnapshot: WorkspaceRepoSnapshot,
-      ) => Promise<WorkspaceRepoLocalState>;
-    }).registerDivergence(
-      workspace,
-      {
-        apiBaseUrl: workspace.apiBaseUrl,
-        workspaceName: workspace.workspaceName,
-        workspacePassword: "workspace-password",
-        ignoreTlsErrors: false,
-        clientId: "test-client",
-        clientVersion: "test",
+    // No push should be attempted while conflicts remain.
+    (manager as unknown as { api: unknown }).api = {
+      push: async () => {
+        throw new Error("push should not be called while conflicts remain");
       },
+    };
+
+    const result = await (manager as unknown as { mergeAndSettle: MergeAndSettle }).mergeAndSettle(
+      workspace,
+      testCredentials(workspace),
       localState,
-      "remote-head",
-      remoteSnapshot,
+      base,
+      local,
+      remote,
+      "remote-version",
     );
 
     expect(result.syncState).toBe("diverged");
+    expect(result.remoteVersion).toBe("remote-version");
     expect(state.conflicts.length).toBe(1);
     expect(state.connections.map((connection) => connection.host).sort()).toEqual([
       "local.example.com",
@@ -585,27 +497,13 @@ describe("CloudSyncManager workspace command sync", () => {
     const result = await (manager as unknown as {
       syncWorkspaceCommands: (
         workspace: CloudSyncWorkspaceProfile,
-        credentials: {
-          apiBaseUrl: string;
-          workspaceName: string;
-          workspacePassword: string;
-          ignoreTlsErrors: boolean;
-          clientId: string;
-          clientVersion: string;
-        },
+        credentials: ReturnType<typeof testCredentials>,
         localState: WorkspaceRepoLocalState,
         resolvedRemoteVersion?: string,
       ) => Promise<WorkspaceRepoLocalState>;
     }).syncWorkspaceCommands(
       workspace,
-      {
-        apiBaseUrl: workspace.apiBaseUrl,
-        workspaceName: workspace.workspaceName,
-        workspacePassword: "workspace-password",
-        ignoreTlsErrors: false,
-        clientId: "test-client",
-        clientVersion: "test",
-      },
+      testCredentials(workspace),
       {
         workspaceId: workspace.id,
         remoteCommandsVersion: "base-version",

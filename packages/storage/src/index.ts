@@ -22,10 +22,8 @@ import type {
   SavedCommand,
   SshKeyProfile,
   WorkspaceCommandItem,
-  WorkspaceRepoCommitMeta,
   WorkspaceRepoConflict,
-  WorkspaceRepoLocalState,
-  WorkspaceRepoSnapshot
+  WorkspaceRepoLocalState
 } from "../../core/src/index";
 import {
   DEFAULT_APP_PREFERENCES as DEFAULT_APP_PREFERENCES_VALUE,
@@ -167,28 +165,10 @@ interface ProxyRow {
   copied_from_resource_id: string | null;
 }
 
-interface WorkspaceRepoCommitRow {
-  workspace_id: string;
-  commit_id: string;
-  parent_commit_id: string | null;
-  snapshot_id: string;
-  author_name: string;
-  author_kind: "system" | "user" | "reconcile";
-  message: string;
-  created_at: string;
-}
-
-interface WorkspaceRepoSnapshotRow {
-  workspace_id: string;
-  snapshot_id: string;
-  snapshot_json: string;
-  created_at: string;
-}
-
 interface WorkspaceRepoLocalStateRow {
   workspace_id: string;
-  local_head_commit_id: string | null;
-  remote_head_commit_id: string | null;
+  base_snapshot_json: string | null;
+  remote_version: string | null;
   remote_commands_version: string | null;
   last_sync_at: string | null;
   last_error: string | null;
@@ -497,33 +477,10 @@ const rowToProxy = (row: ProxyRow): ProxyProfile => ({
   copiedFromResourceId: row.copied_from_resource_id ?? undefined,
 });
 
-const rowToWorkspaceRepoCommit = (row: WorkspaceRepoCommitRow): WorkspaceRepoCommitMeta => ({
-  workspaceId: row.workspace_id,
-  commitId: row.commit_id,
-  parentCommitId: row.parent_commit_id ?? undefined,
-  snapshotId: row.snapshot_id,
-  authorName: row.author_name,
-  authorKind: row.author_kind,
-  message: row.message,
-  createdAt: row.created_at,
-});
-
-const rowToWorkspaceRepoSnapshot = (row: WorkspaceRepoSnapshotRow): WorkspaceRepoSnapshot => {
-  const parsed = JSON.parse(row.snapshot_json) as Omit<WorkspaceRepoSnapshot, "workspaceId" | "snapshotId" | "createdAt">;
-  return {
-    workspaceId: row.workspace_id,
-    snapshotId: row.snapshot_id,
-    createdAt: row.created_at,
-    connections: parsed.connections ?? [],
-    sshKeys: parsed.sshKeys ?? [],
-    proxies: parsed.proxies ?? [],
-  };
-};
-
 const rowToWorkspaceRepoLocalState = (row: WorkspaceRepoLocalStateRow): WorkspaceRepoLocalState => ({
   workspaceId: row.workspace_id,
-  localHeadCommitId: row.local_head_commit_id ?? undefined,
-  remoteHeadCommitId: row.remote_head_commit_id ?? undefined,
+  baseSnapshotJson: row.base_snapshot_json ?? undefined,
+  remoteVersion: row.remote_version ?? undefined,
   remoteCommandsVersion: row.remote_commands_version ?? undefined,
   lastSyncAt: row.last_sync_at ?? undefined,
   lastError: row.last_error ?? undefined,
@@ -1428,6 +1385,30 @@ const migrations: MigrationDefinition[] = [
         );
       `);
     }
+  },
+  {
+    version: 23,
+    name: "cloud_sync_v3_snapshot_state",
+    apply: (db) => {
+      // Converge cloud sync from a commit graph to a single-base-snapshot model:
+      // drop the commit/snapshot history tables and rebuild local state to track
+      // the last-synced snapshot plus an opaque remote version token.
+      db.exec(`
+        DROP TABLE IF EXISTS workspace_repo_commits;
+        DROP TABLE IF EXISTS workspace_repo_snapshots;
+        DROP TABLE IF EXISTS workspace_repo_local_state;
+
+        CREATE TABLE workspace_repo_local_state (
+          workspace_id TEXT PRIMARY KEY,
+          base_snapshot_json TEXT,
+          remote_version TEXT,
+          remote_commands_version TEXT,
+          last_sync_at TEXT,
+          last_error TEXT,
+          sync_state TEXT NOT NULL DEFAULT 'idle'
+        );
+      `);
+    }
   }
 ];
 
@@ -1500,11 +1481,6 @@ export interface ConnectionRepository {
   saveRuntimeCurrentVersion: (workspaceId: string, currentVersion: number) => void;
   removeRuntimeCurrentVersion: (workspaceId: string) => void;
   // ── Workspace repo ──
-  listWorkspaceRepoCommits: (workspaceId: string, limit?: number, cursorCreatedAt?: string) => WorkspaceRepoCommitMeta[];
-  getWorkspaceRepoCommit: (workspaceId: string, commitId: string) => WorkspaceRepoCommitMeta | undefined;
-  saveWorkspaceRepoCommit: (commit: WorkspaceRepoCommitMeta) => void;
-  getWorkspaceRepoSnapshot: (workspaceId: string, snapshotId: string) => WorkspaceRepoSnapshot | undefined;
-  saveWorkspaceRepoSnapshot: (snapshot: WorkspaceRepoSnapshot) => void;
   getWorkspaceRepoLocalState: (workspaceId: string) => WorkspaceRepoLocalState | undefined;
   saveWorkspaceRepoLocalState: (state: WorkspaceRepoLocalState) => void;
   listWorkspaceRepoConflicts: (workspaceId: string) => WorkspaceRepoConflict[];
@@ -2365,8 +2341,6 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
       this.db.prepare("DELETE FROM cloud_sync_pending_ops WHERE workspace_id = ?").run(id);
       this.db.prepare("DELETE FROM cloud_sync_resource_state WHERE workspace_id = ?").run(id);
       this.db.prepare("DELETE FROM cloud_sync_runtime_state WHERE workspace_id = ?").run(id);
-      this.db.prepare("DELETE FROM workspace_repo_commits WHERE workspace_id = ?").run(id);
-      this.db.prepare("DELETE FROM workspace_repo_snapshots WHERE workspace_id = ?").run(id);
       this.db.prepare("DELETE FROM workspace_repo_local_state WHERE workspace_id = ?").run(id);
       this.db.prepare("DELETE FROM workspace_repo_conflicts WHERE workspace_id = ?").run(id);
       this.db.prepare("DELETE FROM workspace_commands WHERE workspace_id = ?").run(id);
@@ -2474,127 +2448,10 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
   }
 
   // ── Workspace repo ──
-  listWorkspaceRepoCommits(
-    workspaceId: string,
-    limit = 50,
-    cursorCreatedAt?: string,
-  ): WorkspaceRepoCommitMeta[] {
-    const safeLimit = Math.max(1, Math.min(limit, 500));
-    const rows = this.db.prepare(
-      `
-        SELECT workspace_id, commit_id, parent_commit_id, snapshot_id, author_name, author_kind, message, created_at
-        FROM workspace_repo_commits
-        WHERE workspace_id = @workspace_id
-          AND (@cursor_created_at IS NULL OR created_at < @cursor_created_at)
-        ORDER BY created_at DESC
-        LIMIT @limit
-      `
-    ).all({
-      workspace_id: workspaceId,
-      cursor_created_at: cursorCreatedAt ?? null,
-      limit: safeLimit
-    }) as WorkspaceRepoCommitRow[];
-    return rows.map(rowToWorkspaceRepoCommit);
-  }
-
-  getWorkspaceRepoCommit(workspaceId: string, commitId: string): WorkspaceRepoCommitMeta | undefined {
-    const row = this.db.prepare(
-      `
-        SELECT workspace_id, commit_id, parent_commit_id, snapshot_id, author_name, author_kind, message, created_at
-        FROM workspace_repo_commits
-        WHERE workspace_id = ? AND commit_id = ?
-      `
-    ).get(workspaceId, commitId) as WorkspaceRepoCommitRow | undefined;
-    return row ? rowToWorkspaceRepoCommit(row) : undefined;
-  }
-
-  saveWorkspaceRepoCommit(commit: WorkspaceRepoCommitMeta): void {
-    this.db.prepare(
-      `
-        INSERT INTO workspace_repo_commits (
-          workspace_id,
-          commit_id,
-          parent_commit_id,
-          snapshot_id,
-          author_name,
-          author_kind,
-          message,
-          created_at
-        ) VALUES (
-          @workspace_id,
-          @commit_id,
-          @parent_commit_id,
-          @snapshot_id,
-          @author_name,
-          @author_kind,
-          @message,
-          @created_at
-        )
-        ON CONFLICT(workspace_id, commit_id) DO UPDATE SET
-          parent_commit_id = excluded.parent_commit_id,
-          snapshot_id = excluded.snapshot_id,
-          author_name = excluded.author_name,
-          author_kind = excluded.author_kind,
-          message = excluded.message,
-          created_at = excluded.created_at
-      `
-    ).run({
-      workspace_id: commit.workspaceId,
-      commit_id: commit.commitId,
-      parent_commit_id: commit.parentCommitId ?? null,
-      snapshot_id: commit.snapshotId,
-      author_name: commit.authorName,
-      author_kind: commit.authorKind,
-      message: commit.message,
-      created_at: commit.createdAt
-    });
-  }
-
-  getWorkspaceRepoSnapshot(workspaceId: string, snapshotId: string): WorkspaceRepoSnapshot | undefined {
-    const row = this.db.prepare(
-      `
-        SELECT workspace_id, snapshot_id, snapshot_json, created_at
-        FROM workspace_repo_snapshots
-        WHERE workspace_id = ? AND snapshot_id = ?
-      `
-    ).get(workspaceId, snapshotId) as WorkspaceRepoSnapshotRow | undefined;
-    return row ? rowToWorkspaceRepoSnapshot(row) : undefined;
-  }
-
-  saveWorkspaceRepoSnapshot(snapshot: WorkspaceRepoSnapshot): void {
-    this.db.prepare(
-      `
-        INSERT INTO workspace_repo_snapshots (
-          workspace_id,
-          snapshot_id,
-          snapshot_json,
-          created_at
-        ) VALUES (
-          @workspace_id,
-          @snapshot_id,
-          @snapshot_json,
-          @created_at
-        )
-        ON CONFLICT(workspace_id, snapshot_id) DO UPDATE SET
-          snapshot_json = excluded.snapshot_json,
-          created_at = excluded.created_at
-      `
-    ).run({
-      workspace_id: snapshot.workspaceId,
-      snapshot_id: snapshot.snapshotId,
-      snapshot_json: JSON.stringify({
-        connections: snapshot.connections,
-        sshKeys: snapshot.sshKeys,
-        proxies: snapshot.proxies
-      }),
-      created_at: snapshot.createdAt
-    });
-  }
-
   getWorkspaceRepoLocalState(workspaceId: string): WorkspaceRepoLocalState | undefined {
     const row = this.db.prepare(
       `
-        SELECT workspace_id, local_head_commit_id, remote_head_commit_id, remote_commands_version, last_sync_at, last_error, sync_state
+        SELECT workspace_id, base_snapshot_json, remote_version, remote_commands_version, last_sync_at, last_error, sync_state
         FROM workspace_repo_local_state
         WHERE workspace_id = ?
       `
@@ -2607,24 +2464,24 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
       `
         INSERT INTO workspace_repo_local_state (
           workspace_id,
-          local_head_commit_id,
-          remote_head_commit_id,
+          base_snapshot_json,
+          remote_version,
           remote_commands_version,
           last_sync_at,
           last_error,
           sync_state
         ) VALUES (
           @workspace_id,
-          @local_head_commit_id,
-          @remote_head_commit_id,
+          @base_snapshot_json,
+          @remote_version,
           @remote_commands_version,
           @last_sync_at,
           @last_error,
           @sync_state
         )
         ON CONFLICT(workspace_id) DO UPDATE SET
-          local_head_commit_id = excluded.local_head_commit_id,
-          remote_head_commit_id = excluded.remote_head_commit_id,
+          base_snapshot_json = excluded.base_snapshot_json,
+          remote_version = excluded.remote_version,
           remote_commands_version = excluded.remote_commands_version,
           last_sync_at = excluded.last_sync_at,
           last_error = excluded.last_error,
@@ -2632,8 +2489,8 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
       `
     ).run({
       workspace_id: state.workspaceId,
-      local_head_commit_id: state.localHeadCommitId ?? null,
-      remote_head_commit_id: state.remoteHeadCommitId ?? null,
+      base_snapshot_json: state.baseSnapshotJson ?? null,
+      remote_version: state.remoteVersion ?? null,
       remote_commands_version: state.remoteCommandsVersion ?? null,
       last_sync_at: state.lastSyncAt ?? null,
       last_error: state.lastError ?? null,

@@ -1,4 +1,4 @@
-import { Tooltip } from "antd";
+import { Dropdown, Tooltip, type MenuProps } from "antd";
 import type { Clipboard } from "../types";
 
 interface FileExplorerToolbarProps {
@@ -21,12 +21,18 @@ interface FileExplorerToolbarProps {
   onBack: () => void;
   onForward: () => void;
   onParent: () => void;
-  onCreateDirectory: () => void;
+  onUpload: () => void;
+  onPackedUpload: () => void;
+  onDownload: () => void;
+  onPackedDownload: () => void;
+  onNewFolder: () => void;
+  onNewFile: () => void;
   onRename: () => void;
   onDelete: () => void;
   onPaste: () => void;
-  onClearClipboard: () => void;
 }
+
+const icon = (className: string) => <i className={className} aria-hidden="true" />;
 
 export const FileExplorerToolbar = ({
   pathInput,
@@ -48,26 +54,90 @@ export const FileExplorerToolbar = ({
   onBack,
   onForward,
   onParent,
-  onCreateDirectory,
+  onUpload,
+  onPackedUpload,
+  onDownload,
+  onPackedDownload,
+  onNewFolder,
+  onNewFile,
   onRename,
   onDelete,
-  onPaste,
-  onClearClipboard
-}: FileExplorerToolbarProps) => (
-  <div className="fe-toolbar">
-    <div className="fe-path-area">
-      <input
-        className="fe-path-input"
-        value={pathInput}
-        onChange={(event) => onPathInputChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") onPathInputSubmit();
-        }}
-        placeholder="输入路径后回车跳转"
-        title={pathName}
-      />
-    </div>
-    <div className="fe-actions">
+  onPaste
+}: FileExplorerToolbarProps) => {
+  const uploadMenu: MenuProps = {
+    items: [
+      { key: "upload", icon: icon("ri-upload-line"), label: "上传文件", onClick: onUpload },
+      { key: "packed-upload", icon: icon("ri-inbox-archive-line"), label: "上传并解压", onClick: onPackedUpload }
+    ]
+  };
+
+  const downloadMenu: MenuProps = {
+    items: [
+      { key: "download", icon: icon("ri-download-line"), label: "逐个下载", onClick: onDownload },
+      { key: "packed-download", icon: icon("ri-file-zip-line"), label: "打包下载", onClick: onPackedDownload }
+    ]
+  };
+
+  const newMenu: MenuProps = {
+    items: [
+      { key: "new-folder", icon: icon("ri-folder-3-line"), label: "文件夹", onClick: onNewFolder },
+      { key: "new-file", icon: icon("ri-file-line"), label: "文件", onClick: onNewFile }
+    ]
+  };
+
+  return (
+    <div className="fe-toolbar">
+      <div className="fe-actions">
+        {visibleToolbarActions.has("back") && (
+          <Tooltip title="后退">
+            <button className="fe-icon-btn" onClick={onBack} disabled={historyIndex <= 0} aria-label="后退">
+              {icon("ri-arrow-left-s-line")}
+            </button>
+          </Tooltip>
+        )}
+        {visibleToolbarActions.has("forward") && (
+          <Tooltip title="前进">
+            <button
+              className="fe-icon-btn"
+              onClick={onForward}
+              disabled={historyIndex >= historyLength - 1}
+              aria-label="前进"
+            >
+              {icon("ri-arrow-right-s-line")}
+            </button>
+          </Tooltip>
+        )}
+        {visibleToolbarActions.has("parent") && (
+          <Tooltip title="上级目录">
+            <button className="fe-icon-btn" onClick={onParent} disabled={pathName === "/" || busy} aria-label="上级目录">
+              {icon("ri-arrow-up-s-line")}
+            </button>
+          </Tooltip>
+        )}
+        {visibleToolbarActions.has("refresh") && (
+          <Tooltip title="刷新">
+            <button className="fe-icon-btn" onClick={onRefresh} disabled={busy} aria-label="刷新">
+              {icon("ri-refresh-line")}
+            </button>
+          </Tooltip>
+        )}
+      </div>
+
+      <span className="fe-tb-sep" />
+
+      <div className="fe-path-area">
+        <input
+          className="fe-path-input"
+          value={pathInput}
+          onChange={(event) => onPathInputChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onPathInputSubmit();
+          }}
+          placeholder="输入路径后回车跳转"
+          title={pathName}
+        />
+      </div>
+
       {visibleToolbarActions.has("follow-cwd") && (
         <Tooltip title="跟随终端目录">
           <span className="inline-flex">
@@ -77,92 +147,83 @@ export const FileExplorerToolbar = ({
               onClick={onToggleFollowCwd}
               disabled={!hasConnection || !connected}
             >
-              <i className="ri-terminal-line" aria-hidden="true" />
+              {icon("ri-terminal-line")}
             </button>
           </span>
         </Tooltip>
       )}
-      {visibleToolbarActions.has("refresh") && (
-        <Tooltip title="刷新">
-          <button className="fe-icon-btn" onClick={onRefresh} disabled={busy} aria-label="刷新">
-            <i className="ri-refresh-line" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      )}
-      {visibleToolbarActions.has("back") && (
-        <Tooltip title="后退">
-          <button className="fe-icon-btn" onClick={onBack} disabled={historyIndex <= 0} aria-label="后退">
-            <i className="ri-arrow-left-s-line" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      )}
-      {visibleToolbarActions.has("forward") && (
-        <Tooltip title="前进">
-          <button
-            className="fe-icon-btn"
-            onClick={onForward}
-            disabled={historyIndex >= historyLength - 1}
-            aria-label="前进"
-          >
-            <i className="ri-arrow-right-s-line" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      )}
-      {visibleToolbarActions.has("parent") && (
-        <Tooltip title="上级目录">
-          <button className="fe-icon-btn" onClick={onParent} disabled={pathName === "/" || busy} aria-label="上级目录">
-            <i className="ri-arrow-up-s-line" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      )}
-      <span className="w-px h-4 bg-[var(--border)] mx-[3px] shrink-0" />
-      {visibleToolbarActions.has("mkdir") && (
-        <Tooltip title="新建目录">
-          <button className="fe-icon-btn" onClick={onCreateDirectory} disabled={busy} aria-label="新建目录">
-            <i className="ri-folder-add-line" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      )}
-      {visibleToolbarActions.has("rename") && (
-        <Tooltip title="重命名">
-          <span className="inline-flex">
-            <button className="fe-icon-btn" onClick={onRename} disabled={!hasSingleSelection || busy} aria-label="重命名">
-              <i className="ri-edit-line" aria-hidden="true" />
+
+      <span className="fe-tb-sep" />
+
+      <div className="fe-actions">
+        {visibleToolbarActions.has("upload") && (
+          <Dropdown menu={uploadMenu} trigger={["click"]} disabled={busy}>
+            <button className="fe-icon-btn fe-icon-btn--menu" aria-label="上传" disabled={busy}>
+              {icon("ri-upload-2-line")}
+              {icon("ri-arrow-down-s-line")}
             </button>
-          </span>
-        </Tooltip>
-      )}
-      {visibleToolbarActions.has("delete") && (
-        <Tooltip title="删除">
-          <span className="inline-flex">
-            <button
-              className="fe-icon-btn danger"
-              onClick={onDelete}
-              disabled={selectedEntryCount === 0 || busy}
-              aria-label="删除"
-            >
-              <i className="ri-delete-bin-6-line" aria-hidden="true" />
-            </button>
-          </span>
-        </Tooltip>
-      )}
-      {clipboard && (
-        <>
-          <span className="w-px h-4 bg-[var(--border)] mx-[3px] shrink-0" />
-          <Tooltip title={`粘贴（${clipboard.mode === "copy" ? "复制" : "移动"} ${clipboard.entries.length} 项）`}>
+          </Dropdown>
+        )}
+        {visibleToolbarActions.has("download") && (
+          <Dropdown menu={downloadMenu} trigger={["click"]} disabled={selectedEntryCount === 0 || busy}>
             <span className="inline-flex">
-              <button className="fe-icon-btn" aria-label="粘贴" onClick={onPaste} disabled={busy}>
-                <i className="ri-clipboard-line" aria-hidden="true" />
+              <button
+                className="fe-icon-btn fe-icon-btn--menu"
+                aria-label="下载选中项"
+                disabled={selectedEntryCount === 0 || busy}
+              >
+                {icon("ri-download-2-line")}
+                {icon("ri-arrow-down-s-line")}
+              </button>
+            </span>
+          </Dropdown>
+        )}
+      </div>
+
+      <span className="fe-tb-sep" />
+
+      <div className="fe-actions">
+        {visibleToolbarActions.has("new") && (
+          <Dropdown menu={newMenu} trigger={["click"]} disabled={busy}>
+            <button className="fe-icon-btn fe-icon-btn--menu" aria-label="新建" disabled={busy}>
+              {icon("ri-add-line")}
+              {icon("ri-arrow-down-s-line")}
+            </button>
+          </Dropdown>
+        )}
+        {visibleToolbarActions.has("rename") && (
+          <Tooltip title="重命名">
+            <span className="inline-flex">
+              <button className="fe-icon-btn" onClick={onRename} disabled={!hasSingleSelection || busy} aria-label="重命名">
+                {icon("ri-edit-line")}
               </button>
             </span>
           </Tooltip>
-          <Tooltip title="清空剪切板">
-            <button className="fe-icon-btn" onClick={onClearClipboard} aria-label="清空剪切板">
-              <i className="ri-close-line" aria-hidden="true" />
-            </button>
+        )}
+        {visibleToolbarActions.has("delete") && (
+          <Tooltip title="删除">
+            <span className="inline-flex">
+              <button
+                className="fe-icon-btn danger"
+                onClick={onDelete}
+                disabled={selectedEntryCount === 0 || busy}
+                aria-label="删除"
+              >
+                {icon("ri-delete-bin-6-line")}
+              </button>
+            </span>
           </Tooltip>
-        </>
-      )}
+        )}
+        {visibleToolbarActions.has("paste") && clipboard && (
+          <Tooltip title={`粘贴（${clipboard.mode === "copy" ? "复制" : "移动"} ${clipboard.entries.length} 项）`}>
+            <span className="inline-flex">
+              <button className="fe-icon-btn" aria-label="粘贴" onClick={onPaste} disabled={busy}>
+                {icon("ri-clipboard-line")}
+              </button>
+            </span>
+          </Tooltip>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};

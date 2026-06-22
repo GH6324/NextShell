@@ -15,13 +15,16 @@ interface ManagerContextMenuProps {
   onCopy: () => void;
   onCut: () => void;
   onPaste: (targetGroupPath: string) => void;
+  onBatchAuth: () => void;
   onDelete: () => void;
   onCopyAddress: (connectionId: string) => void;
   onNewConnection: (groupPath?: string) => void;
   onNewFolder: (parentGroupPath: string) => void;
   onSort: (mode: SortMode) => void;
   onImportNextShell: () => void;
+  onImportNextShellDirectory: () => void;
   onImportFinalShell: () => void;
+  onImportFinalShellDirectory: () => void;
   onExportSelected: () => void;
   onExportAll: () => void;
 }
@@ -39,13 +42,16 @@ export const ManagerContextMenu = ({
   onCopy,
   onCut,
   onPaste,
+  onBatchAuth,
   onDelete,
   onCopyAddress,
   onNewConnection,
   onNewFolder,
   onSort,
   onImportNextShell,
+  onImportNextShellDirectory,
   onImportFinalShell,
+  onImportFinalShellDirectory,
   onExportSelected,
   onExportAll
 }: ManagerContextMenuProps) => {
@@ -102,6 +108,12 @@ export const ManagerContextMenu = ({
       ? connection.groupPath
       : "/server";
   const multiCount = selectedIds.size;
+  const groupBatchCount = target.type === "group"
+    ? connections.filter((item) =>
+        item.groupPath === target.groupPath || item.groupPath.startsWith(`${target.groupPath}/`)
+      ).length
+    : 0;
+  const batchAuthCount = isConnection ? multiCount : groupBatchCount;
 
   return (
     <div
@@ -147,6 +159,12 @@ export const ManagerContextMenu = ({
               <span className="mgr-ctx-badge">{clipboard.mode === "copy" ? "复制" : "剪切"}</span>
             ) : null}
           </button>
+          {(isConnection || target.type === "group") ? (
+            <button className="mgr-ctx-item" onClick={() => run(onBatchAuth)} disabled={batchAuthCount === 0}>
+              <span className="mgr-ctx-icon"><i className="ri-key-2-line" aria-hidden="true" /></span> 批量绑定认证
+              {batchAuthCount > 1 ? <span className="mgr-ctx-badge">{batchAuthCount}</span> : null}
+            </button>
+          ) : null}
           {isConnection ? <div className="mgr-ctx-divider" /> : null}
         </>
       )}
@@ -180,7 +198,7 @@ export const ManagerContextMenu = ({
         {newOpen ? (
           <div className="mgr-ctx-submenu">
             <button className="mgr-ctx-item" onClick={() => run(() => onNewConnection(targetGroupPath))}>
-              <span className="mgr-ctx-icon"><i className="ri-terminal-box-line" aria-hidden="true" /></span> SSH连接(Linux)
+              <span className="mgr-ctx-icon"><i className="ri-terminal-box-line" aria-hidden="true" /></span> 新建连接
             </button>
             <button className="mgr-ctx-item" onClick={() => run(() => onNewFolder(targetGroupPath))}>
               <span className="mgr-ctx-icon"><i className="ri-folder-3-line" aria-hidden="true" /></span> 文件夹
@@ -225,8 +243,14 @@ export const ManagerContextMenu = ({
             <button className="mgr-ctx-item" onClick={() => run(onImportNextShell)}>
               <span className="mgr-ctx-icon"><i className="ri-file-line" aria-hidden="true" /></span> NextShell 文件
             </button>
+            <button className="mgr-ctx-item" onClick={() => run(onImportNextShellDirectory)}>
+              <span className="mgr-ctx-icon"><i className="ri-folder-upload-line" aria-hidden="true" /></span> NextShell 文件夹
+            </button>
             <button className="mgr-ctx-item" onClick={() => run(onImportFinalShell)}>
               <span className="mgr-ctx-icon"><i className="ri-file-upload-line" aria-hidden="true" /></span> FinalShell 文件
+            </button>
+            <button className="mgr-ctx-item" onClick={() => run(onImportFinalShellDirectory)}>
+              <span className="mgr-ctx-icon"><i className="ri-folder-upload-line" aria-hidden="true" /></span> FinalShell 文件夹
             </button>
           </div>
         ) : null}

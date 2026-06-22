@@ -13,8 +13,8 @@ import {
   Typography,
   message,
 } from "antd";
-import { useCallback, useEffect, useState } from "react";
-import type { CloudSyncWorkspaceProfile, WorkspaceRepoCommitMeta, WorkspaceRepoConflict, WorkspaceRepoStatus } from "@nextshell/core";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import type { CloudSyncWorkspaceProfile, WorkspaceRepoConflict, WorkspaceRepoStatus } from "@nextshell/core";
 import { SettingsCard } from "./SettingsCard";
 
 const api = () => (window as unknown as { nextshell: import("@nextshell/shared").NextShellApi }).nextshell;
@@ -45,6 +45,7 @@ type ConflictItem = WorkspaceRepoConflict & { workspaceName: string };
 
 const STATE_COLORS: Record<string, string> = {
   idle: "green",
+  synced: "green",
   syncing: "blue",
   error: "red",
   disabled: "default",
@@ -53,16 +54,72 @@ const STATE_COLORS: Record<string, string> = {
 
 const STATE_LABELS: Record<string, string> = {
   idle: "空闲",
+  synced: "已同步",
   syncing: "同步中",
   error: "出错",
   disabled: "已停用",
-  diverged: "已分叉",
+  diverged: "有冲突",
 };
 
 const RESOURCE_TYPE_LABELS: Record<string, string> = {
   connection: "连接",
   sshKey: "SSH 密钥",
   proxy: "代理",
+};
+
+const FIELD_LABELS: Record<string, string> = {
+  name: "名称",
+  host: "主机",
+  port: "端口",
+  username: "用户名",
+  authType: "认证方式",
+  groupPath: "分组",
+  notes: "备注",
+  tags: "标签",
+  favorite: "收藏",
+  proxyType: "代理类型",
+  凭据: "凭据",
+};
+
+const CREDENTIAL_KEYS = new Set(["password", "privateKey", "passphrase"]);
+const SKIP_DIFF_KEYS = new Set(["createdAt", "updatedAt", "uuid"]);
+
+const formatConflictValue = (value: unknown): string => {
+  if (value === undefined || value === null || value === "") return "—";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+};
+
+const computeConflictDiff = (
+  item: WorkspaceRepoConflict,
+): Array<{ field: string; local: string; remote: string }> => {
+  const parse = (json: string | undefined): Record<string, unknown> => {
+    if (!json) return {};
+    try {
+      return JSON.parse(json) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  };
+  const local = parse(item.localSnapshotJson);
+  const remote = parse(item.remoteSnapshotJson);
+  const rows: Array<{ field: string; local: string; remote: string }> = [];
+  let credentialChanged = false;
+  for (const key of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+    if (SKIP_DIFF_KEYS.has(key)) continue;
+    if (CREDENTIAL_KEYS.has(key)) {
+      if (JSON.stringify(local[key]) !== JSON.stringify(remote[key])) credentialChanged = true;
+      continue;
+    }
+    const l = formatConflictValue(local[key]);
+    const r = formatConflictValue(remote[key]);
+    if (l !== r) rows.push({ field: FIELD_LABELS[key] ?? key, local: l, remote: r });
+  }
+  if (credentialChanged) {
+    rows.push({ field: FIELD_LABELS["凭据"]!, local: "（本地版本）", remote: "（云端版本）" });
+  }
+  return rows;
 };
 
 export const CloudSyncManagerPanel = () => {
@@ -77,11 +134,10 @@ export const CloudSyncManagerPanel = () => {
   const [pastingToken, setPastingToken] = useState(false);
 
   const [statusMap, setStatusMap] = useState<Map<string, WorkspaceStatus>>(new Map());
-  const [historyMap, setHistoryMap] = useState<Map<string, WorkspaceRepoCommitMeta[]>>(new Map());
   const [conflicts, setConflicts] = useState<ConflictItem[]>([]);
   const [conflictsLoading, setConflictsLoading] = useState(false);
   const [conflictBusyKey, setConflictBusyKey] = useState<string | null>(null);
-  const [restoreBusyKey, setRestoreBusyKey] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -96,17 +152,6 @@ export const CloudSyncManagerPanel = () => {
         map.set(s.workspaceId, s);
       }
       setStatusMap(map);
-      const histories = await Promise.all(
-        list.map(async (workspace) => {
-          try {
-            const history = await api().cloudSync.history({ workspaceId: workspace.id, limit: 5 });
-            return [workspace.id, history] as const;
-          } catch {
-            return [workspace.id, [] as WorkspaceRepoCommitMeta[]] as const;
-          }
-        })
-      );
-      setHistoryMap(new Map(histories));
     } catch (err) {
       message.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -291,18 +336,28 @@ export const CloudSyncManagerPanel = () => {
     }
   };
 
-  const handleRestoreCommit = async (workspaceId: string, commitId: string) => {
-    const key = `${workspaceId}:${commitId}`;
-    setRestoreBusyKey(key);
+  const handleTestConnection = async () => {
+    if (!editForm.apiBaseUrl.trim() || !editForm.workspaceName.trim()) {
+      message.warning("请先填写 API 地址和工作区名称");
+      return;
+    }
+    if (!editForm.workspacePassword) {
+      message.warning("请输入工作区密码后再测试");
+      return;
+    }
+    setTesting(true);
     try {
-      await api().cloudSync.restoreCommit({ workspaceId, commitId });
-      await refresh();
-      await refreshConflicts();
-      message.success("已基于历史版本创建恢复提交");
+      const result = await api().cloudSync.testConnection({
+        apiBaseUrl: editForm.apiBaseUrl,
+        workspaceName: editForm.workspaceName,
+        workspacePassword: editForm.workspacePassword,
+        ignoreTlsErrors: editForm.ignoreTlsErrors,
+      });
+      message.success(`连接成功${result.displayName ? `：${result.displayName}` : ""}`);
     } catch (err) {
       message.error(err instanceof Error ? err.message : String(err));
     } finally {
-      setRestoreBusyKey(null);
+      setTesting(false);
     }
   };
 
@@ -318,7 +373,7 @@ export const CloudSyncManagerPanel = () => {
 
   return (
     <>
-      <SettingsCard title="Workspace Repos" description="管理每个 workspace 的服务器资产仓库和共享命令集。">
+      <SettingsCard title="云工作区" description="管理云端同步的服务器资产仓库和共享命令集。">
         <div style={{ marginBottom: 12 }}>
           <Space size={8} wrap>
             <Button type="primary" size="small" onClick={() => openAddModal()}>
@@ -394,9 +449,6 @@ export const CloudSyncManagerPanel = () => {
                       {st && st.conflictCount > 0 && (
                         <Tag color="orange">{st.conflictCount} 冲突</Tag>
                       )}
-                      {st?.syncState && (
-                        <Tag>{st.syncState}</Tag>
-                      )}
                     </Space>
                   }
                   description={
@@ -406,43 +458,11 @@ export const CloudSyncManagerPanel = () => {
                         {(st?.lastSyncAt || ws.lastSyncAt) &&
                           ` · 上次同步: ${st?.lastSyncAt ?? ws.lastSyncAt}`}
                       </Typography.Text>
-                      {st?.localHeadCommitId || st?.remoteHeadCommitId ? (
-                        <Typography.Text type="secondary" style={{ fontSize: 12, display: "block" }}>
-                          local {st.localHeadCommitId?.slice(0, 8) ?? "none"} · remote {st.remoteHeadCommitId?.slice(0, 8) ?? "none"}
+                      {(st?.lastError || ws.lastError) && (
+                        <Typography.Text type="danger" style={{ fontSize: 12, display: "block" }}>
+                          {st?.lastError ?? ws.lastError}
                         </Typography.Text>
-                      ) : null}
-                      {(historyMap.get(ws.id)?.length ?? 0) > 0 ? (
-                        <div style={{ marginTop: 8 }}>
-                          {(historyMap.get(ws.id) ?? []).map((commit) => {
-                            const busy = restoreBusyKey === `${ws.id}:${commit.commitId}`;
-                            return (
-                              <div
-                                key={commit.commitId}
-                                style={{
-                                  display: "flex",
-                                  justifyContent: "space-between",
-                                  gap: 8,
-                                  alignItems: "center",
-                                  fontSize: 12,
-                                  marginTop: 4,
-                                }}
-                              >
-                                <Typography.Text type="secondary">
-                                  {commit.commitId.slice(0, 8)} · {commit.message}
-                                </Typography.Text>
-                                <Button
-                                  size="small"
-                                  type="link"
-                                  loading={busy}
-                                  onClick={() => void handleRestoreCommit(ws.id, commit.commitId)}
-                                >
-                                  恢复
-                                </Button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : null}
+                      )}
                     </div>
                   }
                 />
@@ -459,7 +479,7 @@ export const CloudSyncManagerPanel = () => {
         {conflictsLoading ? (
           <Skeleton active paragraph={{ rows: 3 }} />
         ) : conflicts.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "16px 0", color: "var(--text-secondary)" }}>
+          <div style={{ textAlign: "center", padding: "16px 0", color: "var(--t2)" }}>
             <span style={{ marginRight: 4 }}>✓</span>
             <span>没有待处理的冲突</span>
           </div>
@@ -472,59 +492,88 @@ export const CloudSyncManagerPanel = () => {
               {group.items.map((item) => {
                 const keepBusy = conflictBusyKey === `${wsId}:${item.resourceType}:${item.resourceId}:keep_local`;
                 const acceptBusy = conflictBusyKey === `${wsId}:${item.resourceType}:${item.resourceId}:accept_remote`;
+                const diff = computeConflictDiff(item);
                 return (
                   <div
                     key={`${item.resourceType}:${item.resourceId}`}
                     style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
                       padding: "8px 0",
                       borderBottom: "1px solid var(--border-color)",
                     }}
                   >
-                    <div>
-                      <Space size={8}>
-                        <span>{item.displayName}</span>
-                        <Tag>{RESOURCE_TYPE_LABELS[item.resourceType] ?? item.resourceType}</Tag>
-                        {item.remoteDeleted && <Tag color="red">云端已删除</Tag>}
-                      </Space>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
                       <div>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          检测时间: {item.detectedAt}
-                        </Typography.Text>
+                        <Space size={8}>
+                          <span>{item.displayName}</span>
+                          <Tag>{RESOURCE_TYPE_LABELS[item.resourceType] ?? item.resourceType}</Tag>
+                          {item.remoteDeleted && <Tag color="red">云端已删除</Tag>}
+                        </Space>
+                        <div>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            检测时间: {item.detectedAt}
+                          </Typography.Text>
+                        </div>
                       </div>
-                    </div>
-                    <Space>
-                      <Button
-                        type="primary"
-                        size="small"
-                        loading={keepBusy}
-                        onClick={() =>
-                          handleResolveConflict(wsId, item.resourceType, item.resourceId, "keep_local")
-                        }
-                      >
-                        保留本地
-                      </Button>
-                      <Popconfirm
-                        title="接受云端版本？"
-                        description="当前本地版本会被云端版本替换。"
-                        okText="接受云端"
-                        cancelText="取消"
-                        okButtonProps={{ danger: true }}
-                        onConfirm={() =>
-                          handleResolveConflict(wsId, item.resourceType, item.resourceId, "accept_remote")
-                        }
-                      >
+                      <Space>
                         <Button
+                          type="primary"
                           size="small"
-                          danger
-                          loading={acceptBusy}
+                          loading={keepBusy}
+                          onClick={() =>
+                            handleResolveConflict(wsId, item.resourceType, item.resourceId, "keep_local")
+                          }
                         >
-                          接受云端
+                          保留本地
                         </Button>
-                      </Popconfirm>
-                    </Space>
+                        <Popconfirm
+                          title="接受云端版本？"
+                          description="当前本地版本会被云端版本替换。"
+                          okText="接受云端"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true }}
+                          onConfirm={() =>
+                            handleResolveConflict(wsId, item.resourceType, item.resourceId, "accept_remote")
+                          }
+                        >
+                          <Button
+                            size="small"
+                            danger
+                            loading={acceptBusy}
+                          >
+                            接受云端
+                          </Button>
+                        </Popconfirm>
+                      </Space>
+                    </div>
+                    {diff.length > 0 && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          fontSize: 12,
+                          display: "grid",
+                          gridTemplateColumns: "auto 1fr 1fr",
+                          gap: "2px 12px",
+                          alignItems: "baseline",
+                        }}
+                      >
+                        <Typography.Text type="secondary">字段</Typography.Text>
+                        <Typography.Text type="secondary">本地</Typography.Text>
+                        <Typography.Text type="secondary">云端</Typography.Text>
+                        {diff.map((row) => (
+                          <Fragment key={row.field}>
+                            <span style={{ color: "var(--t2)" }}>{row.field}</span>
+                            <span style={{ wordBreak: "break-all" }}>{row.local}</span>
+                            <span style={{ wordBreak: "break-all", color: "var(--warn, #d48806)" }}>{row.remote}</span>
+                          </Fragment>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -535,7 +584,7 @@ export const CloudSyncManagerPanel = () => {
           <Alert
             type="info"
             showIcon
-            message="解决冲突会创建新的同步提交；接受云端前请确认当前本地版本不需要保留。"
+            message="解决冲突后会立即重新同步；接受云端前请确认当前本地版本不需要保留。"
             style={{ marginTop: 8 }}
           />
         )}
@@ -549,6 +598,17 @@ export const CloudSyncManagerPanel = () => {
         confirmLoading={saving}
         okText={isEditing ? "保存" : "添加"}
         cancelText="取消"
+        footer={[
+          <Button key="test" loading={testing} onClick={() => void handleTestConnection()} style={{ float: "left" }}>
+            测试连接
+          </Button>,
+          <Button key="cancel" onClick={() => setModalOpen(false)}>
+            取消
+          </Button>,
+          <Button key="ok" type="primary" loading={saving} onClick={() => void handleSave()}>
+            {isEditing ? "保存" : "添加"}
+          </Button>,
+        ]}
       >
         <Space direction="vertical" style={{ width: "100%" }}>
           {!isEditing && (

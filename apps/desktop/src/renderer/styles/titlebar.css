@@ -29,10 +29,10 @@
   height: calc(100% - var(--window-titlebar-safe-top));
 }
 
+/* 左侧留白:作为居中 QuickConnectBar 的平衡占位,并保留为可拖拽窗口区域 */
 .titlebar-brand {
   display: flex;
   align-items: center;
   gap: 8px;
-  -webkit-app-region: no-drag;
   flex: 1;
 }

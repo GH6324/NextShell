@@ -31,6 +31,10 @@ const remapToImportZone = (groupPath: string): string => {
   return `/${CONNECTION_ZONES.IMPORT}${normalized}`;
 };
 
+interface ImportParseOptions {
+  groupPathOverride?: string;
+}
+
 // ─── Format detection ────────────────────────────────────────────────────────
 
 export const isNextShellFormat = (data: unknown): data is ConnectionExportFile => {
@@ -65,7 +69,10 @@ const isFinalShellEntry = (data: unknown): boolean => {
 
 // ─── NextShell format parser ─────────────────────────────────────────────────
 
-export const parseNextShellImport = (data: ConnectionExportFile): ConnectionImportEntry[] => {
+export const parseNextShellImport = (
+  data: ConnectionExportFile,
+  options: ImportParseOptions = {}
+): ConnectionImportEntry[] => {
   const deobfuscate = data.passwordsObfuscated === true;
   return data.connections.map((conn) => {
     const password =
@@ -81,7 +88,7 @@ export const parseNextShellImport = (data: ConnectionExportFile): ConnectionImpo
       password,
       keepAliveEnabled: conn.keepAliveEnabled,
       keepAliveIntervalSec: conn.keepAliveIntervalSec,
-      groupPath: remapToImportZone(conn.groupPath),
+      groupPath: options.groupPathOverride ?? remapToImportZone(conn.groupPath),
       tags: conn.tags,
       notes: conn.notes,
       favorite: conn.favorite,
@@ -116,7 +123,10 @@ const mapFinalShellAuthType = (_authType: number | undefined): AuthType => {
   return "password";
 };
 
-const parseOneFinalShellEntry = (entry: FinalShellEntry): ConnectionImportEntry => {
+const parseOneFinalShellEntry = (
+  entry: FinalShellEntry,
+  options: ImportParseOptions = {}
+): ConnectionImportEntry => {
   const host = entry.host ?? "unknown";
   const port = entry.port ?? 22;
   const name = entry.name || `${host}:${port}`;
@@ -131,7 +141,7 @@ const parseOneFinalShellEntry = (entry: FinalShellEntry): ConnectionImportEntry 
     ...(decryptedPassword !== undefined
       ? { password: decryptedPassword }
       : { passwordUnavailable: true }),
-    groupPath: "/import/finalshell",
+    groupPath: options.groupPathOverride ?? "/import/finalshell",
     tags: [],
     favorite: false,
     terminalEncoding: mapFinalShellEncoding(entry.terminal_encoding),
@@ -142,7 +152,10 @@ const parseOneFinalShellEntry = (entry: FinalShellEntry): ConnectionImportEntry 
   };
 };
 
-export const parseFinalShellImport = (data: unknown): ConnectionImportEntry[] => {
+export const parseFinalShellImport = (
+  data: unknown,
+  options: ImportParseOptions = {}
+): ConnectionImportEntry[] => {
   const entries: FinalShellEntry[] = Array.isArray(data) ? data : [data as FinalShellEntry];
-  return entries.filter(isFinalShellEntry).map(parseOneFinalShellEntry);
+  return entries.filter(isFinalShellEntry).map((entry) => parseOneFinalShellEntry(entry, options));
 };

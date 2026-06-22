@@ -21,7 +21,7 @@ export const WindowSection = ({
   save: SaveFn;
 }) => (
   <>
-    <SettingsCard title="界面风格" description="选择应用的外观主题">
+    <SettingsCard title="界面风格" description="「跟随系统」会随操作系统深/浅色自动切换">
       <SettingsRow label="外观模式">
         <Select<WindowAppearance>
           style={{ width: "100%" }}
@@ -58,7 +58,7 @@ export const WindowSection = ({
       )}
     </SettingsCard>
 
-    <SettingsCard title="工作区布局" description="默认值仅在首次使用或无历史折叠状态时生效">
+    <SettingsCard title="工作区布局" description="仅在你尚未手动调整过布局时应用以下默认值">
       <SettingsSwitchRow
         label="左侧栏默认折叠"
         checked={leftSidebarDefaultCollapsed}

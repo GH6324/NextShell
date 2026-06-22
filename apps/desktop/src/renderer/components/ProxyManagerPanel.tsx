@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Form, Input, InputNumber, Modal, Select, Typography, message } from "antd";
+import { App as AntdApp, Form, Input, InputNumber, Select, Typography } from "antd";
 import type { CloudSyncWorkspaceProfile, ProxyProfile } from "@nextshell/core";
 import { formatErrorMessage } from "../utils/errorMessage";
 
@@ -22,6 +22,7 @@ interface ProxyFormValues {
 }
 
 export const ProxyManagerPanel = ({ proxies, workspaces, onReload }: ProxyManagerPanelProps) => {
+  const { message, modal } = AntdApp.useApp();
   const [mode, setMode] = useState<"idle" | "new" | "edit">("idle");
   const [selectedProxyId, setSelectedProxyId] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -82,7 +83,7 @@ export const ProxyManagerPanel = ({ proxies, workspaces, onReload }: ProxyManage
 
   const handleDelete = useCallback(() => {
     if (!selectedProxyId) return;
-    Modal.confirm({
+    modal.confirm({
       title: "确认删除",
       content: `删除代理「${selectedProxy?.name ?? ""}」？如果仍有连接引用将无法删除。`,
       okText: "删除",

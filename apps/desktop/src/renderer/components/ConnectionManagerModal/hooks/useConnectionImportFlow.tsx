@@ -1,9 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
 import { App as AntdApp, Input } from "antd";
+import { CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX } from "@nextshell/shared";
 import { formatErrorMessage } from "../../../utils/errorMessage";
 import type { ImportPreviewBatch } from "../types";
 import {
-  buildNextShellImportPreviewQueue
+  buildNextShellImportPreviewQueue,
+  getImportFileName
 } from "../utils/nextshellImportPreview";
 
 interface UseConnectionImportFlowOptions {
@@ -80,6 +82,16 @@ export const useConnectionImportFlow = ({
     }
   }, [message]);
 
+  const showImportWarnings = useCallback((warnings: string[]) => {
+    const visibleWarnings = warnings.slice(0, 8);
+    visibleWarnings.forEach((item) => {
+      message.warning(formatErrorMessage(item, "部分文件导入失败"));
+    });
+    if (warnings.length > visibleWarnings.length) {
+      message.warning(`还有 ${warnings.length - visibleWarnings.length} 条导入警告未显示`);
+    }
+  }, [message]);
+
   const previewNextShellImportFiles = useCallback(async (filePaths: string[]) => {
     const { queue, warnings } = await buildNextShellImportPreviewQueue({
       filePaths,
@@ -88,13 +100,11 @@ export const useConnectionImportFlow = ({
     });
 
     if (warnings.length > 0) {
-      warnings.forEach((item) => {
-        message.warning(formatErrorMessage(item, "部分文件导入失败"));
-      });
+      showImportWarnings(warnings);
     }
 
     openImportPreviewQueue(queue, "未找到可导入的 NextShell 连接文件");
-  }, [message, openImportPreviewQueue, promptImportDecryptionPassword]);
+  }, [openImportPreviewQueue, promptImportDecryptionPassword, showImportWarnings]);
 
   const loadDroppedNextShellImportPreviewQueue = useCallback(async (filePaths: string[]) => {
     if (importingPreview) return;
@@ -143,9 +153,7 @@ export const useConnectionImportFlow = ({
       }
 
       if (warnings.length > 0) {
-        warnings.forEach((item) => {
-          message.warning(formatErrorMessage(item, "部分文件导入失败"));
-        });
+        showImportWarnings(warnings);
       }
 
       openImportPreviewQueue(queue, "未找到可导入的 FinalShell 连接文件");
@@ -154,7 +162,76 @@ export const useConnectionImportFlow = ({
     } finally {
       setImportingPreview(false);
     }
-  }, [importingPreview, message, openImportPreviewQueue, previewNextShellImportFiles]);
+  }, [importingPreview, message, openImportPreviewQueue, previewNextShellImportFiles, showImportWarnings]);
+
+  const loadDirectoryImportPreview = useCallback(async (source: "nextshell" | "finalshell") => {
+    if (importingPreview) return;
+    try {
+      setImportingPreview(true);
+      const dialogResult = await window.nextshell.dialog.openDirectory({
+        title: source === "nextshell" ? "选择 NextShell 导入文件夹" : "选择 FinalShell 配置文件夹"
+      });
+      if (dialogResult.canceled || !dialogResult.filePath) return;
+
+      const directoryName = getImportFileName(dialogResult.filePath) || dialogResult.filePath;
+      let decryptionPassword: string | undefined;
+      let handled = false;
+
+      while (!handled) {
+        try {
+          const result = await window.nextshell.connection.importDirectoryPreview({
+            directoryPath: dialogResult.filePath,
+            source,
+            decryptionPassword
+          });
+
+          if (result.warnings.length > 0) {
+            showImportWarnings(result.warnings);
+          }
+
+          if (result.entries.length === 0) {
+            message.warning(source === "nextshell"
+              ? "未找到可导入的 NextShell 连接文件"
+              : "未找到可导入的 FinalShell 连接文件");
+            handled = true;
+            continue;
+          }
+
+          const sourceLabel = source === "nextshell" ? "NextShell 文件夹" : "FinalShell 文件夹";
+          openImportPreviewQueue([{
+            fileName: `${sourceLabel}：${directoryName}`,
+            sourcePath: result.directoryPath,
+            sourceKind: "directory",
+            entries: result.entries
+          }], "未找到可导入的连接文件");
+          message.info(`已从 ${result.importedFiles} 个文件加载 ${result.entries.length} 个连接`);
+          handled = true;
+        } catch (error) {
+          const reason = formatErrorMessage(error, "导入预览失败");
+          if (source === "nextshell" && reason.startsWith(CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX)) {
+            const promptText =
+              reason.slice(CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX.length).trim()
+              || "该导入文件夹包含加密文件，请输入密码";
+            const inputPassword = await promptImportDecryptionPassword(directoryName, promptText);
+            if (!inputPassword) {
+              message.warning(`${directoryName}：用户取消解密，已跳过该文件夹`);
+              handled = true;
+              continue;
+            }
+            decryptionPassword = inputPassword;
+            continue;
+          }
+
+          message.error(`导入预览失败：${formatErrorMessage(reason, "请检查文件夹内容")}`);
+          handled = true;
+        }
+      }
+    } catch (error) {
+      message.error(`导入预览失败：${formatErrorMessage(error, "请检查文件夹内容")}`);
+    } finally {
+      setImportingPreview(false);
+    }
+  }, [importingPreview, message, openImportPreviewQueue, promptImportDecryptionPassword, showImportWarnings]);
 
   const handleImportNextShell = useCallback(async () => {
     await loadImportPreviewQueue("nextshell");
@@ -163,6 +240,14 @@ export const useConnectionImportFlow = ({
   const handleImportFinalShell = useCallback(async () => {
     await loadImportPreviewQueue("finalshell");
   }, [loadImportPreviewQueue]);
+
+  const handleImportNextShellDirectory = useCallback(async () => {
+    await loadDirectoryImportPreview("nextshell");
+  }, [loadDirectoryImportPreview]);
+
+  const handleImportFinalShellDirectory = useCallback(async () => {
+    await loadDirectoryImportPreview("finalshell");
+  }, [loadDirectoryImportPreview]);
 
   const handleImportDroppedNextShellFiles = useCallback(async (filePaths: string[]) => {
     await loadDroppedNextShellImportPreviewQueue(filePaths);
@@ -190,8 +275,10 @@ export const useConnectionImportFlow = ({
     currentImportBatch,
     handleImportBatchImported,
     handleImportFinalShell,
+    handleImportFinalShellDirectory,
     handleImportDroppedNextShellFiles,
     handleImportNextShell,
+    handleImportNextShellDirectory,
     importingPreview,
     importModalOpen,
     importPreviewQueue,

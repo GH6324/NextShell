@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Table, Typography, message } from "antd";
+import { App as AntdApp, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type {
   ConnectionProfile,
@@ -83,6 +83,7 @@ export const SystemStaticInfoPane = ({
   connectedTerminalSessionId,
   onOpenSettings
 }: SystemStaticInfoPaneProps) => {
+  const { message } = AntdApp.useApp();
   const connectionId = connection?.id;
   const monitorEnabled = Boolean(connection?.monitorSession);
   const cacheKey = buildSystemDiskCacheKey(connectionId, connectedTerminalSessionId);
@@ -306,7 +307,7 @@ export const SystemStaticInfoPane = ({
   if (!connected || !connectedTerminalSessionId) {
     return (
       <ConnectionPrompt
-        message="当前连接未建立会话，请双击左侧服务器建立 SSH 连接后查看系统信息。"
+        message="当前连接未建立会话，请先连接 SSH 终端后查看系统信息。"
         icon="ri-links-line"
       />
     );

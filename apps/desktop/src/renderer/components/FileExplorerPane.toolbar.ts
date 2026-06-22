@@ -1,22 +1,28 @@
 export type FileExplorerToolbarAction =
-  | "follow-cwd"
-  | "refresh"
   | "back"
   | "forward"
   | "parent"
-  | "mkdir"
+  | "refresh"
+  | "follow-cwd"
+  | "upload"
+  | "download"
+  | "new"
   | "rename"
-  | "delete";
+  | "delete"
+  | "paste";
 
 const VISIBLE_FILE_EXPLORER_TOOLBAR_ACTIONS: FileExplorerToolbarAction[] = [
-  "follow-cwd",
-  "refresh",
   "back",
   "forward",
   "parent",
-  "mkdir",
+  "refresh",
+  "follow-cwd",
+  "upload",
+  "download",
+  "new",
   "rename",
-  "delete"
+  "delete",
+  "paste"
 ];
 
 export const getVisibleFileExplorerToolbarActions = (): FileExplorerToolbarAction[] => [

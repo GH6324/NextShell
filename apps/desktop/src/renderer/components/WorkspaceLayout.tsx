@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { App as AntdApp, message, Tabs, Tag } from "antd";
+import { App as AntdApp, Tabs } from "antd";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
+import { sessionStatusLabel } from "../utils/sessionStatus";
 import type {
     ConnectionProfile,
     SessionDescriptor,
@@ -161,7 +162,7 @@ const SessionTabContextMenu = ({
                 <span className="session-tab-menu-icon">
                     <i className="ri-server-line" aria-hidden="true" />
                 </span>
-                新建服务器
+                打开连接管理器
             </button>
             <button
                 className="session-tab-menu-item"
@@ -278,7 +279,7 @@ export const WorkspaceLayout = ({
     onLiveEditPanelToggle,
     onSetBottomTab,
 }: WorkspaceLayoutProps) => {
-    const { modal } = AntdApp.useApp();
+    const { message, modal } = AntdApp.useApp();
     const windowPreferences = usePreferencesStore((state) => state.preferences.window);
     const showTracerouteTab = usePreferencesStore(
         (state) => state.preferences.traceroute.showTracerouteTab ?? true,
@@ -324,13 +325,13 @@ export const WorkspaceLayout = ({
     );
 
     const headerSessionText = useMemo(() => {
-        if (!activeSession) return "no session";
+        if (!activeSession) return "未选择会话";
         const baseLabel =
             activeSessionConnection?.name?.trim() ||
             activeSessionConnection?.host?.trim() ||
             activeSession.title ||
             "session";
-        return `${activeSession.status} ${baseLabel}`;
+        return `${sessionStatusLabel(activeSession.status)} ${baseLabel}`;
     }, [activeSession, activeSessionConnection]);
 
     const headerSessionClass = activeSession?.status ?? "disconnected";
@@ -412,7 +413,7 @@ export const WorkspaceLayout = ({
     }, [sidebarAddress]);
 
     const handleSessionTabContextMenu = useCallback(
-        (event: React.MouseEvent<HTMLButtonElement>, session: SessionDescriptor) => {
+        (event: React.MouseEvent<HTMLElement>, session: SessionDescriptor) => {
             if (!isTerminalSession(session)) {
                 return;
             }
@@ -566,7 +567,7 @@ export const WorkspaceLayout = ({
             },
             {
                 key: "commands",
-                label: "命令",
+                label: "命令库",
                 children: (
                     <CommandCenterPane
                         connection={activeConnection}
@@ -636,15 +637,17 @@ export const WorkspaceLayout = ({
                     {updateReleaseUrl ? (
                         <>
                             <a
+                                className="hdr-btn update"
                                 href={updateReleaseUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
+                                title="有可用更新，点击查看发布说明"
                                 onClick={(event) => {
                                     event.preventDefault();
                                     void handleOpenReleasePage();
                                 }}
                             >
-                                <Tag color="green">有更新</Tag>
+                                <i className="ri-download-cloud-line" aria-hidden="true" /> 有更新
                             </a>
                             <span className="hdr-sep" />
                         </>
@@ -700,7 +703,7 @@ export const WorkspaceLayout = ({
                                     <div className="sidebar-session-row">
                                         <span className="sidebar-session-dot" />
                                         <span className="sidebar-session-status">
-                                            {activeSession?.status ?? "disconnected"}
+                                            {sessionStatusLabel(activeSession?.status ?? "disconnected")}
                                         </span>
                                         <button
                                             type="button"
@@ -799,9 +802,15 @@ export const WorkspaceLayout = ({
                                                 const iconClass =
                                                     SESSION_TYPE_ICON[session.type ?? "terminal"];
                                                 return (
-                                                    <button
+                                                    <div
                                                         key={session.id}
-                                                        type="button"
+                                                        role="tab"
+                                                        tabIndex={
+                                                            session.id === activeSessionId ? 0 : -1
+                                                        }
+                                                        aria-selected={
+                                                            session.id === activeSessionId
+                                                        }
                                                         className={[
                                                             "session-tab",
                                                             session.id === activeSessionId
@@ -820,6 +829,21 @@ export const WorkspaceLayout = ({
                                                                 onSetActiveConnection(
                                                                     session.connectionId,
                                                                 );
+                                                            }
+                                                        }}
+                                                        onKeyDown={(event) => {
+                                                            if (
+                                                                event.key === "Enter" ||
+                                                                event.key === " "
+                                                            ) {
+                                                                event.preventDefault();
+                                                                setSessionContextMenu(null);
+                                                                onSetActiveSession(session.id);
+                                                                if (session.connectionId) {
+                                                                    onSetActiveConnection(
+                                                                        session.connectionId,
+                                                                    );
+                                                                }
                                                             }
                                                         }}
                                                         onContextMenu={(event) =>
@@ -858,49 +882,27 @@ export const WorkspaceLayout = ({
                                                         </span>
                                                         {isTerminal &&
                                                         session.status === "disconnected" ? (
-                                                            <span
+                                                            <button
+                                                                type="button"
                                                                 className="tab-action tab-reconnect"
-                                                                title="重新连接"
+                                                                aria-label={`重新连接 ${session.title}`}
                                                                 onClick={(event) => {
                                                                     event.stopPropagation();
                                                                     void onReconnectSession(
                                                                         session.id,
                                                                     );
                                                                 }}
-                                                                role="button"
-                                                                tabIndex={0}
-                                                                onKeyDown={(event) => {
-                                                                    if (
-                                                                        event.key === "Enter" ||
-                                                                        event.key === " "
-                                                                    ) {
-                                                                        event.preventDefault();
-                                                                        void onReconnectSession(
-                                                                            session.id,
-                                                                        );
-                                                                    }
-                                                                }}
                                                             >
                                                                 <i
                                                                     className="ri-refresh-line"
                                                                     aria-hidden="true"
                                                                 />
-                                                            </span>
+                                                            </button>
                                                         ) : null}
-                                                        {isTerminal ? (
-                                                            <span
-                                                                className="tab-action tab-drag"
-                                                                title="拖拽重排 / 右键菜单"
-                                                            >
-                                                                <i
-                                                                    className="ri-drag-move-2-line"
-                                                                    aria-hidden="true"
-                                                                />
-                                                            </span>
-                                                        ) : null}
-                                                        <span
+                                                        <button
+                                                            type="button"
                                                             className="tab-action tab-close"
-                                                            title="关闭会话"
+                                                            aria-label={`关闭 ${session.title}`}
                                                             onClick={(event) => {
                                                                 event.stopPropagation();
                                                                 if (isTerminal) {
@@ -909,32 +911,13 @@ export const WorkspaceLayout = ({
                                                                     onCloseMonitorTab(session.id);
                                                                 }
                                                             }}
-                                                            role="button"
-                                                            tabIndex={0}
-                                                            onKeyDown={(event) => {
-                                                                if (
-                                                                    event.key === "Enter" ||
-                                                                    event.key === " "
-                                                                ) {
-                                                                    event.preventDefault();
-                                                                    if (isTerminal) {
-                                                                        void onCloseSession(
-                                                                            session.id,
-                                                                        );
-                                                                    } else {
-                                                                        onCloseMonitorTab(
-                                                                            session.id,
-                                                                        );
-                                                                    }
-                                                                }
-                                                            }}
                                                         >
                                                             <i
                                                                 className="ri-close-line"
                                                                 aria-hidden="true"
                                                             />
-                                                        </span>
-                                                    </button>
+                                                        </button>
+                                                    </div>
                                                 );
                                             })}
                                         </div>

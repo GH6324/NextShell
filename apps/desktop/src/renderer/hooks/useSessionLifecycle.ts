@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { ConnectionProfile, SessionDescriptor } from "@nextshell/core";
 import type { SessionAuthOverrideInput } from "@nextshell/shared";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
@@ -32,6 +32,7 @@ const getSessionConnectionId = (session?: SessionDescriptor): string | undefined
   (session as LocalAwareSessionDescriptor | undefined)?.connectionId;
 
 export function useSessionLifecycle() {
+  const { message } = AntdApp.useApp();
   const connections = useWorkspaceStore((state) => state.connections);
   const sessions = useWorkspaceStore((state) => state.sessions);
   const activeSessionId = useWorkspaceStore((state) => state.activeSessionId);

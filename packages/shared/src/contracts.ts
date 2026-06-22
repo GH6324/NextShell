@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_APP_PREFERENCES } from "../../core/src/index";
+import { DEFAULT_APP_PREFERENCES, type ConnectionImportEntry } from "../../core/src/index";
 
 const trimToOptionalString = (value: unknown): unknown => {
   if (typeof value !== "string") {
@@ -88,6 +88,40 @@ export const connectionUpsertSchema = z.object({
 
 export const connectionRemoveSchema = z.object({
   id: z.string().uuid()
+});
+
+const connectionBatchAuthTargetSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("connections"),
+    connectionIds: z.array(z.string().uuid()).min(1)
+  }),
+  z.object({
+    type: z.literal("group"),
+    groupPath: z.string().trim().min(1)
+  })
+]);
+
+const connectionBatchPasswordAuthSchema = z.object({
+  authType: z.enum(["password", "interactive"]),
+  password: z.preprocess(trimToOptionalString, z.string().min(1))
+});
+
+const connectionBatchPrivateKeyAuthSchema = z.object({
+  authType: z.literal("privateKey"),
+  sshKeyId: z.string().uuid()
+});
+
+const connectionBatchAgentAuthSchema = z.object({
+  authType: z.literal("agent")
+});
+
+export const connectionBatchAuthUpdateSchema = z.object({
+  target: connectionBatchAuthTargetSchema,
+  auth: z.discriminatedUnion("authType", [
+    connectionBatchPasswordAuthSchema,
+    connectionBatchPrivateKeyAuthSchema,
+    connectionBatchAgentAuthSchema
+  ])
 });
 
 export const sessionAuthOverrideSchema = z.object({
@@ -596,7 +630,7 @@ export const backupRestoreSchema = z.object({
 });
 
 export const backupPasswordSetSchema = z.object({
-  password: z.string().min(6, "云存档密码至少6个字符"),
+  password: z.string().min(6, "数据备份密码至少6个字符"),
   confirmPassword: z.string().min(1)
 }).refine((data) => data.password === data.confirmPassword, {
   message: "两次输入的密码不一致",
@@ -710,6 +744,14 @@ export const connectionImportFinalShellPreviewSchema = z.object({
   filePath: z.string().min(1)
 });
 
+export const connectionImportSourceSchema = z.enum(["nextshell", "finalshell"]);
+
+export const connectionImportDirectoryPreviewSchema = z.object({
+  directoryPath: z.string().min(1),
+  source: connectionImportSourceSchema,
+  decryptionPassword: z.preprocess(trimToOptionalString, z.string().min(1).optional())
+});
+
 export const connectionImportExecuteSchema = z.object({
   entries: z.array(z.object({
     name: z.string().min(1),
@@ -735,6 +777,7 @@ export const connectionImportExecuteSchema = z.object({
 export type ConnectionListQueryInput = z.infer<typeof connectionListQuerySchema>;
 export type ConnectionUpsertInput = z.infer<typeof connectionUpsertSchema>;
 export type ConnectionRemoveInput = z.infer<typeof connectionRemoveSchema>;
+export type ConnectionBatchAuthUpdateInput = z.infer<typeof connectionBatchAuthUpdateSchema>;
 export type SessionOpenInput = z.infer<typeof sessionOpenSchema>;
 export type SessionAuthOverrideInput = z.infer<typeof sessionAuthOverrideSchema>;
 export type SessionWriteInput = z.infer<typeof sessionWriteSchema>;
@@ -819,6 +862,8 @@ export type ConnectionExportBatchInput = z.infer<typeof connectionExportBatchSch
 export type ConnectionRevealPasswordInput = z.infer<typeof connectionRevealPasswordSchema>;
 export type ConnectionImportPreviewInput = z.infer<typeof connectionImportPreviewSchema>;
 export type ConnectionImportFinalShellPreviewInput = z.infer<typeof connectionImportFinalShellPreviewSchema>;
+export type ConnectionImportSource = z.infer<typeof connectionImportSourceSchema>;
+export type ConnectionImportDirectoryPreviewInput = z.infer<typeof connectionImportDirectoryPreviewSchema>;
 export type ConnectionImportExecuteInput = z.infer<typeof connectionImportExecuteSchema>;
 
 export interface ConnectionExportBatchFileItem {
@@ -834,6 +879,32 @@ export interface ConnectionExportBatchResult {
   encrypted: boolean;
   directoryPath: string;
   files: ConnectionExportBatchFileItem[];
+  errors: string[];
+}
+
+export interface ConnectionImportDirectoryPreviewFile {
+  filePath: string;
+  fileName: string;
+  relativePath: string;
+  groupPath: string;
+  entries: ConnectionImportEntry[];
+}
+
+export interface ConnectionImportDirectoryPreviewResult {
+  directoryPath: string;
+  source: ConnectionImportSource;
+  totalFiles: number;
+  importedFiles: number;
+  skippedFiles: number;
+  entries: ConnectionImportEntry[];
+  files: ConnectionImportDirectoryPreviewFile[];
+  warnings: string[];
+}
+
+export interface ConnectionBatchAuthUpdateResult {
+  total: number;
+  updated: number;
+  failed: number;
   errors: string[];
 }
 
@@ -950,14 +1021,11 @@ export const cloudSyncSyncNowSchema = z.object({
 
 export const cloudSyncListConflictsSchema = z.object({});
 
-export const cloudSyncHistorySchema = z.object({
-  workspaceId: z.string().trim().min(1),
-  limit: z.coerce.number().int().min(1).max(200).optional()
-});
-
-export const cloudSyncRestoreCommitSchema = z.object({
-  workspaceId: z.string().trim().min(1),
-  commitId: z.string().trim().min(1)
+export const cloudSyncTestConnectionSchema = z.object({
+  apiBaseUrl: z.string().trim().min(1).max(500),
+  workspaceName: z.string().trim().min(1).max(200),
+  workspacePassword: z.string().min(1).max(200),
+  ignoreTlsErrors: z.boolean().optional(),
 });
 
 export const cloudSyncResolveConflictSchema = z.object({
@@ -977,8 +1045,7 @@ export type CloudSyncWorkspaceParseTokenInput = z.infer<typeof cloudSyncWorkspac
 export type CloudSyncStatusInput = z.infer<typeof cloudSyncStatusSchema>;
 export type CloudSyncSyncNowInput = z.infer<typeof cloudSyncSyncNowSchema>;
 export type CloudSyncListConflictsInput = z.infer<typeof cloudSyncListConflictsSchema>;
-export type CloudSyncHistoryInput = z.infer<typeof cloudSyncHistorySchema>;
-export type CloudSyncRestoreCommitInput = z.infer<typeof cloudSyncRestoreCommitSchema>;
+export type CloudSyncTestConnectionInput = z.infer<typeof cloudSyncTestConnectionSchema>;
 export type CloudSyncResolveConflictInput = z.infer<typeof cloudSyncResolveConflictSchema>;
 
 // ─── Resource Operations ─────────────────────────────────────────────────

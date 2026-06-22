@@ -1,10 +1,11 @@
 import { useCallback } from "react";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
 import type { ConnectionUpsertInput } from "@nextshell/shared";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { formatErrorMessage } from "../utils/errorMessage";
 
 export function useConnectionManager() {
+  const { message } = AntdApp.useApp();
   const {
     connections,
     activeConnectionId,

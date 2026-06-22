@@ -1,5 +1,5 @@
-import { Skeleton, Spin } from "antd";
-import type { CSSProperties, ReactNode } from "react";
+import { Skeleton } from "antd";
+import type { CSSProperties } from "react";
 
 // ── PanelSkeleton ─────────────────────────────────────────
 // A full-panel skeleton placeholder for loading states.
@@ -78,25 +78,6 @@ export const TableSkeleton = ({ rows = 5, columns = 4, className }: TableSkeleto
         </div>
       ))}
     </div>
-  );
-};
-
-// ── InlineSpin ─────────────────────────────────────────────
-// A small inline spinner with optional text.
-
-interface InlineSpinProps {
-  text?: string;
-  size?: "small" | "default";
-  children?: ReactNode;
-}
-
-export const InlineSpin = ({ text, size = "small", children }: InlineSpinProps) => {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <Spin size={size} />
-      {text ? <span style={{ fontSize: 12, color: "var(--t3)" }}>{text}</span> : null}
-      {children}
-    </span>
   );
 };
 
