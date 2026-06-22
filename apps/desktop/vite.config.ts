@@ -68,7 +68,7 @@ export default defineConfig({
             alias: aliases
           },
           build: {
-            rollupOptions: {
+            rolldownOptions: {
               output: {
                 entryFileNames: "main/[name].js",
                 chunkFileNames: "main/[name].js",
@@ -102,7 +102,7 @@ export default defineConfig({
             alias: aliases
           },
           build: {
-            rollupOptions: {
+            rolldownOptions: {
               output: {
                 entryFileNames: "preload/[name].mjs",
                 chunkFileNames: "preload/[name].mjs",
