@@ -1,6 +1,6 @@
 # NextShell
 
-NextShell 是一个基于 Electron + React + TypeScript 的桌面运维客户端，使用 Bun Workspace 管理应用与共享包。
+NextShell 是一个基于 Electron + React + TypeScript 的桌面运维客户端，使用 pnpm Workspace 管理应用与共享包。
 
 ## 功能概览
 
@@ -15,7 +15,7 @@ NextShell 是一个基于 Electron + React + TypeScript 的桌面运维客户端
 
 ## 技术架构
 
-- Monorepo：Bun Workspace
+- Monorepo：pnpm Workspace
 - 桌面端：Electron（main/preload/renderer）+ React + Vite + Tailwind CSS
 - 类型与契约：TypeScript + Zod
 - 原生依赖：`better-sqlite3`、`keytar`、`ssh2`
@@ -36,39 +36,46 @@ NextShell 是一个基于 Electron + React + TypeScript 的桌面运维客户端
 
 ## 环境要求
 
-- Bun `1.3.4`（见 `.bun-version`）
+- Node.js `24.x`
+- pnpm `11.15.1`（由根目录 `packageManager` 固定）
 - macOS 或 Windows（CI 默认构建这两个平台）
 - 建议安装可用的本地构建工具链，用于编译/重建原生模块
 
 ## 快速开始
 
 ```bash
-bun run setup
-bun run dev
+pnpm run setup
+pnpm run dev
 ```
 
-`bun run setup` 会执行依赖安装并重建原生模块，适合首次拉取仓库后直接使用。
+`pnpm run setup` 会按锁文件安装依赖并重建原生模块，适合首次拉取仓库后直接使用。
 
 ## 常用命令
 
-| 命令                                                       | 说明                         |
-| ---------------------------------------------------------- | ---------------------------- |
-| `bun run setup`                                            | 安装依赖并执行原生模块重建   |
-| `bun run dev`                                              | 启动桌面应用开发模式         |
-| `bun run build`                                            | 类型检查并构建 renderer/main |
-| `bun run typecheck`                                        | 仅执行 TypeScript `--noEmit` |
-| `bun test`                                                 | 运行工作区 `*.test.ts`       |
-| `bun run rebuild:native`                                   | 仅重建原生模块               |
-| `bun run --cwd apps/desktop dist -- --mac --publish never` | 本地打 macOS 包              |
-| `bun run --cwd apps/desktop dist -- --win --publish never` | 本地打 Windows 包            |
+| 命令                                                                 | 说明                             |
+| -------------------------------------------------------------------- | -------------------------------- |
+| `pnpm run setup`                                                     | 安装依赖并执行原生模块重建       |
+| `pnpm run dev`                                                       | 启动桌面应用开发模式             |
+| `pnpm run build`                                                     | 类型检查并构建 renderer/main     |
+| `pnpm run typecheck`                                                 | 仅执行 TypeScript `--noEmit`     |
+| `pnpm run test`                                                      | 运行 Vitest 单元测试             |
+| `pnpm run test:node`                                                 | 运行 Node.js 集成测试            |
+| `pnpm run rebuild:native`                                            | 仅重建原生模块                   |
+| `pnpm run rebuild:native:node`                                       | 将共享原生模块恢复为 Node.js ABI |
+| `pnpm --filter @nextshell/desktop run dist -- --mac --publish never` | 本地打 macOS 包                  |
+| `pnpm --filter @nextshell/desktop run dist -- --win --publish never` | 本地打 Windows 包                |
 
 ## 原生模块与 ABI 排错
 
 若出现 `NODE_MODULE_VERSION` 不匹配（常见于 `better-sqlite3` / `keytar` / `ssh2`）：
 
-1. 执行 `bun run rebuild:native`
-2. 若仍失败，执行 `bun run setup`
-3. 在 Bun / Electron 版本变化后再次执行 `bun run setup`
+1. 执行 `pnpm run rebuild:native`
+2. 若仍失败，执行 `pnpm run setup`
+3. 在 Node.js / Electron 版本变化后再次执行 `pnpm run setup`
+
+Electron 与独立 Node.js 进程使用不同 ABI。`pnpm run dev` 会先切换到 Electron ABI，
+`pnpm run test:node` 会先恢复 Node.js ABI；手动运行 MCP 产物前可执行
+`pnpm run rebuild:native:node`。
 
 若本地终端打开时报错 `posix_spawnp failed`：
 
@@ -78,9 +85,9 @@ bun run dev
 
 建议按以下顺序恢复：
 
-1. 执行 `bun run rebuild:native`
-2. 若仍失败，执行 `bun run setup`
-3. 若问题仍在，删除依赖后重新安装，再重复执行 `bun run setup`
+1. 执行 `pnpm run rebuild:native`
+2. 若仍失败，执行 `pnpm run setup`
+3. 若问题仍在，删除依赖后重新安装，再重复执行 `pnpm run setup`
 
 ## 版本与发布
 
@@ -101,8 +108,9 @@ bun run dev
 提交 PR 前建议至少运行：
 
 ```bash
-bun run typecheck
-bun test
+pnpm run typecheck
+pnpm run test
+pnpm run test:node
 ```
 
 ## 相关文档

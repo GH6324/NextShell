@@ -19,8 +19,8 @@
 ## 本地运行
 
 ```bash
-bun install
-bun run --cwd apps/mcp-ssh-proxy build
+pnpm install
+pnpm --filter @nextshell/mcp-ssh-proxy run build
 node /absolute/path/to/apps/mcp-ssh-proxy/dist/index.js
 ```
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 describe("cloud sync navigation placement", () => {
   test("shows cloud sync in connection manager after proxies", async () => {

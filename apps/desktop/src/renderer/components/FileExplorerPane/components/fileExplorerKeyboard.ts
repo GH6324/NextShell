@@ -129,11 +129,8 @@ export const moveFocusIndex = (currentIndex: number, delta: number, rowCount: nu
 };
 
 export type FileExplorerOpenAction =
-  | { type: "navigate"; path: string }
-  | { type: "edit"; entry: RemoteFileEntry };
+  { type: "navigate"; path: string } | { type: "edit"; entry: RemoteFileEntry };
 
 // 打开一行的行为(Enter 与双击共用):目录进入,文件/链接交给远程编辑
 export const resolveEntryOpenAction = (entry: RemoteFileEntry): FileExplorerOpenAction =>
-  entry.type === "directory"
-    ? { type: "navigate", path: entry.path }
-    : { type: "edit", entry };
+  entry.type === "directory" ? { type: "navigate", path: entry.path } : { type: "edit", entry };

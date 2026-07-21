@@ -6,5 +6,5 @@
 **/*.tsbuildinfo
 .claude/**
 docs/**
-bun.lock
+pnpm-lock.yaml
 IPC_OPTIMIZATION_PLAN.md

@@ -10,12 +10,12 @@ export const meta = {
 const CTX = `
 ## 仓库背景(务必先读,避免重复劳动)
 
-仓库:/Users/ztwang/GolandProjects/nextshell — NextShell,Electron 桌面 SSH/SFTP 客户端,Bun workspace monorepo。
+仓库:/Users/ztwang/repo/nextshell — NextShell,Electron 桌面 SSH/SFTP 客户端,pnpm workspace monorepo。
 - 主进程 apps/desktop/src/main/(ssh2、better-sqlite3、keytar;服务在 ServiceContainer,IPC 经 src/main/ipc/registry.ts 表驱动注册 + register.ts 通用循环,Zod 校验)
 - preload apps/desktop/src/preload/(contextBridge 暴露 window.nextshell)
 - 渲染层 apps/desktop/src/renderer/(React 19 + Ant Design + Zustand,中文界面,深/浅主题)
 - packages/shared 是三进程契约(channels.ts / contracts.ts / api.ts);packages/core|storage|ssh|security|terminal|ui-kit
-- 类型检查门禁:bun run typecheck。测试是散落的 *.test.ts,用 bun 单文件跑。无集成 test runner。
+- 类型检查门禁:pnpm run typecheck。单元测试由 Vitest 聚合,Node 集成测试由 pnpm run test:node 聚合。
 
 ## 已完成的既往工作(不要再提这些!)
 
@@ -111,7 +111,7 @@ const DIMENSIONS = [
 终端数据热路径已优化过(见既往工作,不要再提)。找**新的**性能改进点,重点方向(不限于):
 
 1. React 渲染性能:Zustand 订阅粒度(是否有组件订阅整个 store 导致每帧重渲染)、列表虚拟化(SFTP 大目录、传输队列、命令历史)、昂贵组件的 memo 缺失、context 导致的级联重渲染。用 grep 找 useWorkspaceStore() 无 selector 的调用。
-2. 启动性能:vite 产物是否分包、重量级依赖(antd、xterm、编辑器)是否懒加载、preload/main 的启动串行点。可以跑 bun run build 看产物体积(允许构建,但不要改代码)。
+2. 启动性能:vite 产物是否分包、重量级依赖(antd、xterm、编辑器)是否懒加载、preload/main 的启动串行点。可以跑 pnpm run build 看产物体积(允许构建,但不要改代码)。
 3. 轮询与定时器:各处 setInterval/轮询的频率、可见性感知是否完备(pollingScheduler 是否被所有轮询方使用)。
 4. 主进程:better-sqlite3 查询模式(N+1、缺索引、每次全表)、keytar 调用频率、SFTP 目录列举的排序/序列化。
 5. 内存:事件监听器累积、Map/数组只增不减、闭包持有大 buffer。
@@ -127,11 +127,11 @@ const DIMENSIONS = [
 
 1. 构建配置:apps/desktop 的 vite/electron 构建配置(electron.vite.config? vite.config?)、tsconfig 体系(有无 project references、增量编译)、产物体积与分包、sourcemap 策略。
 2. 打包发布:electron-builder 配置(asar、签名、目标平台、文件过滤是否把不必要的东西打进产物 — 常见坑:整个 node_modules、未用的 locale、map 文件)、dist 产物大小。
-3. 开发体验:bun run dev 的启动链路、typecheck 覆盖范围(是否所有 packages 都被检查)、测试运行方式(散落 *.test.ts 无统一 runner — 评估加一个 bun test 聚合脚本的价值)、lint/format 是否缺失。
+3. 开发体验:pnpm run dev 的启动链路、typecheck 覆盖范围(是否所有 packages 都被检查)、Vitest 与 Node 集成测试边界、lint/format 是否缺失。
 4. CI:.github/workflows 现状(b5b86a7 提到过 CI),typecheck/test 是否都在 CI 里跑。
-5. 依赖健康:package.json 里未使用的依赖、重复功能依赖、依赖放错位置(devDependencies vs dependencies — 对 electron-builder 打包体积有直接影响)、bun.lock 与 workspace 协议。
+5. 依赖健康:package.json 里未使用的依赖、重复功能依赖、依赖放错位置(devDependencies vs dependencies — 对 electron-builder 打包体积有直接影响)、pnpm-lock.yaml 与 workspace 协议。
 
-允许跑只读命令(ls、cat、bun run typecheck、du 等)和 bun run build 观察产物,但不要修改任何文件。每条给出证据与量化收益。输出最多 8 条,按价值排序。`,
+允许跑只读命令(ls、cat、pnpm run typecheck、du 等)和 pnpm run build 观察产物,但不要修改任何文件。每条给出证据与量化收益。输出最多 8 条,按价值排序。`,
   },
 ]
 

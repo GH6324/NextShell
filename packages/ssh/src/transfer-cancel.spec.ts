@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { TransferCancelledError, isTransferCancelledError, runWithAbort } from "./index";
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 5));

@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
+    "@types/node": "^24.13.2",
     "@types/ssh2": "^1.15.5",
     "typescript": "^5.9.3"
   }

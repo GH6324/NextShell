@@ -1,0 +1,13 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+allowBuilds:
+  better-sqlite3: true
+  cpu-features: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  keytar: true
+  node-pty: true
+  ssh2: true

@@ -10,6 +10,7 @@ dist-electron
 # caches
 .vite
 .cache
+.pnpm-store
 
 # logs
 *.log

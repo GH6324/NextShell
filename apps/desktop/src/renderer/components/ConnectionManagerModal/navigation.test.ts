@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { MANAGER_TABS } from "./constants";
+import settingsConstantsSource from "../settings-center/constants.ts?raw";
+import settingsTypesSource from "../settings-center/types.ts?raw";
 
 test("connection manager exposes the expected tabs in order", () => {
   expect(MANAGER_TABS.map((tab) => tab.key)).toEqual([
@@ -17,14 +19,7 @@ test("connection manager exposes the expected tabs in order", () => {
   });
 });
 
-test("settings center source no longer includes recycle bin section", async () => {
-  const settingsConstantsSource = await Bun.file(
-    new URL("../settings-center/constants.ts", import.meta.url)
-  ).text();
-  const settingsTypesSource = await Bun.file(
-    new URL("../settings-center/types.ts", import.meta.url)
-  ).text();
-
+test("settings center source no longer includes recycle bin section", () => {
   expect(settingsConstantsSource.includes('"recycleBin"')).toBe(false);
   expect(settingsTypesSource.includes('| "recycleBin"')).toBe(false);
 });

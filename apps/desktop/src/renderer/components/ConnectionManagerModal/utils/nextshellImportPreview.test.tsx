@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { CONNECTION_IMPORT_DECRYPT_PROMPT_PREFIX } from "../../../../../../../packages/shared/src/index";
 import { buildNextShellImportPreviewQueue, getImportFileName } from "./nextshellImportPreview";
 

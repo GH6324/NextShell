@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { resolveDeviceKey, type DeviceKeyDbAccess, type DeviceKeyStore } from "./index";
 
 const FIXED_KEY = "a".repeat(64);

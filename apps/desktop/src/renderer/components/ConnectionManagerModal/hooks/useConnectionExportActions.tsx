@@ -195,13 +195,7 @@ export const useConnectionExportActions = ({
     } catch (error) {
       message.error(`导出失败：${formatErrorMessage(error, "请稍后重试")}`);
     }
-  }, [
-    connections,
-    message,
-    promptExportEncryptionPassword,
-    promptExportMode,
-    selectedIds
-  ]);
+  }, [connections, message, promptExportEncryptionPassword, promptExportMode, selectedIds]);
 
   return {
     handleExportAll,

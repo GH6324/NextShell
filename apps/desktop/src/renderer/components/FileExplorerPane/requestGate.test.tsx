@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { createRemoteExplorerRequestGate } from "./requestGate";
 
 describe("remote explorer request gate", () => {

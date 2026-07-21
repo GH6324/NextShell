@@ -207,8 +207,8 @@ function isLowSurrogate(code: number): boolean {
  * becomes one 4-byte code point instead of two individually measured lone
  * halves. The delta is measured on just the two boundary code units with the
  * same Buffer.byteLength used everywhere else, so the incremental accounting
- * matches the runtime's own lone-surrogate measurement exactly (Node reports
- * a lone half as 3 bytes, Bun as 2 — hardcoding either would drift).
+ * matches the Node/Electron runtime's own lone-surrogate measurement exactly
+ * without hardcoding the byte length of malformed UTF-16 input.
  */
 function surrogateBoundaryDelta(left: string, right: string): number {
   if (left.length === 0 || right.length === 0) {

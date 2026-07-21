@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { RemoteFileEntry } from "@nextshell/core";
 import {
   DEFAULT_FILE_EXPLORER_SORT,
@@ -89,24 +89,22 @@ describe("moveFocusIndex", () => {
 });
 
 describe("sortRemoteFileEntries", () => {
-  const files = [entry("b.txt", { size: 2 }), entry("a.txt", { size: 1 }), entry("c.txt", { size: 3 })];
+  const files = [
+    entry("b.txt", { size: 2 }),
+    entry("a.txt", { size: 1 }),
+    entry("c.txt", { size: 3 })
+  ];
 
   test("sorts by the active column in both directions", () => {
-    expect(sortRemoteFileEntries(files, { key: "name", order: "ascend" }).map((f) => f.name)).toEqual([
-      "a.txt",
-      "b.txt",
-      "c.txt"
-    ]);
-    expect(sortRemoteFileEntries(files, { key: "name", order: "descend" }).map((f) => f.name)).toEqual([
-      "c.txt",
-      "b.txt",
-      "a.txt"
-    ]);
-    expect(sortRemoteFileEntries(files, { key: "size", order: "ascend" }).map((f) => f.name)).toEqual([
-      "a.txt",
-      "b.txt",
-      "c.txt"
-    ]);
+    expect(
+      sortRemoteFileEntries(files, { key: "name", order: "ascend" }).map((f) => f.name)
+    ).toEqual(["a.txt", "b.txt", "c.txt"]);
+    expect(
+      sortRemoteFileEntries(files, { key: "name", order: "descend" }).map((f) => f.name)
+    ).toEqual(["c.txt", "b.txt", "a.txt"]);
+    expect(
+      sortRemoteFileEntries(files, { key: "size", order: "ascend" }).map((f) => f.name)
+    ).toEqual(["a.txt", "b.txt", "c.txt"]);
   });
 
   test("keeps the original relative order for ties, matching antd getSortData", () => {
@@ -115,15 +113,17 @@ describe("sortRemoteFileEntries", () => {
       entry("second", { size: 1 }),
       entry("third", { size: 1 })
     ];
-    expect(sortRemoteFileEntries(tied, { key: "size", order: "descend" }).map((f) => f.name)).toEqual([
-      "first",
-      "second",
-      "third"
-    ]);
+    expect(
+      sortRemoteFileEntries(tied, { key: "size", order: "descend" }).map((f) => f.name)
+    ).toEqual(["first", "second", "third"]);
   });
 
   test("returns the original order when sorting is cleared", () => {
-    expect(sortRemoteFileEntries(files, null).map((f) => f.name)).toEqual(["b.txt", "a.txt", "c.txt"]);
+    expect(sortRemoteFileEntries(files, null).map((f) => f.name)).toEqual([
+      "b.txt",
+      "a.txt",
+      "c.txt"
+    ]);
   });
 
   test("does not mutate the input array", () => {

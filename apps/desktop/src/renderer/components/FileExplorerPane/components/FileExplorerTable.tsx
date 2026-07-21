@@ -92,7 +92,11 @@ export const FileExplorerTable = ({
       if (entry) openEntry(entry);
       return;
     }
-    const nextIndex = moveFocusIndex(focusedIndex, action === "moveUp" ? -1 : 1, displayFiles.length);
+    const nextIndex = moveFocusIndex(
+      focusedIndex,
+      action === "moveUp" ? -1 : 1,
+      displayFiles.length
+    );
     const next = nextIndex >= 0 ? displayFiles[nextIndex] : undefined;
     if (next) setFocusedPath(next.path);
   };

@@ -1,4 +1,4 @@
-// Static shape test for the IPC invoke registry (run with: bun registry.test.ts).
+// Static shape test for the IPC invoke registry (run with: pnpm exec vitest run registry.test.ts).
 // Verifies the table itself — no Electron runtime is involved.
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";

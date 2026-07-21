@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { CloudSyncWorkspaceProfile, ConnectionProfile } from "@nextshell/core";
 import { CONNECTION_ZONES } from "@nextshell/shared";
 import {

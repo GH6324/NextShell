@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { ConnectionExportFile } from "@nextshell/core";
 import { parseFinalShellImport, parseNextShellImport } from "./import-export";
 

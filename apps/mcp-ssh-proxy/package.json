@@ -9,7 +9,7 @@
     "nextshell-mcp-ssh-proxy": "./dist/index.js"
   },
   "scripts": {
-    "build": "mkdir -p dist && bun build ./src/index.ts --outfile dist/index.js --target node --format esm --external @modelcontextprotocol/sdk --external zod --external better-sqlite3 --external keytar --external ssh2 --external socks && node ./scripts/write-release-package-json.mjs",
+    "build": "esbuild ./src/index.ts --bundle --outfile=dist/index.js --platform=node --format=esm --target=node24 --external:@modelcontextprotocol/sdk --external:zod --external:better-sqlite3 --external:keytar --external:ssh2 --external:socks && node ./scripts/write-release-package-json.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test src/**/*.test.ts"
   },
@@ -26,6 +26,7 @@
   "devDependencies": {
     "@types/node": "^24.13.2",
     "@types/ssh2": "^1.15.5",
+    "esbuild": "^0.28.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }
