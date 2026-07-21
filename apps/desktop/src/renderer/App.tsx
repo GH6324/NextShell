@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties
+} from "react";
 import { App as AntdApp } from "antd";
 import type { SessionDescriptor } from "@nextshell/core";
 import type { ConnectionUpsertInput } from "@nextshell/shared";
-import { ConnectionManagerModal } from "./components/ConnectionManagerModal";
-import { SettingsCenterModal } from "./components/SettingsCenterModal";
 import { WorkspaceLayout } from "./components/WorkspaceLayout";
 import { AppSkeleton } from "./components/LoadingSkeletons";
 import { useConnectionManager } from "./hooks/useConnectionManager";
@@ -26,6 +32,18 @@ import {
 const isTerminalSession = (session: SessionDescriptor): boolean =>
   !session.type || session.type === "terminal";
 
+// 连接管理器/设置中心体积较大(@dnd-kit、大表单),按需加载,首次打开时才拉取 chunk
+const LazyConnectionManagerModal = lazy(() =>
+  import("./components/ConnectionManagerModal").then((module) => ({
+    default: module.ConnectionManagerModal
+  }))
+);
+const LazySettingsCenterModal = lazy(() =>
+  import("./components/SettingsCenterModal").then((module) => ({
+    default: module.SettingsCenterModal
+  }))
+);
+
 type LocalAwareSessionDescriptor = SessionDescriptor & {
   target?: "remote" | "local";
   connectionId?: string;
@@ -38,7 +56,7 @@ const getSessionConnectionId = (session?: SessionDescriptor): string | undefined
   (session as LocalAwareSessionDescriptor | undefined)?.connectionId;
 
 export const App = () => {
-  const { message } = AntdApp.useApp();
+  const { message, modal } = AntdApp.useApp();
   const connections = useWorkspaceStore((state) => state.connections);
   const sshKeys = useWorkspaceStore((state) => state.sshKeys);
   const proxies = useWorkspaceStore((state) => state.proxies);
@@ -64,6 +82,8 @@ export const App = () => {
   const [managerOpen, setManagerOpen] = useState(false);
   const [managerFocusConnectionId, setManagerFocusConnectionId] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [managerModalLoaded, setManagerModalLoaded] = useState(false);
+  const [settingsModalLoaded, setSettingsModalLoaded] = useState(false);
   const [transferPanelCollapsed, setTransferPanelCollapsed] = useState(false);
   const [liveEditPanelCollapsed, setLiveEditPanelCollapsed] = useState(false);
 
@@ -244,6 +264,12 @@ export const App = () => {
     });
   }, [refreshSyncResources, initializePreferences]);
 
+  // 懒加载的 Modal 在首次打开后才挂载,之后保持挂载以保留关闭动画与内部状态
+  useEffect(() => {
+    if (managerOpen) setManagerModalLoaded(true);
+    if (settingsOpen) setSettingsModalLoaded(true);
+  }, [managerOpen, settingsOpen]);
+
   useEffect(() => {
     const unsubscribe = window.nextshell.cloudSync.onApplied(() => {
       void refreshSyncResources();
@@ -382,11 +408,26 @@ export const App = () => {
       const target = sessions.find((s) => s.id === sessionId);
       if (!target) return;
       if (target.type === "editor") {
+        const editorTab = useEditorTabStore.getState().getTab(sessionId);
+        if (editorTab?.dirty) {
+          modal.confirm({
+            title: "关闭未保存的编辑器",
+            content: `「${target.title}」有未保存的修改，关闭后将丢失。确定关闭？`,
+            okText: "关闭",
+            cancelText: "取消",
+            okButtonProps: { danger: true },
+            onOk: () => {
+              editorTabCloseTab(sessionId);
+              removeSession(sessionId);
+            }
+          });
+          return;
+        }
         editorTabCloseTab(sessionId);
       }
       removeSession(sessionId);
     },
-    [sessions, removeSession, editorTabCloseTab]
+    [sessions, removeSession, editorTabCloseTab, modal]
   );
 
   const handleSelectSystemNetworkInterface = useCallback(
@@ -654,28 +695,36 @@ export const App = () => {
           onSetBottomTab={handleSetBottomTab}
         />
 
-        <ConnectionManagerModal
-          open={managerOpen}
-          focusConnectionId={managerFocusConnectionId}
-          connections={connections}
-          sshKeys={sshKeys}
-          proxies={proxies}
-          onClose={() => {
-            setManagerOpen(false);
-            setManagerFocusConnectionId(undefined);
-          }}
-          onConnectionSaved={(payload: ConnectionUpsertInput) => handleConnectionSaved(payload)}
-          onConnectConnection={async (connectionId: string) => {
-            await startSession(connectionId);
-          }}
-          onConnectionRemoved={(connectionId: string) => handleConnectionRemoved(connectionId)}
-          onConnectionsImported={loadConnections}
-          onReloadSshKeys={loadSshKeys}
-          onReloadProxies={loadProxies}
-          onOpenLocalTerminal={handleOpenLocalTerminal}
-        />
+        {managerModalLoaded ? (
+          <Suspense fallback={null}>
+            <LazyConnectionManagerModal
+              open={managerOpen}
+              focusConnectionId={managerFocusConnectionId}
+              connections={connections}
+              sshKeys={sshKeys}
+              proxies={proxies}
+              onClose={() => {
+                setManagerOpen(false);
+                setManagerFocusConnectionId(undefined);
+              }}
+              onConnectionSaved={(payload: ConnectionUpsertInput) => handleConnectionSaved(payload)}
+              onConnectConnection={async (connectionId: string) => {
+                await startSession(connectionId);
+              }}
+              onConnectionRemoved={(connectionId: string) => handleConnectionRemoved(connectionId)}
+              onConnectionsImported={loadConnections}
+              onReloadSshKeys={loadSshKeys}
+              onReloadProxies={loadProxies}
+              onOpenLocalTerminal={handleOpenLocalTerminal}
+            />
+          </Suspense>
+        ) : null}
 
-        <SettingsCenterModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        {settingsModalLoaded ? (
+          <Suspense fallback={null}>
+            <LazySettingsCenterModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          </Suspense>
+        ) : null}
       </div>
     </div>
   );

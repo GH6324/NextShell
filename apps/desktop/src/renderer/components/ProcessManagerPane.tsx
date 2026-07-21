@@ -317,8 +317,9 @@ export const ProcessManagerPane = ({ session }: ProcessManagerPaneProps) => {
           columns={columns}
           dataSource={processes}
           size="small"
+          virtual
           pagination={false}
-          scroll={{ y: tableScrollY }}
+          scroll={{ x: 646, y: tableScrollY }}
           className="pm-table"
           locale={{
             emptyText: initialLoading ? <TableSkeleton rows={6} columns={4} /> : "暂无进程数据"

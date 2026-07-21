@@ -42,19 +42,19 @@ export const useConnectionPasswordReveal = ({
     };
   }, []);
 
-  const getCachedMasterPassword = useCallback(async (): Promise<string> => {
+  const getMasterPasswordAvailability = useCallback(async (): Promise<boolean> => {
     try {
       const result = await window.nextshell.masterPassword.getCached();
-      return result.password ?? "";
+      return result.available;
     } catch {
-      return "";
+      return false;
     }
   }, []);
 
   const promptMasterPasswordForReveal = useCallback(
-    (defaultPassword?: string): Promise<string | null> => {
+    (unlocked: boolean): Promise<string | null> => {
       return new Promise((resolve) => {
-        let password = defaultPassword ?? "";
+        let password = "";
         let settled = false;
         const settle = (value: string | null): void => {
           if (settled) return;
@@ -63,26 +63,35 @@ export const useConnectionPasswordReveal = ({
         };
 
         modal.confirm({
-          title: "输入主密码查看登录密码",
+          title: "查看登录密码",
           okText: "查看",
           cancelText: "取消",
           content: (
             <div style={{ display: "grid", gap: 8 }}>
-              {defaultPassword ? (
+              {unlocked ? (
                 <div style={{ fontSize: 12, color: "var(--t3)" }}>
-                  已自动填充主密码，可按需修改。
+                  主密码已解锁，直接确认即可查看登录密码。
                 </div>
-              ) : null}
-              <Input.Password
-                placeholder="请输入主密码"
-                defaultValue={defaultPassword}
-                onChange={(event) => {
-                  password = event.target.value;
-                }}
-              />
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, color: "var(--t3)" }}>
+                    主密码未解锁，请输入主密码后查看。
+                  </div>
+                  <Input.Password
+                    placeholder="请输入主密码"
+                    onChange={(event) => {
+                      password = event.target.value;
+                    }}
+                  />
+                </>
+              )}
             </div>
           ),
           onOk: async () => {
+            if (unlocked) {
+              settle("");
+              return;
+            }
             const trimmed = password.trim();
             if (!trimmed) {
               message.warning("请输入主密码。");
@@ -109,18 +118,19 @@ export const useConnectionPasswordReveal = ({
       return;
     }
 
-    const defaultMasterPassword = await getCachedMasterPassword();
-    const inputPassword = await promptMasterPasswordForReveal(defaultMasterPassword);
-    if (!inputPassword) {
+    const unlocked = await getMasterPasswordAvailability();
+    const inputPassword = await promptMasterPasswordForReveal(unlocked);
+    if (inputPassword === null) {
       return;
     }
 
     try {
       setRevealingLoginPassword(true);
-      const result = await window.nextshell.connection.revealPassword({
-        connectionId: primarySelectedId,
-        masterPassword: inputPassword
-      });
+      const result = await window.nextshell.connection.revealPassword(
+        inputPassword
+          ? { connectionId: primarySelectedId, masterPassword: inputPassword }
+          : { connectionId: primarySelectedId }
+      );
       setRevealedLoginPassword(result.password);
       if (revealPasswordTimeoutRef.current) {
         clearTimeout(revealPasswordTimeoutRef.current);
@@ -136,7 +146,7 @@ export const useConnectionPasswordReveal = ({
       setRevealingLoginPassword(false);
     }
   }, [
-    getCachedMasterPassword,
+    getMasterPasswordAvailability,
     message,
     primarySelectedId,
     promptMasterPasswordForReveal,

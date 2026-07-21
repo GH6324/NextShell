@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { App as AntdApp } from "antd";
 import type { SessionDescriptor } from "@nextshell/core";
 import { basicSetup } from "codemirror";
@@ -38,26 +38,20 @@ export const EditorPane = ({ session }: EditorPaneProps) => {
   const setDirty = useEditorTabStore((s) => s.setDirty);
   const setSaving = useEditorTabStore((s) => s.setSaving);
   const setSyntaxMode = useEditorTabStore((s) => s.setSyntaxMode);
-  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
 
   const handleSave = useCallback(async () => {
     if (!tab || !viewRef.current) return;
     const content = viewRef.current.state.doc.toString();
     setSaving(session.id, true);
-    setSaveStatus("saving");
     try {
       await window.nextshell.sftp.editSaveBuiltin({
         editId: tab.editId,
-        connectionId: tab.connectionId,
-        remotePath: tab.remotePath,
         content
       });
       setDirty(session.id, false);
-      setSaveStatus("saved");
       message.success({ content: `已保存: ${tab.remotePath.split("/").pop()}`, duration: 2 });
     } catch (err) {
       message.error(`保存失败：${formatErrorMessage(err, "请稍后重试")}`);
-      setSaveStatus("unsaved");
     } finally {
       setSaving(session.id, false);
     }
@@ -76,7 +70,6 @@ export const EditorPane = ({ session }: EditorPaneProps) => {
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           setDirty(session.id, true);
-          setSaveStatus("unsaved");
         }
       }),
       keymap.of([
@@ -123,6 +116,12 @@ export const EditorPane = ({ session }: EditorPaneProps) => {
   }
 
   const fileName = tab.remotePath.split("/").pop() ?? tab.remotePath;
+  // 展示状态直接从 store 派生,编辑器常驻挂载/重挂载后不会出现「已保存」假象
+  const saveStatus: "saved" | "saving" | "unsaved" = tab.saving
+    ? "saving"
+    : tab.dirty
+      ? "unsaved"
+      : "saved";
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">

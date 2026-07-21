@@ -278,8 +278,9 @@ export const NetworkMonitorPane = ({ session }: NetworkMonitorPaneProps) => {
             columns={listenerColumns}
             dataSource={listeners}
             size="small"
+            virtual
             pagination={false}
-            scroll={{ y: listenerTableScrollY }}
+            scroll={{ x: 524, y: listenerTableScrollY }}
             className="nm-table"
             locale={{
               emptyText: initialLoading ? <TableSkeleton rows={5} columns={4} /> : "暂无监听数据"
@@ -323,8 +324,9 @@ export const NetworkMonitorPane = ({ session }: NetworkMonitorPaneProps) => {
                 columns={connectionColumns}
                 dataSource={portConnections}
                 size="small"
+                virtual
                 pagination={false}
-                scroll={{ y: connectionTableScrollY }}
+                scroll={{ x: 456, y: connectionTableScrollY }}
                 className="nm-table"
                 locale={{
                   emptyText: detailLoading ? (

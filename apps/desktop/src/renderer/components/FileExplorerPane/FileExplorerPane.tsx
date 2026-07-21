@@ -183,6 +183,7 @@ export const FileExplorerPane = ({
           onNavigate={explorer.navigate}
           onRemoteEdit={actions.handleRemoteEdit}
           onContextMenu={actions.handleContextMenu}
+          onParent={explorer.toParentPath}
         />
       </section>
 

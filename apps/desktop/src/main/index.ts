@@ -11,11 +11,13 @@ import {
   net,
   nativeTheme,
   powerMonitor,
+  session,
   shell
 } from "electron";
 import { logger } from "./logger";
 import { resolveAllowedAssetPath } from "./asset-protocol";
 import { isTrustedRendererUrl } from "./navigation-security";
+import { applySessionPermissionBaseline } from "./session-security";
 import { parseExternalUrl } from "./services/container-utils";
 import { registerIpcHandlers } from "./ipc/register";
 import { createServiceContainer, type ServiceContainer } from "./services/container";
@@ -270,6 +272,12 @@ app.whenReady().then(async () => {
     dataDir: path.join(app.getPath("userData"), "storage"),
     keytarServiceName: "NextShell"
   });
+
+  // Deny renderer permission requests by default (Electron allows all without
+  // a handler); only clipboard read/sanitized-write stay allowed. Must be
+  // registered before the renderer loads.
+  applySessionPermissionBaseline(session.defaultSession);
+
   const mainWindow = createMainWindow();
 
   // Serve local image files under nextshell-asset:// for app background images

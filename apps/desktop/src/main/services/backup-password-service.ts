@@ -143,11 +143,18 @@ export class BackupPasswordService {
     };
   }
 
-  async masterPasswordGetCached(): Promise<{ password?: string }> {
+  async masterPasswordGetCached(): Promise<{ available: boolean }> {
     if (!this.options.getMasterPassword()) {
       await this.options.tryRecallMasterPassword();
     }
-    return { password: this.options.getMasterPassword() };
+    const available = this.options.getMasterPassword() !== undefined;
+    this.options.appendAuditLogIfEnabled({
+      action: "master_password.cached_status_query",
+      level: "warn",
+      message: "Queried cached master password availability",
+      metadata: { available }
+    });
+    return { available };
   }
 
   async resolveMasterPassword(candidate?: string): Promise<string> {

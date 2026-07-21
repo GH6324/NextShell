@@ -34,6 +34,7 @@ import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
 import { TransferQueuePanel } from "./TransferQueuePanel";
 import { TraceroutePane } from "./TraceroutePane";
 import { useCommandHistory } from "../hooks/useCommandHistory";
+import { useEditorTabStore } from "../store/useEditorTabStore";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import { useTransferQueueStore, type TransferTask } from "../store/useTransferQueueStore";
 import { formatErrorMessage } from "../utils/errorMessage";
@@ -99,6 +100,17 @@ interface SessionTabContextMenuState {
   y: number;
   sessionId: string;
 }
+
+// 按 sessionId 粒度订阅 dirty,避免整个标签条因编辑器输入而重渲染
+const EditorTabDirtyDot = ({ sessionId }: { sessionId: string }) => {
+  const dirty = useEditorTabStore((state) => state.tabs.get(sessionId)?.dirty ?? false);
+
+  if (!dirty) {
+    return null;
+  }
+
+  return <span className="tab-dirty-dot" title="有未保存的修改" aria-hidden="true" />;
+};
 
 const SessionTabContextMenu = ({
   state,
@@ -455,6 +467,83 @@ const WorkspaceLayoutComponent = ({
     [onSetActiveConnection, onSetActiveSession]
   );
 
+  const sessionTabElementsRef = useRef(new Map<string, HTMLDivElement>());
+
+  const activateSessionTab = useCallback(
+    (session: SessionDescriptor) => {
+      setSessionContextMenu(null);
+      onSetActiveSession(session.id);
+      if (session.connectionId) {
+        onSetActiveConnection(session.connectionId);
+      }
+    },
+    [onSetActiveConnection, onSetActiveSession]
+  );
+
+  const closeSessionTab = useCallback(
+    (session: SessionDescriptor) => {
+      if (isTerminalSession(session)) {
+        void onCloseSession(session.id);
+      } else {
+        onCloseMonitorTab(session.id);
+      }
+    },
+    [onCloseMonitorTab, onCloseSession]
+  );
+
+  // roving tabindex:方向键/Home/End 移动焦点并切换激活标签;仅在标签上获得焦点时触发,不影响终端按键
+  const handleSessionTabKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>, session: SessionDescriptor) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activateSessionTab(session);
+        return;
+      }
+
+      const navigationKeys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+      if (!navigationKeys.includes(event.key) || event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+
+      event.preventDefault();
+      if (sessions.length === 0) return;
+      const currentIndex = sessions.findIndex((item) => item.id === session.id);
+      if (currentIndex < 0) return;
+
+      let nextIndex: number;
+      if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = sessions.length - 1;
+      } else {
+        const delta = event.key === "ArrowRight" ? 1 : -1;
+        nextIndex = (currentIndex + delta + sessions.length) % sessions.length;
+      }
+
+      const nextSession = sessions[nextIndex];
+      if (!nextSession || nextSession.id === session.id) return;
+      activateSessionTab(nextSession);
+      sessionTabElementsRef.current.get(nextSession.id)?.focus();
+    },
+    [activateSessionTab, sessions]
+  );
+
+  const handleSessionTabAuxClick = useCallback(
+    (event: React.MouseEvent<HTMLElement>, session: SessionDescriptor) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeSessionTab(session);
+    },
+    [closeSessionTab]
+  );
+
+  // 激活标签变化时滚动到可见区域(标签条容器 overflow-x: auto)
+  useEffect(() => {
+    if (!activeSessionId) return;
+    sessionTabElementsRef.current.get(activeSessionId)?.scrollIntoView({ inline: "nearest" });
+  }, [activeSessionId]);
+
   useEffect(() => {
     let disposed = false;
     void (async () => {
@@ -785,13 +874,20 @@ const WorkspaceLayoutComponent = ({
           >
             <Panel defaultSize="68%" minSize="38%">
               <div className="terminal-shell">
-                <div className="session-tabs">
+                <div className="session-tabs" role="tablist" aria-orientation="horizontal">
                   {sessions.map((session) => {
                     const isTerminal = isTerminalSession(session);
                     const iconClass = SESSION_TYPE_ICON[session.type ?? "terminal"];
                     return (
                       <div
                         key={session.id}
+                        ref={(element) => {
+                          if (element) {
+                            sessionTabElementsRef.current.set(session.id, element);
+                          } else {
+                            sessionTabElementsRef.current.delete(session.id);
+                          }
+                        }}
                         role="tab"
                         tabIndex={session.id === activeSessionId ? 0 : -1}
                         aria-selected={session.id === activeSessionId}
@@ -802,23 +898,9 @@ const WorkspaceLayoutComponent = ({
                         ]
                           .filter(Boolean)
                           .join(" ")}
-                        onClick={() => {
-                          setSessionContextMenu(null);
-                          onSetActiveSession(session.id);
-                          if (session.connectionId) {
-                            onSetActiveConnection(session.connectionId);
-                          }
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            setSessionContextMenu(null);
-                            onSetActiveSession(session.id);
-                            if (session.connectionId) {
-                              onSetActiveConnection(session.connectionId);
-                            }
-                          }
-                        }}
+                        onClick={() => activateSessionTab(session)}
+                        onKeyDown={(event) => handleSessionTabKeyDown(event, session)}
+                        onAuxClick={(event) => handleSessionTabAuxClick(event, session)}
                         onContextMenu={(event) => handleSessionTabContextMenu(event, session)}
                         draggable={isTerminal}
                         onDragStart={() => {
@@ -835,6 +917,9 @@ const WorkspaceLayoutComponent = ({
                       >
                         <i className={`tab-type-icon ${iconClass}`} aria-hidden="true" />
                         <span className="session-title">{session.title}</span>
+                        {session.type === "editor" ? (
+                          <EditorTabDirtyDot sessionId={session.id} />
+                        ) : null}
                         {isTerminal && session.status === "disconnected" ? (
                           <button
                             type="button"
@@ -854,11 +939,7 @@ const WorkspaceLayoutComponent = ({
                           aria-label={`关闭 ${session.title}`}
                           onClick={(event) => {
                             event.stopPropagation();
-                            if (isTerminal) {
-                              void onCloseSession(session.id);
-                            } else {
-                              onCloseMonitorTab(session.id);
-                            }
+                            closeSessionTab(session);
                           }}
                         >
                           <i className="ri-close-line" aria-hidden="true" />
@@ -915,17 +996,26 @@ const WorkspaceLayoutComponent = ({
                 {activeSession?.type === "networkMonitor" ? (
                   <NetworkMonitorPane session={activeSession} />
                 ) : null}
-                {activeSession?.type === "editor" ? (
-                  <Suspense
-                    fallback={
-                      <div className="flex-1 flex items-center justify-center text-[var(--t3)]">
-                        编辑器加载中...
-                      </div>
-                    }
-                  >
-                    <LazyEditorPane session={activeSession} />
-                  </Suspense>
-                ) : null}
+                {sessions
+                  .filter((session) => session.type === "editor")
+                  .map((session) => (
+                    <div
+                      key={session.id}
+                      className={
+                        session.id === activeSessionId ? "flex-1 min-h-0 flex flex-col" : "hidden"
+                      }
+                    >
+                      <Suspense
+                        fallback={
+                          <div className="flex-1 flex items-center justify-center text-[var(--t3)]">
+                            编辑器加载中...
+                          </div>
+                        }
+                      >
+                        <LazyEditorPane session={session} />
+                      </Suspense>
+                    </div>
+                  ))}
                 {activeSession?.type === "quickTransfer" ? (
                   <QuickTransferPane connections={connections} sessions={sessions} />
                 ) : null}

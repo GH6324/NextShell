@@ -28,3 +28,35 @@
 @import "./editor.css";
 @import "./theme-light.css";
 @import "./traceroute.css";
+
+/* ── Reduced Motion ────────────────────────────────────── */
+/* Honor the OS "reduce motion" setting: collapse transition/animation
+   durations, and degrade loading spinners to an opacity pulse. */
+@keyframes reduced-motion-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  /* Keep loading feedback visible without rotation. */
+  .ri-spin,
+  .mgr-form-header-icon-spin {
+    animation-name: reduced-motion-pulse !important;
+    animation-duration: 1.2s !important;
+    animation-timing-function: ease-in-out !important;
+    animation-iteration-count: infinite !important;
+  }
+}

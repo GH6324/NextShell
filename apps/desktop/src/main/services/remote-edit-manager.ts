@@ -339,37 +339,37 @@ export class RemoteEditManager {
     return { editId, content };
   }
 
-  async saveBuiltin(
-    editId: string,
-    connectionId: string,
-    remotePath: string,
-    content: string
-  ): Promise<void> {
+  async saveBuiltin(editId: string, content: string): Promise<void> {
+    // editId is the sole authorization token: the write target always comes
+    // from the registered session, never from caller-supplied values.
     const session = this.builtinSessions.get(editId);
-
-    if (session) {
-      this.sendStatus(session.sender, {
-        editId,
-        connectionId: session.connectionId,
-        remotePath: session.remotePath,
-        status: "uploading"
-      });
+    if (!session) {
+      throw new Error("编辑会话不存在或已关闭，请重新打开文件后再保存。");
     }
 
-    const connection = await this.deps.getConnection(connectionId);
-    await connection.writeFileContent(remotePath, Buffer.from(content, "utf-8"));
+    this.sendStatus(session.sender, {
+      editId,
+      connectionId: session.connectionId,
+      remotePath: session.remotePath,
+      status: "uploading"
+    });
 
-    if (session) {
-      session.lastActivityAt = Date.now();
-      this.sendStatus(session.sender, {
-        editId,
-        connectionId: session.connectionId,
-        remotePath: session.remotePath,
-        status: "synced"
-      });
-    }
+    const connection = await this.deps.getConnection(session.connectionId);
+    await connection.writeFileContent(session.remotePath, Buffer.from(content, "utf-8"));
 
-    logger.info("[RemoteEdit] saved builtin", { editId, connectionId, remotePath });
+    session.lastActivityAt = Date.now();
+    this.sendStatus(session.sender, {
+      editId,
+      connectionId: session.connectionId,
+      remotePath: session.remotePath,
+      status: "synced"
+    });
+
+    logger.info("[RemoteEdit] saved builtin", {
+      editId,
+      connectionId: session.connectionId,
+      remotePath: session.remotePath
+    });
   }
 
   listSessions(): SftpEditSessionInfo[] {

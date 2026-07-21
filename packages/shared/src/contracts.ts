@@ -166,7 +166,7 @@ export const sessionOpenSchema = z.discriminatedUnion("target", [
 
 export const sessionWriteSchema = z.object({
   sessionId: z.string().uuid(),
-  data: z.string()
+  data: z.string().max(1024 * 1024)
 });
 
 export const sessionResizeSchema = z.object({
@@ -268,7 +268,7 @@ export const commandExecSchema = z.object({
 
 export const commandBatchExecSchema = z.object({
   command: z.string().trim().min(1),
-  connectionIds: z.array(z.string().uuid()).min(1),
+  connectionIds: z.array(z.string().uuid()).min(1).max(500),
   maxConcurrency: z.coerce.number().int().min(1).max(50).default(5),
   retryCount: z.coerce.number().int().min(0).max(5).default(1)
 });
@@ -304,7 +304,7 @@ const remoteEntryNameSchema = z
 export const sftpDownloadPackedSchema = z.object({
   connectionId: z.string().uuid(),
   remoteDir: z.string().min(1),
-  entryNames: z.array(remoteEntryNameSchema).min(1),
+  entryNames: z.array(remoteEntryNameSchema).min(1).max(500),
   localDir: z.string().min(1),
   archiveName: z.string().trim().min(1).optional(),
   taskId: z.string().uuid().optional()
@@ -312,7 +312,7 @@ export const sftpDownloadPackedSchema = z.object({
 
 export const sftpUploadPackedSchema = z.object({
   connectionId: z.string().uuid(),
-  localPaths: z.array(z.string().min(1)).min(1),
+  localPaths: z.array(z.string().min(1)).min(1).max(500),
   remoteDir: z.string().min(1),
   archiveName: z.string().trim().min(1).optional(),
   taskId: z.string().uuid().optional()
@@ -325,7 +325,7 @@ export const sftpListLocalSchema = z.object({
 export const sftpTransferPackedSchema = z.object({
   sourceConnectionId: z.string().uuid(),
   sourceDir: z.string().min(1),
-  entryNames: z.array(remoteEntryNameSchema).min(1),
+  entryNames: z.array(remoteEntryNameSchema).min(1).max(500),
   targetConnectionId: z.string().uuid(),
   targetDir: z.string().min(1),
   archiveName: z.string().trim().min(1).optional(),
@@ -389,9 +389,7 @@ export const sftpEditOpenBuiltinSchema = z.object({
 
 export const sftpEditSaveBuiltinSchema = z.object({
   editId: z.string().uuid(),
-  connectionId: z.string().uuid(),
-  remotePath: z.string().min(1),
-  content: z.string()
+  content: z.string().max(64 * 1024 * 1024)
 });
 
 export const sftpEditStopSchema = z.object({
@@ -1026,7 +1024,7 @@ export interface MasterPasswordStatusResult {
 }
 
 export interface MasterPasswordCachedResult {
-  password?: string;
+  available: boolean;
 }
 
 export interface ConnectionRevealPasswordResult {

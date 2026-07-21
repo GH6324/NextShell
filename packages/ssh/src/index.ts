@@ -167,6 +167,13 @@ export const isTransferCancelledError = (error: unknown): boolean =>
     error !== null &&
     (error as { cancelled?: boolean }).cancelled === true);
 
+/** Throw TransferCancelledError when the given signal has already aborted. */
+const throwIfTransferAborted = (signal: AbortSignal | undefined): void => {
+  if (signal?.aborted) {
+    throw new TransferCancelledError();
+  }
+};
+
 /**
  * Run `op`, but reject with TransferCancelledError if `signal` aborts first,
  * invoking `onAbort` (e.g. to destroy the underlying channel) to interrupt the
@@ -203,6 +210,112 @@ export const runWithAbort = async <T>(
     }
   }
 };
+
+/** Max number of entries processed in parallel during recursive directory walks. */
+const SFTP_DIRECTORY_WALK_CONCURRENCY = 4;
+
+/**
+ * Run `worker` over every item with at most `concurrency` in flight. After the
+ * first failure no new work is scheduled; once the in-flight workers settle,
+ * the first error is rethrown (fail-fast semantics).
+ */
+export const mapWithConcurrency = async <T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> => {
+  let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown;
+
+  const runnerCount = Math.max(1, Math.min(concurrency, items.length));
+  const runners = Array.from({ length: runnerCount }, async () => {
+    while (!failed && nextIndex < items.length) {
+      const item = items[nextIndex++]!;
+      try {
+        await worker(item);
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          firstError = error;
+        }
+      }
+    }
+  });
+
+  await Promise.all(runners);
+  if (failed) {
+    throw firstError;
+  }
+};
+
+/**
+ * A lazily-opened SFTP channel reused across operations. SFTP multiplexes
+ * concurrent requests over one channel, so metadata operations (list/stat/
+ * mkdir/rename/remove/read/write content) can share it instead of paying a
+ * channel handshake per call. The channel is dropped when it errors, ends or
+ * closes, and re-opened on the next request.
+ */
+export class SharedSftpChannel {
+  private current: SFTPWrapper | undefined;
+  private pending: Promise<SFTPWrapper> | undefined;
+
+  constructor(private readonly open: () => Promise<SFTPWrapper>) {}
+
+  async get(): Promise<SFTPWrapper> {
+    if (this.current) {
+      return this.current;
+    }
+    if (!this.pending) {
+      this.pending = this.open().then(
+        (sftp) => {
+          this.current = sftp;
+          const invalidate = () => this.invalidate(sftp);
+          sftp.once("close", invalidate);
+          sftp.once("error", invalidate);
+          sftp.once("end", invalidate);
+          return sftp;
+        },
+        (error: unknown) => {
+          this.pending = undefined;
+          throw error;
+        }
+      );
+    }
+    return this.pending;
+  }
+
+  /** Drop the cached channel (no-op when `sftp` is not the cached one). */
+  invalidate(sftp?: SFTPWrapper): void {
+    if (!sftp || this.current === sftp) {
+      this.current = undefined;
+      this.pending = undefined;
+    }
+  }
+
+  /** End and drop the cached channel, if any. */
+  end(): void {
+    const sftp = this.current;
+    this.invalidate();
+    if (sftp) {
+      try {
+        sftp.end();
+      } catch {
+        // channel may already be closing — ignore
+      }
+    }
+  }
+}
+
+/** Options for recursive directory walks (directory download / delete). */
+interface DirectoryWalkOptions {
+  /** Abort the walk promptly between entries. */
+  signal?: AbortSignal;
+  /** Fired as each regular file is discovered, before it is transferred. */
+  onFileDiscovered?: () => void;
+  /** Fired after each regular file has been fully transferred. */
+  onFileComplete?: () => void;
+}
 
 export interface SshDirectoryEntry {
   name: string;
@@ -278,12 +391,14 @@ export const matchHostFingerprint = (expected: string, key: Buffer | string): bo
 export class SshConnection {
   private readonly client: Client;
   private readonly readyPromise: Promise<void>;
+  private readonly sharedSftp: SharedSftpChannel;
   private closed = false;
   private hostKeyError: Error | undefined;
 
   private constructor(private readonly options: SshConnectOptions) {
     const ssh2 = loadSsh2();
     this.client = new ssh2.Client();
+    this.sharedSftp = new SharedSftpChannel(() => this.openSftp());
     this.readyPromise = this.connect();
   }
 
@@ -628,6 +743,16 @@ export class SshConnection {
     }
   }
 
+  /**
+   * SFTP channel shared by metadata operations (list/stat/mkdir/rename/remove/
+   * read/write content), avoiding a 2-RTT channel handshake per call. Transfer
+   * operations (fastGet/fastPut) must keep using dedicated channels so that
+   * cancelling via sftp.end() only interrupts that one transfer.
+   */
+  async getSharedSftp(): Promise<SFTPWrapper> {
+    return this.sharedSftp.get();
+  }
+
   private async statPath(sftp: SFTPWrapper, pathName: string): Promise<Stats> {
     return new Promise((resolve, reject) => {
       sftp.stat(pathName, (error, stats) => {
@@ -732,43 +857,51 @@ export class SshConnection {
   private async downloadDirectoryRecursive(
     sftp: SFTPWrapper,
     remoteDir: string,
-    localDir: string
+    localDir: string,
+    options?: DirectoryWalkOptions
   ): Promise<void> {
+    throwIfTransferAborted(options?.signal);
     await fs.mkdir(localDir, { recursive: true });
-    const entries = await this.listRawEntries(sftp, remoteDir);
+    const entries = (await this.listRawEntries(sftp, remoteDir)).filter(
+      (entry) => entry.filename !== "." && entry.filename !== ".."
+    );
 
-    for (const entry of entries) {
-      if (entry.filename === "." || entry.filename === "..") {
-        continue;
-      }
-
+    await mapWithConcurrency(entries, SFTP_DIRECTORY_WALK_CONCURRENCY, async (entry) => {
+      throwIfTransferAborted(options?.signal);
       const remotePath = path.posix.join(remoteDir, entry.filename);
       const localPath = path.join(localDir, entry.filename);
       const isDirectory = entry.longname.startsWith("d");
 
       if (isDirectory) {
-        await this.downloadDirectoryRecursive(sftp, remotePath, localPath);
-      } else {
-        await fs.mkdir(path.dirname(localPath), { recursive: true });
-        await this.fastGet(sftp, remotePath, localPath);
+        await this.downloadDirectoryRecursive(sftp, remotePath, localPath, options);
+        return;
       }
-    }
+
+      options?.onFileDiscovered?.();
+      await fs.mkdir(path.dirname(localPath), { recursive: true });
+      await this.fastGet(sftp, remotePath, localPath);
+      options?.onFileComplete?.();
+    });
   }
 
-  private async removeDirectoryRecursive(sftp: SFTPWrapper, remoteDir: string): Promise<void> {
-    const entries = await this.listRawEntries(sftp, remoteDir);
+  private async removeDirectoryRecursive(
+    sftp: SFTPWrapper,
+    remoteDir: string,
+    options?: DirectoryWalkOptions
+  ): Promise<void> {
+    throwIfTransferAborted(options?.signal);
+    const entries = (await this.listRawEntries(sftp, remoteDir)).filter(
+      (entry) => entry.filename !== "." && entry.filename !== ".."
+    );
 
-    for (const entry of entries) {
-      if (entry.filename === "." || entry.filename === "..") {
-        continue;
-      }
-
+    await mapWithConcurrency(entries, SFTP_DIRECTORY_WALK_CONCURRENCY, async (entry) => {
+      throwIfTransferAborted(options?.signal);
       const childPath = path.posix.join(remoteDir, entry.filename);
       const isDirectory = entry.longname.startsWith("d");
 
       if (isDirectory) {
-        await this.removeDirectoryRecursive(sftp, childPath);
-        continue;
+        await this.removeDirectoryRecursive(sftp, childPath, options);
+        return;
       }
 
       await new Promise<void>((resolve, reject) => {
@@ -780,8 +913,9 @@ export class SshConnection {
           resolve();
         });
       });
-    }
+    });
 
+    throwIfTransferAborted(options?.signal);
     await new Promise<void>((resolve, reject) => {
       sftp.rmdir(remoteDir, (error) => {
         if (error) {
@@ -794,20 +928,19 @@ export class SshConnection {
   }
 
   async list(pathName: string): Promise<SshDirectoryEntry[]> {
-    return this.withSftp(async (sftp) => {
-      const rows = await this.listRawEntries(sftp, pathName);
+    const sftp = await this.getSharedSftp();
+    const rows = await this.listRawEntries(sftp, pathName);
 
-      return rows.map((row) => ({
-        name: row.filename,
-        longname: row.longname,
-        size: row.attrs.size ?? 0,
-        mode: row.attrs.mode,
-        uid: row.attrs.uid,
-        gid: row.attrs.gid,
-        atime: row.attrs.atime,
-        mtime: row.attrs.mtime
-      }));
-    });
+    return rows.map((row) => ({
+      name: row.filename,
+      longname: row.longname,
+      size: row.attrs.size ?? 0,
+      mode: row.attrs.mode,
+      uid: row.attrs.uid,
+      gid: row.attrs.gid,
+      atime: row.attrs.atime,
+      mtime: row.attrs.mtime
+    }));
   }
 
   async upload(
@@ -852,7 +985,32 @@ export class SshConnection {
     await this.withSftp(async (sftp) => {
       const stats = await this.statPath(sftp, remotePath);
       if (stats.isDirectory()) {
-        await this.downloadDirectoryRecursive(sftp, remotePath, resolvedLocalPath);
+        // Directory transfer: progress is reported as completed/discovered
+        // file counts (a byte total would require an extra full-tree stat
+        // walk), and aborting ends the channel to interrupt in-flight fastGets.
+        let discovered = 0;
+        let completed = 0;
+        const progressListener = onProgress;
+        const emitFileProgress = progressListener
+          ? () => progressListener({ transferred: completed, total: discovered })
+          : undefined;
+        await this.runCancellable(sftp, signal, () =>
+          this.downloadDirectoryRecursive(sftp, remotePath, resolvedLocalPath, {
+            signal,
+            onFileDiscovered: emitFileProgress
+              ? () => {
+                  discovered += 1;
+                  emitFileProgress();
+                }
+              : undefined,
+            onFileComplete: emitFileProgress
+              ? () => {
+                  completed += 1;
+                  emitFileProgress();
+                }
+              : undefined
+          })
+        );
         return;
       }
 
@@ -869,76 +1027,70 @@ export class SshConnection {
       return;
     }
 
-    await this.withSftp(async (sftp) => {
-      if (recursive) {
-        await this.ensureRemoteDir(sftp, normalized);
-        return;
-      }
+    const sftp = await this.getSharedSftp();
+    if (recursive) {
+      await this.ensureRemoteDir(sftp, normalized);
+      return;
+    }
 
-      await this.mkdirSingle(sftp, normalized);
-    });
+    await this.mkdirSingle(sftp, normalized);
   }
 
   async rename(fromPath: string, toPath: string): Promise<void> {
-    await this.withSftp(
-      (sftp) =>
-        new Promise<void>((resolve, reject) => {
-          sftp.rename(fromPath, toPath, (error) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-            resolve();
-          });
-        })
-    );
+    const sftp = await this.getSharedSftp();
+    await new Promise<void>((resolve, reject) => {
+      sftp.rename(fromPath, toPath, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 
-  async remove(pathName: string, type: RemotePathType): Promise<void> {
-    await this.withSftp(async (sftp) => {
-      if (type === "directory") {
-        await this.removeDirectoryRecursive(sftp, pathName);
-        return;
-      }
+  async remove(pathName: string, type: RemotePathType, signal?: AbortSignal): Promise<void> {
+    const sftp = await this.getSharedSftp();
+    if (type === "directory") {
+      await this.removeDirectoryRecursive(sftp, pathName, { signal });
+      return;
+    }
 
-      await new Promise<void>((resolve, reject) => {
-        sftp.unlink(pathName, (error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
+    throwIfTransferAborted(signal);
+    await new Promise<void>((resolve, reject) => {
+      sftp.unlink(pathName, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
       });
     });
   }
 
   async stat(remotePath: string): Promise<Stats> {
-    return this.withSftp(async (sftp) => {
-      return this.statPath(sftp, remotePath);
-    });
+    const sftp = await this.getSharedSftp();
+    return this.statPath(sftp, remotePath);
   }
 
   async readFileContent(remotePath: string): Promise<Buffer> {
-    return this.withSftp(async (sftp) => {
-      return new Promise<Buffer>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        const stream = sftp.createReadStream(remotePath);
-        stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-        stream.on("end", () => resolve(Buffer.concat(chunks)));
-        stream.on("error", reject);
-      });
+    const sftp = await this.getSharedSftp();
+    return new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const stream = sftp.createReadStream(remotePath);
+      stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      stream.on("end", () => resolve(Buffer.concat(chunks)));
+      stream.on("error", reject);
     });
   }
 
   async writeFileContent(remotePath: string, content: Buffer): Promise<void> {
-    return this.withSftp(async (sftp) => {
-      return new Promise<void>((resolve, reject) => {
-        const stream = sftp.createWriteStream(remotePath);
-        stream.on("close", () => resolve());
-        stream.on("error", reject);
-        stream.end(content);
-      });
+    const sftp = await this.getSharedSftp();
+    return new Promise<void>((resolve, reject) => {
+      const stream = sftp.createWriteStream(remotePath);
+      stream.on("close", () => resolve());
+      stream.on("error", reject);
+      stream.end(content);
     });
   }
 
@@ -948,6 +1100,7 @@ export class SshConnection {
     }
 
     this.closed = true;
+    this.sharedSftp.end();
     this.client.end();
 
     await Promise.race([

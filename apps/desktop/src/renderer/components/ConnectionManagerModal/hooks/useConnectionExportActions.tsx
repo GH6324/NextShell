@@ -16,15 +16,6 @@ export const useConnectionExportActions = ({
   modal,
   message
 }: UseConnectionExportActionsOptions) => {
-  const getCachedMasterPassword = useCallback(async (): Promise<string> => {
-    try {
-      const result = await window.nextshell.masterPassword.getCached();
-      return result.password ?? "";
-    } catch {
-      return "";
-    }
-  }, []);
-
   const promptExportMode = useCallback((): Promise<"plain" | "encrypted" | null> => {
     return new Promise((resolve) => {
       let mode: "plain" | "encrypted" = "plain";
@@ -61,64 +52,54 @@ export const useConnectionExportActions = ({
     });
   }, [modal]);
 
-  const promptExportEncryptionPassword = useCallback(
-    (defaultPassword?: string): Promise<string | null> => {
-      return new Promise((resolve) => {
-        let password = defaultPassword ?? "";
-        let confirmPassword = defaultPassword ?? "";
-        let settled = false;
-        const settle = (value: string | null): void => {
-          if (settled) return;
-          settled = true;
-          resolve(value);
-        };
+  const promptExportEncryptionPassword = useCallback((): Promise<string | null> => {
+    return new Promise((resolve) => {
+      let password = "";
+      let confirmPassword = "";
+      let settled = false;
+      const settle = (value: string | null): void => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
 
-        modal.confirm({
-          title: "输入导出加密密码",
-          okText: "确认",
-          cancelText: "取消",
-          content: (
-            <div style={{ display: "grid", gap: 8 }}>
-              {defaultPassword ? (
-                <div style={{ fontSize: 12, color: "var(--t3)" }}>
-                  已自动填充主密码，可按需修改。
-                </div>
-              ) : null}
-              <Input.Password
-                placeholder="请输入密码（至少 6 位）"
-                defaultValue={defaultPassword}
-                onChange={(event) => {
-                  password = event.target.value;
-                }}
-              />
-              <Input.Password
-                placeholder="请再次输入密码"
-                defaultValue={defaultPassword}
-                onChange={(event) => {
-                  confirmPassword = event.target.value;
-                }}
-              />
-            </div>
-          ),
-          onOk: async () => {
-            const trimmedPassword = password.trim();
-            const trimmedConfirm = confirmPassword.trim();
-            if (trimmedPassword.length < 6) {
-              message.warning("导出加密密码至少需要 6 个字符。");
-              throw new Error("invalid-export-password-length");
-            }
-            if (trimmedPassword !== trimmedConfirm) {
-              message.warning("两次输入的密码不一致。");
-              throw new Error("invalid-export-password-confirm");
-            }
-            settle(trimmedPassword);
-          },
-          onCancel: () => settle(null)
-        });
+      modal.confirm({
+        title: "输入导出加密密码",
+        okText: "确认",
+        cancelText: "取消",
+        content: (
+          <div style={{ display: "grid", gap: 8 }}>
+            <Input.Password
+              placeholder="请输入密码（至少 6 位）"
+              onChange={(event) => {
+                password = event.target.value;
+              }}
+            />
+            <Input.Password
+              placeholder="请再次输入密码"
+              onChange={(event) => {
+                confirmPassword = event.target.value;
+              }}
+            />
+          </div>
+        ),
+        onOk: async () => {
+          const trimmedPassword = password.trim();
+          const trimmedConfirm = confirmPassword.trim();
+          if (trimmedPassword.length < 6) {
+            message.warning("导出加密密码至少需要 6 个字符。");
+            throw new Error("invalid-export-password-length");
+          }
+          if (trimmedPassword !== trimmedConfirm) {
+            message.warning("两次输入的密码不一致。");
+            throw new Error("invalid-export-password-confirm");
+          }
+          settle(trimmedPassword);
+        },
+        onCancel: () => settle(null)
       });
-    },
-    [message, modal]
-  );
+    });
+  }, [message, modal]);
 
   const runSingleExport = useCallback(
     async (exportIds: string[]): Promise<void> => {
@@ -129,8 +110,7 @@ export const useConnectionExportActions = ({
 
       let encryptionPassword: string | undefined;
       if (mode === "encrypted") {
-        const defaultPassword = await getCachedMasterPassword();
-        const password = await promptExportEncryptionPassword(defaultPassword);
+        const password = await promptExportEncryptionPassword();
         if (!password) return;
         encryptionPassword = password;
       }
@@ -151,7 +131,7 @@ export const useConnectionExportActions = ({
         message.error(`导出失败：${formatErrorMessage(error, "请稍后重试")}`);
       }
     },
-    [getCachedMasterPassword, message, promptExportEncryptionPassword, promptExportMode]
+    [message, promptExportEncryptionPassword, promptExportMode]
   );
 
   const handleExportAll = useCallback(async () => {
@@ -171,8 +151,7 @@ export const useConnectionExportActions = ({
 
     let encryptionPassword: string | undefined;
     if (mode === "encrypted") {
-      const defaultPassword = await getCachedMasterPassword();
-      const password = await promptExportEncryptionPassword(defaultPassword);
+      const password = await promptExportEncryptionPassword();
       if (!password) return;
       encryptionPassword = password;
     }
@@ -218,7 +197,6 @@ export const useConnectionExportActions = ({
     }
   }, [
     connections,
-    getCachedMasterPassword,
     message,
     promptExportEncryptionPassword,
     promptExportMode,

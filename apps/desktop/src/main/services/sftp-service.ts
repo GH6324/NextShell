@@ -132,7 +132,13 @@ export class SftpService {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        connection.list("."),
+        (async () => {
+          // Pre-open the shared metadata SFTP channel (list/stat/mkdir/... all
+          // ride on it) so the first user action skips the channel handshake,
+          // then confirm a real readdir works.
+          await connection.getSharedSftp();
+          await connection.list(".");
+        })(),
         new Promise<never>((_resolve, reject) => {
           timeout = setTimeout(() => {
             reject(new Error(`SFTP warmup timed out after ${SFTP_WARMUP_TIMEOUT_MS}ms`));
@@ -1064,13 +1070,8 @@ export class SftpService {
     return this.remoteEditManager.openBuiltin(connectionId, remotePath, sender);
   }
 
-  async saveBuiltinEdit(
-    editId: string,
-    connectionId: string,
-    remotePath: string,
-    content: string
-  ): Promise<{ ok: true }> {
-    await this.remoteEditManager.saveBuiltin(editId, connectionId, remotePath, content);
+  async saveBuiltinEdit(editId: string, content: string): Promise<{ ok: true }> {
+    await this.remoteEditManager.saveBuiltin(editId, content);
     return { ok: true };
   }
 

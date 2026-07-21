@@ -78,12 +78,40 @@ const remixiconWoff2Only = (): Plugin => ({
   }
 });
 
+// The CSP meta in index.html is written for the dev server: HMR needs the
+// localhost/127.0.0.1 connect-src origins. Production builds must not ship
+// them, so strip the dev origins from connect-src when building.
+const DEV_CONNECT_SRC =
+  "connect-src 'self' http://localhost:5173 ws://localhost:5173 http://127.0.0.1:5173 ws://127.0.0.1:5173";
+
+const productionContentSecurityPolicy = (): Plugin => {
+  let isProductionBuild = false;
+  return {
+    name: "nextshell-production-csp",
+    configResolved(config) {
+      isProductionBuild = config.command === "build";
+    },
+    transformIndexHtml(html) {
+      if (!isProductionBuild) {
+        return html;
+      }
+      // Fail the build instead of silently shipping the dev CSP if the meta
+      // tag in index.html ever changes shape.
+      if (!html.includes(DEV_CONNECT_SRC)) {
+        throw new Error("expected dev connect-src in index.html CSP meta not found");
+      }
+      return html.replace(DEV_CONNECT_SRC, "connect-src 'self'");
+    }
+  };
+};
+
 export default defineConfig({
   build: {
     sourcemap: "hidden"
   },
   plugins: [
     remixiconWoff2Only(),
+    productionContentSecurityPolicy(),
     tailwindcss(),
     react(),
     electron({

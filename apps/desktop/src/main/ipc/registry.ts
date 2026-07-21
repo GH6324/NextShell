@@ -547,13 +547,7 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     channel: IPCChannel.SftpEditSaveBuiltin,
     schema: sftpEditSaveBuiltinSchema,
     label: "内置编辑保存",
-    dispatch: (services, input) =>
-      services.sftp.saveBuiltinEdit(
-        input.editId,
-        input.connectionId,
-        input.remotePath,
-        input.content
-      )
+    dispatch: (services, input) => services.sftp.saveBuiltinEdit(input.editId, input.content)
   }),
 
   // ─── Process & Network Monitor ────────────────────────────────────────────

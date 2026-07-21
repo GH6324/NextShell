@@ -86,6 +86,15 @@
   font-size: 12px;
 }
 
+.tab-dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--warn);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--warn) 50%, transparent);
+}
+
 .tab-action {
   display: inline-flex;
   align-items: center;
