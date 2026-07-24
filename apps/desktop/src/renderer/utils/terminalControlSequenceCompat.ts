@@ -7,10 +7,6 @@ type ParserLike = {
     id: { prefix?: string; intermediates?: string; final: string },
     callback: (params: (number | number[])[]) => boolean | Promise<boolean>
   ) => ParserDisposable;
-  registerOscHandler: (
-    ident: number,
-    callback: (data: string) => boolean | Promise<boolean>
-  ) => ParserDisposable;
   registerDcsHandler: (
     id: { prefix?: string; intermediates?: string; final: string },
     callback: (data: string, params: (number | number[])[]) => boolean | Promise<boolean>
@@ -25,7 +21,6 @@ export type TerminalQuerySuppressionKind =
   | "device-attributes"
   | "ansi-mode-request"
   | "private-mode-request"
-  | "osc-color-query"
   | "status-string-request";
 
 interface TerminalQueryCompatibilityOptions {
@@ -48,13 +43,7 @@ const ST = `${ESC}\\`;
 
 const CSI_SECONDARY_DEVICE_ATTRIBUTES_REPLY = /^\u001b\[\>\d+(?:;\d+)*c/;
 const CSI_MODE_REPLY = /^\u001b\[\??\d+(?:;\d+)*\$y/;
-const OSC_COLOR_REPLY_PREFIX = /^\u001b\](10|11|12);/;
-const OSC_COLOR_REPLY_PAYLOAD =
-  /^(rgb:[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}|#[0-9a-fA-F]{3,12})$/;
 const DCS_STATUS_REPLY_PREFIX = /^\u001bP([01])\$r/;
-
-const isOscColorQuery = (data: string): boolean =>
-  data.split(";").some((segment) => segment.trim() === "?");
 
 const shouldHandle = (options?: TerminalQueryCompatibilityOptions): boolean =>
   options?.isEnabled ? options.isEnabled() : true;
@@ -123,26 +112,6 @@ const consumeKnownReply = (
       recognized: false,
       incomplete: true
     };
-  }
-
-  if (OSC_COLOR_REPLY_PREFIX.test(remaining)) {
-    const terminator = findSequenceTerminator(input, cursor + 5);
-    if (!terminator) {
-      return {
-        nextCursor: cursor,
-        recognized: false,
-        incomplete: true
-      };
-    }
-
-    const payload = input.slice(cursor + 5, terminator.end);
-    if (OSC_COLOR_REPLY_PAYLOAD.test(payload)) {
-      return {
-        nextCursor: terminator.end + terminator.length,
-        recognized: true,
-        incomplete: false
-      };
-    }
   }
 
   if (DCS_STATUS_REPLY_PREFIX.test(remaining)) {
@@ -250,24 +219,6 @@ export const installTerminalQueryCompatibilityGuards = (
         return false;
       }
       return markSuppressed("private-mode-request", options);
-    }),
-    terminal.parser.registerOscHandler(10, (data) => {
-      if (!shouldHandle(options) || !isOscColorQuery(data)) {
-        return false;
-      }
-      return markSuppressed("osc-color-query", options);
-    }),
-    terminal.parser.registerOscHandler(11, (data) => {
-      if (!shouldHandle(options) || !isOscColorQuery(data)) {
-        return false;
-      }
-      return markSuppressed("osc-color-query", options);
-    }),
-    terminal.parser.registerOscHandler(12, (data) => {
-      if (!shouldHandle(options) || !isOscColorQuery(data)) {
-        return false;
-      }
-      return markSuppressed("osc-color-query", options);
     }),
     terminal.parser.registerDcsHandler({ intermediates: "$", final: "q" }, () => {
       if (!shouldHandle(options)) {

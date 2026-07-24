@@ -39,6 +39,7 @@ import {
   installTerminalQueryCompatibilityGuards
 } from "../utils/terminalControlSequenceCompat";
 import { installOscRuntime, type OscRuntimeHandle } from "../terminal/oscRuntime";
+import { openExternalLink } from "../terminal/osc/linkOpening";
 
 type LocalAwareSessionDescriptor = SessionDescriptor & {
   target?: "remote" | "local";
@@ -682,19 +683,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       const fitAddon = new FitAddon();
       const searchAddon = new SearchAddon();
       const webLinksAddon = new WebLinksAddon((_event, uri) => {
-        void window.nextshell.dialog
-          .openPath({
-            path: uri,
-            revealInFolder: false
-          })
-          .then((result) => {
-            if (!result.ok) {
-              void message.error(`打开链接失败：${formatErrorMessage(result.error, "请稍后重试")}`);
-            }
-          })
-          .catch((error) => {
-            void message.error(`打开链接失败：${formatErrorMessage(error, "请稍后重试")}`);
-          });
+        void openExternalLink(uri, {
+          confirm: usePreferencesStore.getState().preferences.terminal.hyperlinkConfirm
+        });
       });
 
       terminal.loadAddon(fitAddon);

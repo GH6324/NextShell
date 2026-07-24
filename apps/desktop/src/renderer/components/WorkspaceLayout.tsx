@@ -12,6 +12,7 @@ import {
 import { App as AntdApp, Tabs } from "antd";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { sessionStatusLabel } from "../utils/sessionStatus";
+import { isOscTitleEligibleStatus, resolveSessionBaseTitle } from "../utils/sessionTitle";
 import type {
   ConnectionProfile,
   SessionDescriptor,
@@ -36,6 +37,7 @@ import { TraceroutePane } from "./TraceroutePane";
 import { useCommandHistory } from "../hooks/useCommandHistory";
 import { useEditorTabStore } from "../store/useEditorTabStore";
 import { usePreferencesStore } from "../store/usePreferencesStore";
+import { useSessionOscStore } from "../store/useSessionOscStore";
 import { useTransferQueueStore, type TransferTask } from "../store/useTransferQueueStore";
 import { formatErrorMessage } from "../utils/errorMessage";
 import type { QuickCreateConnectionInput } from "../utils/quickConnectInput";
@@ -110,6 +112,17 @@ const EditorTabDirtyDot = ({ sessionId }: { sessionId: string }) => {
   }
 
   return <span className="tab-dirty-dot" title="有未保存的修改" aria-hidden="true" />;
+};
+
+// 按 sessionId 粒度订阅 OSC 标题,会话存活期间优先展示远端设置的标题,
+// 断开后回退到连接名,避免整个标签条随 OSC 更新重渲染
+const SessionTabTitle = ({ session }: { session: SessionDescriptor }) => {
+  const oscTitle = useSessionOscStore((state) => state.titleBySession[session.id]);
+
+  const title =
+    oscTitle && isOscTitleEligibleStatus(session.status) ? oscTitle : session.title;
+
+  return <span className="session-title">{title}</span>;
 };
 
 const SessionTabContextMenu = ({
@@ -322,6 +335,9 @@ const WorkspaceLayoutComponent = ({
   const showTracerouteTab = usePreferencesStore(
     (state) => state.preferences.traceroute.showTracerouteTab ?? true
   );
+  const activeOscTitle = useSessionOscStore((state) =>
+    activeSession ? state.titleBySession[activeSession.id] : undefined
+  );
   const [draggingSessionId, setDraggingSessionId] = useState<string>();
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(() =>
     resolveWorkspacePanelState(
@@ -367,13 +383,13 @@ const WorkspaceLayoutComponent = ({
 
   const headerSessionText = useMemo(() => {
     if (!activeSession) return "未选择会话";
-    const baseLabel =
-      activeSessionConnection?.name?.trim() ||
-      activeSessionConnection?.host?.trim() ||
-      activeSession.title ||
-      "session";
+    const baseLabel = resolveSessionBaseTitle(
+      activeSession.title,
+      activeSessionConnection,
+      isOscTitleEligibleStatus(activeSession.status) ? activeOscTitle : undefined
+    );
     return `${sessionStatusLabel(activeSession.status)} ${baseLabel}`;
-  }, [activeSession, activeSessionConnection]);
+  }, [activeSession, activeSessionConnection, activeOscTitle]);
 
   const headerSessionClass = activeSession?.status ?? "disconnected";
 
@@ -916,7 +932,7 @@ const WorkspaceLayoutComponent = ({
                         }}
                       >
                         <i className={`tab-type-icon ${iconClass}`} aria-hidden="true" />
-                        <span className="session-title">{session.title}</span>
+                        <SessionTabTitle session={session} />
                         {session.type === "editor" ? (
                           <EditorTabDirtyDot sessionId={session.id} />
                         ) : null}

@@ -196,7 +196,7 @@ export const parseExternalUrl = (rawPath: string): URL | undefined => {
   try {
     const url = new URL(trimmed);
     const protocol = url.protocol.toLowerCase();
-    if (protocol === "http:" || protocol === "https:") {
+    if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
       return url;
     }
   } catch {

@@ -19,7 +19,11 @@ import {
   decodeTerminalData,
   encodeTerminalData
 } from "./container-utils";
-import { createRemoteOsc7BootstrapPlan, resolveOsc7ShellFamily } from "./terminal-osc7-bootstrap";
+import {
+  resolveShellFamily,
+  startShellIntegrationObserver,
+  type ShellIntegrationFamily
+} from "./terminal-shell-integration";
 import { resolveLocalShellLaunch } from "./local-shell";
 import type { createOrderedBytesDispatcher } from "./ipc-stream-dispatcher";
 import { logger } from "../logger";
@@ -130,36 +134,24 @@ export class SessionService {
 
     try {
       const connection = await this.ensureConnection(connectionId, authOverride);
-      let shellPath: string | undefined;
-      let osc7ShellFamily: ReturnType<typeof resolveOsc7ShellFamily> = undefined;
-      if (profile.monitorSession) {
+      // Shell integration ("auto" mode only): probe the login shell up front
+      // so the post-open observer knows which script to inject. The session
+      // itself always opens as a plain PTY shell; injection never restarts
+      // the user's shell. Probe failures silently disable injection.
+      let shellIntegrationFamily: ShellIntegrationFamily | undefined;
+      if (this.connections.getAppPreferences().terminal.shellIntegration === "auto") {
         try {
           const shellProbe = await connection.exec("printf '%s' \"${SHELL:-}\"");
-          shellPath = shellProbe.stdout.trim() || undefined;
-          osc7ShellFamily = resolveOsc7ShellFamily(shellPath);
+          shellIntegrationFamily = resolveShellFamily(shellProbe.stdout.trim() || undefined);
         } catch {
-          shellPath = undefined;
-          osc7ShellFamily = undefined;
+          shellIntegrationFamily = undefined;
         }
       }
-      const osc7Bootstrap = createRemoteOsc7BootstrapPlan(
-        Boolean(profile.monitorSession),
-        profile.host,
-        osc7ShellFamily,
-        shellPath
-      );
-      const shell =
-        osc7Bootstrap.enabled && osc7Bootstrap.launchCommand
-          ? await connection.openExecChannel(osc7Bootstrap.launchCommand, {
-              cols: 140,
-              rows: 40,
-              term: "xterm-256color"
-            })
-          : await connection.openShell({
-              cols: 140,
-              rows: 40,
-              term: "xterm-256color"
-            });
+      const shell = await connection.openShell({
+        cols: 140,
+        rows: 40,
+        term: "xterm-256color"
+      });
 
       const now = new Date().toISOString();
       this.connections.save({
@@ -221,6 +213,25 @@ export class SessionService {
         shell.stderr.removeAllListeners();
         this.finalizeRemoteSession(descriptor.id, "failed", normalizeError(error));
       });
+
+      // Auto shell integration: observe the first prompt cycle; a remote that
+      // already emits OSC 7/133 is left alone, otherwise install + inject the
+      // integration script. Never blocks or fails the session.
+      if (shellIntegrationFamily) {
+        startShellIntegrationObserver({
+          connection,
+          shell,
+          family: shellIntegrationFamily,
+          isSessionActive: () => this.activeSessions.has(descriptor.id),
+          decode: (chunk) => decodeTerminalData(chunk, profile.terminalEncoding),
+          log: (message, metadata) =>
+            logger.info(message, {
+              sessionId: descriptor.id,
+              connectionId,
+              ...metadata
+            })
+        });
+      }
 
       let connectedReason = await this.warmupSftp(connectionId, connection);
       if (authOverride) {

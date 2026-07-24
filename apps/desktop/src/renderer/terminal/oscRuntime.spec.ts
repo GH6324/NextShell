@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { Terminal } from "@xterm/xterm";
 import type { SessionDescriptor } from "@nextshell/core";
 import {
@@ -13,6 +13,7 @@ type OscHandler = (data: string) => boolean | Promise<boolean>;
 
 const createMockTerminal = () => {
   const oscHandlers = new Map<number, OscHandler>();
+  const titleListeners = new Set<(title: string) => void>();
   const terminal = {
     parser: {
       registerOscHandler(ident: number, callback: OscHandler) {
@@ -23,10 +24,33 @@ const createMockTerminal = () => {
           }
         };
       }
+    },
+    // hyperlink module assigns `options.linkHandler`; title module subscribes
+    // `onTitleChange` — both run at install time with the default module set.
+    options: {} as Record<string, unknown>,
+    onTitleChange(listener: (title: string) => void) {
+      titleListeners.add(listener);
+      return {
+        dispose: () => {
+          titleListeners.delete(listener);
+        }
+      };
     }
   } as unknown as Terminal;
 
   return { terminal, oscHandlers };
+};
+
+// The notify module subscribes `window.nextshell.terminal.onNotificationAction`
+// at install time; vitest runs in a node environment, so stub the bridge.
+const stubNotificationActionBridge = (): void => {
+  vi.stubGlobal("window", {
+    nextshell: {
+      terminal: {
+        onNotificationAction: () => () => {}
+      }
+    }
+  });
 };
 
 const createSession = (id: string): SessionDescriptor => ({
@@ -68,7 +92,10 @@ const resetStores = (): void => {
 };
 
 describe("oscRuntime", () => {
-  beforeEach(resetStores);
+  beforeEach(() => {
+    resetStores();
+    stubNotificationActionBridge();
+  });
 
   test("registers an OSC 7 handler that records cwd for the current session", () => {
     const { terminal, oscHandlers } = createMockTerminal();
