@@ -1,5 +1,10 @@
-import { describe, expect, test } from "vitest";
-import { parseConEmuProgress } from "./progress";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { Terminal } from "@xterm/xterm";
+import type { SessionDescriptor } from "@nextshell/core";
+import type { OscRuntimeContext } from "../oscRuntime";
+import { useSessionOscStore } from "../../store/useSessionOscStore";
+import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { install, parseConEmuProgress } from "./progress";
 
 describe("parseConEmuProgress", () => {
   test("parses state 0 as none without a value", () => {
@@ -42,5 +47,70 @@ describe("parseConEmuProgress", () => {
     expect(parseConEmuProgress("4;1;")).toBeUndefined();
     expect(parseConEmuProgress("4;2;abc")).toBeUndefined();
     expect(parseConEmuProgress("4;4;Infinity")).toBeUndefined();
+  });
+});
+
+const createSession = (id: string): SessionDescriptor => ({
+  id,
+  target: "remote",
+  connectionId: "c1",
+  title: `${id}#1`,
+  type: "terminal",
+  status: "connected",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  reconnectable: true
+});
+
+describe("install window progress ownership", () => {
+  beforeEach(() => {
+    useWorkspaceStore.setState({ sessions: [], activeSessionId: undefined });
+    useSessionOscStore.setState({
+      cwdBySession: {},
+      titleBySession: {},
+      marksBySession: {},
+      progressBySession: {},
+      userVarsBySession: {}
+    });
+  });
+
+  test("clears the bar through the previous owner when the last session closes", () => {
+    const setProgress = vi.fn(() => Promise.resolve({ ok: true }));
+    vi.stubGlobal("window", { nextshell: { terminal: { setProgress } } });
+
+    const dispose = install({} as Terminal, {} as OscRuntimeContext);
+    try {
+      useWorkspaceStore.getState().upsertSession(createSession("s1"));
+      useWorkspaceStore.getState().setActiveSession("s1");
+      useSessionOscStore.getState().setSessionProgress("s1", { state: "normal", value: 50 });
+      setProgress.mockClear();
+
+      useWorkspaceStore.getState().removeSession("s1");
+
+      expect(setProgress).toHaveBeenCalledWith({ sessionId: "s1", state: "none" });
+    } finally {
+      dispose();
+    }
+  });
+
+  test("re-applies stored progress when switching sessions", () => {
+    const setProgress = vi.fn(() => Promise.resolve({ ok: true }));
+    vi.stubGlobal("window", { nextshell: { terminal: { setProgress } } });
+
+    const dispose = install({} as Terminal, {} as OscRuntimeContext);
+    try {
+      useWorkspaceStore.getState().upsertSession(createSession("s1"));
+      useWorkspaceStore.getState().upsertSession(createSession("s2"));
+      useWorkspaceStore.getState().setActiveSession("s1");
+      useSessionOscStore.getState().setSessionProgress("s2", { state: "error", value: 80 });
+      setProgress.mockClear();
+
+      useWorkspaceStore.getState().setActiveSession("s2");
+      expect(setProgress).toHaveBeenCalledWith({ sessionId: "s2", state: "error", value: 80 });
+
+      useWorkspaceStore.getState().setActiveSession("s1");
+      expect(setProgress).toHaveBeenCalledWith({ sessionId: "s1", state: "none" });
+    } finally {
+      dispose();
+    }
   });
 });

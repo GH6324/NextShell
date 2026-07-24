@@ -84,10 +84,20 @@ export const install = (_terminal: Terminal, _ctx: OscRuntimeContext): (() => vo
     if (nextActiveId === previousActiveId) {
       return;
     }
-    previousActiveId = nextActiveId;
     if (!nextActiveId) {
+      // The last session closed while owning the bar: without an explicit
+      // clear the window keeps showing its final progress forever. The IPC
+      // schema requires a non-empty sessionId, so clear through the previous
+      // owner.
+      if (previousActiveId) {
+        void window.nextshell.terminal
+          .setProgress({ sessionId: previousActiveId, state: "none" })
+          .catch(() => {});
+      }
+      previousActiveId = nextActiveId;
       return;
     }
+    previousActiveId = nextActiveId;
 
     const progress = useSessionOscStore.getState().progressBySession[nextActiveId];
     void window.nextshell.terminal
