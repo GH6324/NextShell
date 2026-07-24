@@ -50,6 +50,8 @@ import {
   sessionOpenSchema,
   sessionResizeSchema,
   sessionWriteSchema,
+  terminalNotificationSchema,
+  terminalProgressSchema,
   sftpListSchema,
   sftpRenameSchema,
   sftpTransferPackedSchema,
@@ -293,6 +295,22 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     schema: streamDeliveryAckSchema,
     label: "流式消息确认",
     dispatch: (services, input) => services.sessions.ackStreamDelivery(input)
+  }),
+
+  // ─── Terminal Integration ─────────────────────────────────────────────────
+  define({
+    channel: IPCChannel.TerminalNotification,
+    schema: terminalNotificationSchema,
+    label: "终端桌面通知",
+    dispatch: (services, input, event) =>
+      services.terminalIntegration.showNotification(event.sender, input)
+  }),
+  define({
+    channel: IPCChannel.TerminalProgress,
+    schema: terminalProgressSchema,
+    label: "终端任务栏进度",
+    dispatch: (services, input, event) =>
+      services.terminalIntegration.setProgress(event.sender, input)
   }),
 
   // ─── System Monitor ───────────────────────────────────────────────────────

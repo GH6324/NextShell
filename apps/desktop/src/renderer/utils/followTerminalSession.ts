@@ -9,7 +9,6 @@ const isConnectedRemoteTerminal = (session: SessionDescriptor, connectionId: str
 export const resolveFollowTerminalSessionId = ({
   activeConnectionId,
   activeSessionId,
-  connections,
   sessions,
   lastActiveRemoteTerminalByConnection
 }: {
@@ -20,11 +19,6 @@ export const resolveFollowTerminalSessionId = ({
   lastActiveRemoteTerminalByConnection: Record<string, string | undefined>;
 }): string | undefined => {
   if (!activeConnectionId) {
-    return undefined;
-  }
-
-  const activeConnection = connections.find((connection) => connection.id === activeConnectionId);
-  if (!activeConnection?.monitorSession) {
     return undefined;
   }
 

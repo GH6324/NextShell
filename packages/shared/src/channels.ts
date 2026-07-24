@@ -104,6 +104,11 @@ export const IPCChannel = {
   TracerouteStop: "nextshell:traceroute:stop",
   TracerouteData: "nextshell:traceroute:data",
 
+  // ── Terminal Integration (OSC notifications & taskbar progress) ──
+  TerminalNotification: "nextshell:terminal:notification",
+  TerminalProgress: "nextshell:terminal:progress",
+  TerminalNotificationAction: "nextshell:terminal:notification-action",
+
   // ── Resource Operations ──
   ResourceCopyConnection: "nextshell:resource:copy-connection",
 

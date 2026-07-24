@@ -21,6 +21,7 @@ import type { SftpService } from "./sftp-service";
 import type { BackupPasswordService } from "./backup-password-service";
 import type { NetworkToolService } from "./network-tool-service";
 import type { PreferencesDialogService } from "./preferences-dialog-service";
+import type { TerminalIntegrationService } from "./terminal-integration-service";
 import type { CloudSyncManager } from "./cloud-sync-manager";
 import type { ResourceOperationsService } from "./resource-operations-service";
 
@@ -103,6 +104,7 @@ export interface ServiceContainer {
   readonly backupPassword: BackupPasswordService;
   readonly networkTools: NetworkToolService;
   readonly preferences: PreferencesDialogService;
+  readonly terminalIntegration: TerminalIntegrationService;
   readonly cloudSync: CloudSyncManager;
   readonly resourceOps: ResourceOperationsService;
 

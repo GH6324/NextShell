@@ -698,7 +698,33 @@ const parseAppPreferences = (value: string | null): AppPreferences => {
             typeof parsed.terminal?.localShell?.customPath === "string"
               ? parsed.terminal.localShell.customPath.trim()
               : fallback.terminal.localShell.customPath
-        }
+        },
+        oscClipboardWrite:
+          typeof parsed.terminal?.oscClipboardWrite === "boolean"
+            ? parsed.terminal.oscClipboardWrite
+            : fallback.terminal.oscClipboardWrite,
+        oscClipboardRead:
+          typeof parsed.terminal?.oscClipboardRead === "boolean"
+            ? parsed.terminal.oscClipboardRead
+            : fallback.terminal.oscClipboardRead,
+        oscNotifications:
+          typeof parsed.terminal?.oscNotifications === "boolean"
+            ? parsed.terminal.oscNotifications
+            : fallback.terminal.oscNotifications,
+        oscTitleUpdates:
+          typeof parsed.terminal?.oscTitleUpdates === "boolean"
+            ? parsed.terminal.oscTitleUpdates
+            : fallback.terminal.oscTitleUpdates,
+        hyperlinkConfirm:
+          typeof parsed.terminal?.hyperlinkConfirm === "boolean"
+            ? parsed.terminal.hyperlinkConfirm
+            : fallback.terminal.hyperlinkConfirm,
+        shellIntegration:
+          parsed.terminal?.shellIntegration === "auto" ||
+          parsed.terminal?.shellIntegration === "off" ||
+          parsed.terminal?.shellIntegration === "manual"
+            ? parsed.terminal.shellIntegration
+            : fallback.terminal.shellIntegration
       },
       ssh: {
         keepAliveEnabled:

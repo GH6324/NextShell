@@ -87,6 +87,9 @@ import type {
   SessionStatusEvent,
   StreamDeliveryAckInput,
   SessionWriteInput,
+  TerminalNotificationActionEvent,
+  TerminalNotificationInput,
+  TerminalProgressInput,
   SftpDeleteInput,
   SftpDownloadInput,
   SftpDownloadPackedInput,
@@ -182,6 +185,18 @@ export interface NextShellApi {
     ackData: (payload: StreamDeliveryAckInput) => Promise<{ ok: true }>;
     onData: (listener: (event: SessionDataEvent) => void) => SessionEventUnsubscribe;
     onStatus: (listener: (event: SessionStatusEvent) => void) => SessionEventUnsubscribe;
+  };
+  terminal: {
+    /** OSC 9 / 777 desktop notification; main shows it only when the window is unfocused. */
+    showNotification: (
+      payload: TerminalNotificationInput
+    ) => Promise<{ ok: boolean; error?: string }>;
+    /** OSC 9;4 taskbar progress bar state. */
+    setProgress: (payload: TerminalProgressInput) => Promise<{ ok: boolean; error?: string }>;
+    /** Emitted when the user clicks a terminal notification; renderer should focus the session. */
+    onNotificationAction: (
+      listener: (event: TerminalNotificationActionEvent) => void
+    ) => SessionEventUnsubscribe;
   };
   monitor: {
     getSystemInfoSnapshot: (payload: MonitorSystemInfoSnapshotInput) => Promise<SystemInfoSnapshot>;
@@ -356,6 +371,8 @@ export interface IpcInvokeMethods {
   [IPCChannel.SessionClose]: NextShellApi["session"]["close"];
   [IPCChannel.SessionGetHomeDir]: NextShellApi["session"]["getHomeDir"];
   [IPCChannel.StreamDeliveryAck]: NextShellApi["session"]["ackData"];
+  [IPCChannel.TerminalNotification]: NextShellApi["terminal"]["showNotification"];
+  [IPCChannel.TerminalProgress]: NextShellApi["terminal"]["setProgress"];
   [IPCChannel.MonitorSystemInfoSnapshot]: NextShellApi["monitor"]["getSystemInfoSnapshot"];
   [IPCChannel.MonitorSystemStart]: NextShellApi["monitor"]["startSystem"];
   [IPCChannel.MonitorSystemStop]: NextShellApi["monitor"]["stopSystem"];

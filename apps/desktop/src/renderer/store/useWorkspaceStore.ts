@@ -78,7 +78,6 @@ interface WorkspaceState {
   processSnapshots: Record<string, ProcessSnapshot>;
   networkSnapshots: Record<string, NetworkSnapshot>;
   networkRateHistory: Record<string, NetworkPoint[]>;
-  sessionCwdById: Record<string, string>;
   lastActiveRemoteTerminalByConnection: Record<string, string | undefined>;
   bottomTab: BottomTab;
   setConnections: (connections: ConnectionProfile[]) => void;
@@ -101,22 +100,8 @@ interface WorkspaceState {
   setNetworkSnapshot: (connectionId: string, snapshot: NetworkSnapshot) => void;
   appendNetworkRate: (connectionId: string, iface: string, point: NetworkPoint) => void;
   clearNetworkRateHistory: (connectionId: string) => void;
-  setSessionCwd: (sessionId: string, cwd?: string) => void;
   setBottomTab: (tab: BottomTab) => void;
 }
-
-const omitSessionCwd = (
-  sessionCwdById: Record<string, string>,
-  sessionId: string
-): Record<string, string> => {
-  if (!(sessionId in sessionCwdById)) {
-    return sessionCwdById;
-  }
-
-  const next = { ...sessionCwdById };
-  delete next[sessionId];
-  return next;
-};
 
 const omitLastActiveTerminalForSession = (
   lastActiveRemoteTerminalByConnection: Record<string, string | undefined>,
@@ -149,7 +134,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   processSnapshots: {},
   networkSnapshots: {},
   networkRateHistory: {},
-  sessionCwdById: {},
   lastActiveRemoteTerminalByConnection: {},
   setConnections: (connections) => set({ connections }),
   setSshKeys: (sshKeys) => set({ sshKeys }),
@@ -218,7 +202,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         activeConnectionId: nextActiveConnectionId,
         processSnapshots,
         networkSnapshots,
-        sessionCwdById: omitSessionCwd(state.sessionCwdById, sessionId),
         lastActiveRemoteTerminalByConnection: omitLastActiveTerminalForSession(
           state.lastActiveRemoteTerminalByConnection,
           target
@@ -246,11 +229,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           : getSessionConnectionId(nextActiveSession)
         : undefined;
 
-      let sessionCwdById = state.sessionCwdById;
-      for (const removedSession of removedSessions) {
-        sessionCwdById = omitSessionCwd(sessionCwdById, removedSession.id);
-      }
-
       let lastActiveRemoteTerminalByConnection = state.lastActiveRemoteTerminalByConnection;
       for (const removedSession of removedSessions) {
         lastActiveRemoteTerminalByConnection = omitLastActiveTerminalForSession(
@@ -266,7 +244,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         processSnapshots: omitConnectionSnapshot(state.processSnapshots, connectionId),
         networkSnapshots: omitConnectionSnapshot(state.networkSnapshots, connectionId),
         networkRateHistory: pruneNetworkRateHistory(state.networkRateHistory, connectionId),
-        sessionCwdById,
         lastActiveRemoteTerminalByConnection
       };
     }),
@@ -355,22 +332,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     set((state) => {
       return {
         networkRateHistory: pruneNetworkRateHistory(state.networkRateHistory, connectionId)
-      };
-    }),
-  setSessionCwd: (sessionId, cwd) =>
-    set((state) => {
-      if (!cwd) {
-        return {
-          sessionCwdById: omitSessionCwd(state.sessionCwdById, sessionId)
-        };
-      }
-
-      if (state.sessionCwdById[sessionId] === cwd) {
-        return {};
-      }
-
-      return {
-        sessionCwdById: { ...state.sessionCwdById, [sessionId]: cwd }
       };
     }),
   setBottomTab: (tab) =>

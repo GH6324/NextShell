@@ -264,19 +264,8 @@ export const useRemoteExplorerState = ({
     if (!connectionId || !connected) setFollowCwd(false);
   }, [connectionId, connected]);
 
-  useEffect(() => {
-    if (!connection?.monitorSession) {
-      setFollowCwd(false);
-    }
-  }, [connectionId, connection?.monitorSession]);
-
   const followCwdTrackingEnabled = Boolean(
-    active &&
-    followCwd &&
-    connectionId &&
-    connected &&
-    connection?.monitorSession &&
-    followSessionId
+    active && followCwd && connectionId && connected && followSessionId
   );
 
   useEffect(() => {
@@ -425,13 +414,6 @@ export const useRemoteExplorerState = ({
   }, [navigate, pathName]);
 
   const toggleFollowCwd = useCallback(() => {
-    if (!connection?.monitorSession) {
-      message.info({
-        content: "该功能依赖监控会话开关，请先在服务器设置中启用监控会话。",
-        duration: 3
-      });
-      return;
-    }
     if (!followSessionId) {
       message.info({
         content: "当前连接暂无可跟随的远程终端。",
@@ -448,7 +430,7 @@ export const useRemoteExplorerState = ({
       content: nextFollowCwd ? "已启用跟随终端目录" : "已关闭跟随终端目录",
       duration: 2
     });
-  }, [connection?.monitorSession, followCwd, followSessionId, message]);
+  }, [followCwd, followSessionId, message]);
 
   return {
     busy,

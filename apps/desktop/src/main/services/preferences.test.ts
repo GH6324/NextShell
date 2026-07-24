@@ -124,3 +124,100 @@ const assertEqual = <T>(actual: T, expected: T, message: string): void => {
     "mergePreferences should keep requested localShell mode when only path is invalid"
   );
 })();
+
+(() => {
+  const merged = mergePreferences(DEFAULT_APP_PREFERENCES, {
+    terminal: {
+      oscClipboardWrite: false,
+      oscClipboardRead: true,
+      oscNotifications: false,
+      oscTitleUpdates: false,
+      hyperlinkConfirm: false,
+      shellIntegration: "manual"
+    }
+  });
+
+  assertEqual(
+    merged.terminal.oscClipboardWrite,
+    false,
+    "mergePreferences should update terminal oscClipboardWrite"
+  );
+  assertEqual(
+    merged.terminal.oscClipboardRead,
+    true,
+    "mergePreferences should update terminal oscClipboardRead"
+  );
+  assertEqual(
+    merged.terminal.oscNotifications,
+    false,
+    "mergePreferences should update terminal oscNotifications"
+  );
+  assertEqual(
+    merged.terminal.oscTitleUpdates,
+    false,
+    "mergePreferences should update terminal oscTitleUpdates"
+  );
+  assertEqual(
+    merged.terminal.hyperlinkConfirm,
+    false,
+    "mergePreferences should update terminal hyperlinkConfirm"
+  );
+  assertEqual(
+    merged.terminal.shellIntegration,
+    "manual",
+    "mergePreferences should update terminal shellIntegration"
+  );
+})();
+
+(() => {
+  const merged = mergePreferences(DEFAULT_APP_PREFERENCES, {
+    terminal: {
+      oscNotifications: false
+    }
+  });
+
+  assertEqual(
+    merged.terminal.oscNotifications,
+    false,
+    "mergePreferences should update a single OSC toggle"
+  );
+  assertEqual(
+    merged.terminal.oscClipboardWrite,
+    DEFAULT_APP_PREFERENCES.terminal.oscClipboardWrite,
+    "mergePreferences should preserve oscClipboardWrite when omitted"
+  );
+  assertEqual(
+    merged.terminal.oscClipboardRead,
+    DEFAULT_APP_PREFERENCES.terminal.oscClipboardRead,
+    "mergePreferences should preserve oscClipboardRead when omitted"
+  );
+  assertEqual(
+    merged.terminal.oscTitleUpdates,
+    DEFAULT_APP_PREFERENCES.terminal.oscTitleUpdates,
+    "mergePreferences should preserve oscTitleUpdates when omitted"
+  );
+  assertEqual(
+    merged.terminal.hyperlinkConfirm,
+    DEFAULT_APP_PREFERENCES.terminal.hyperlinkConfirm,
+    "mergePreferences should preserve hyperlinkConfirm when omitted"
+  );
+  assertEqual(
+    merged.terminal.shellIntegration,
+    DEFAULT_APP_PREFERENCES.terminal.shellIntegration,
+    "mergePreferences should preserve shellIntegration when omitted"
+  );
+})();
+
+(() => {
+  const merged = mergePreferences(DEFAULT_APP_PREFERENCES, {
+    terminal: {
+      shellIntegration: "bogus" as "auto"
+    }
+  });
+
+  assertEqual(
+    merged.terminal.shellIntegration,
+    DEFAULT_APP_PREFERENCES.terminal.shellIntegration,
+    "mergePreferences should fall back to current shellIntegration on invalid value"
+  );
+})();

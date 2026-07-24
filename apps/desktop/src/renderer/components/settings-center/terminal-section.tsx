@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { App as AntdApp, Button, Input, InputNumber, Select, Slider } from "antd";
+import { App as AntdApp, Button, Input, InputNumber, Radio, Select, Slider } from "antd";
 import { SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS } from "@nextshell/shared";
+import type { ShellIntegrationMode } from "@nextshell/core";
 import { canonicalizeFontFamily, getTerminalFontOptions } from "../../utils/terminalFonts";
-import { SettingsCard, SettingsRow } from "./shared-components";
+import { SettingsCard, SettingsRow, SettingsSwitchRow } from "./shared-components";
 import {
   HEX_COLOR_PATTERN,
   CUSTOM_THEME_PRESET,
@@ -22,6 +23,12 @@ export const TerminalSection = ({
   terminalLineHeight,
   terminalFontFamily,
   localShell,
+  oscClipboardWrite,
+  oscClipboardRead,
+  oscNotifications,
+  oscTitleUpdates,
+  hyperlinkConfirm,
+  shellIntegration,
   appBackgroundImagePath,
   appBackgroundOpacity,
   setTerminalBackgroundColor,
@@ -40,6 +47,12 @@ export const TerminalSection = ({
   terminalLineHeight: number;
   terminalFontFamily: string;
   localShell: LocalShellPreference;
+  oscClipboardWrite: boolean;
+  oscClipboardRead: boolean;
+  oscNotifications: boolean;
+  oscTitleUpdates: boolean;
+  hyperlinkConfirm: boolean;
+  shellIntegration: ShellIntegrationMode;
   appBackgroundImagePath: string;
   appBackgroundOpacity: number;
   setTerminalBackgroundColor: (v: string) => void;
@@ -495,6 +508,61 @@ export const TerminalSection = ({
             </div>
           </SettingsRow>
         ) : null}
+      </SettingsCard>
+
+      <SettingsCard title="终端集成" description="控制远端程序通过 OSC 转义序列与系统交互的能力">
+        <SettingsSwitchRow
+          label="允许终端写入系统剪贴板"
+          hint="OSC 52；远端程序可将文本放入剪贴板"
+          checked={oscClipboardWrite}
+          disabled={loading}
+          onChange={(v) => save({ terminal: { oscClipboardWrite: v } })}
+        />
+        <SettingsSwitchRow
+          label="允许终端读取系统剪贴板"
+          hint="OSC 52 读取；默认关闭，开启需谨慎"
+          checked={oscClipboardRead}
+          disabled={loading}
+          onChange={(v) => save({ terminal: { oscClipboardRead: v } })}
+        />
+        <SettingsSwitchRow
+          label="桌面通知"
+          hint="OSC 9 / 777；窗口失焦时才弹出"
+          checked={oscNotifications}
+          disabled={loading}
+          onChange={(v) => save({ terminal: { oscNotifications: v } })}
+        />
+        <SettingsSwitchRow
+          label="标签标题跟随终端"
+          hint="OSC 0/2；远端程序可修改会话标题"
+          checked={oscTitleUpdates}
+          disabled={loading}
+          onChange={(v) => save({ terminal: { oscTitleUpdates: v } })}
+        />
+        <SettingsSwitchRow
+          label="打开链接前确认"
+          hint="显示完整目标地址，防止钓鱼链接"
+          checked={hyperlinkConfirm}
+          disabled={loading}
+          onChange={(v) => save({ terminal: { hyperlinkConfirm: v } })}
+        />
+        <SettingsRow
+          label="Shell 集成"
+          hint="自动：检测到远端未集成时注入提示符与 cwd 上报；手动：仅提供安装命令自行安装；关闭：不注入"
+        >
+          <Radio.Group
+            value={shellIntegration}
+            disabled={loading}
+            size="small"
+            onChange={(e) =>
+              save({ terminal: { shellIntegration: e.target.value as ShellIntegrationMode } })
+            }
+          >
+            <Radio.Button value="auto">自动</Radio.Button>
+            <Radio.Button value="manual">手动</Radio.Button>
+            <Radio.Button value="off">关闭</Radio.Button>
+          </Radio.Group>
+        </SettingsRow>
       </SettingsCard>
     </>
   );

@@ -6,6 +6,7 @@ export type DeleteMode = "vt220-delete" | "ascii-delete" | "ascii-backspace";
 export type SessionTarget = "remote" | "local";
 export type LocalShellMode = "preset" | "custom";
 export type LocalShellPreset = "system" | "powershell" | "cmd" | "zsh" | "sh" | "bash";
+export type ShellIntegrationMode = "auto" | "off" | "manual";
 
 // ────── Cloud Sync v2: Resource Origin Model ──────
 
@@ -557,6 +558,18 @@ export interface AppPreferences {
       preset: LocalShellPreset;
       customPath: string;
     };
+    /** 是否允许远端程序通过 OSC 52 写入系统剪贴板 */
+    oscClipboardWrite: boolean;
+    /** 是否允许远端程序通过 OSC 52 读取系统剪贴板（默认关闭，开启需谨慎） */
+    oscClipboardRead: boolean;
+    /** 是否允许 OSC 9 / 777 桌面通知（窗口失焦时才弹出） */
+    oscNotifications: boolean;
+    /** 是否允许 OSC 0/2 修改会话标签标题 */
+    oscTitleUpdates: boolean;
+    /** 打开终端超链接前是否弹窗确认完整目标地址 */
+    hyperlinkConfirm: boolean;
+    /** Shell 集成注入策略：auto 自动检测注入 / manual 仅提供安装命令 / off 纯被动解析 */
+    shellIntegration: ShellIntegrationMode;
   };
   ssh: {
     /** 是否对所有连接启用 keepalive（发送空包） */
@@ -643,6 +656,12 @@ export interface AppPreferencesPatch {
       preset?: LocalShellPreset;
       customPath?: string;
     };
+    oscClipboardWrite?: boolean;
+    oscClipboardRead?: boolean;
+    oscNotifications?: boolean;
+    oscTitleUpdates?: boolean;
+    hyperlinkConfirm?: boolean;
+    shellIntegration?: ShellIntegrationMode;
   };
   ssh?: {
     keepAliveEnabled?: boolean;
@@ -803,7 +822,13 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
       mode: "preset",
       preset: "system",
       customPath: ""
-    }
+    },
+    oscClipboardWrite: true,
+    oscClipboardRead: false,
+    oscNotifications: true,
+    oscTitleUpdates: true,
+    hyperlinkConfirm: true,
+    shellIntegration: "auto"
   },
   ssh: {
     keepAliveEnabled: true,

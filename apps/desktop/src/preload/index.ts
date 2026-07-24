@@ -7,6 +7,7 @@ import type {
   SftpEditStatusEvent,
   SftpTransferStatusEvent,
   StreamDeliveryAckInput,
+  TerminalNotificationActionEvent,
   TracerouteEvent
 } from "../../../../packages/shared/src/index";
 import type {
@@ -85,6 +86,23 @@ const api: NextShellApi = {
       ipcRenderer.on(IPCChannel.SessionStatus, handler);
       return () => {
         ipcRenderer.off(IPCChannel.SessionStatus, handler);
+      };
+    }
+  },
+  terminal: {
+    showNotification: (payload) => invoke(IPCChannel.TerminalNotification, payload),
+    setProgress: (payload) => invoke(IPCChannel.TerminalProgress, payload),
+    onNotificationAction: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: TerminalNotificationActionEvent
+      ) => {
+        listener(payload);
+      };
+
+      ipcRenderer.on(IPCChannel.TerminalNotificationAction, handler);
+      return () => {
+        ipcRenderer.off(IPCChannel.TerminalNotificationAction, handler);
       };
     }
   },

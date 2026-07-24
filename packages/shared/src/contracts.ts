@@ -40,6 +40,7 @@ export const restoreConflictPolicySchema = z.enum(["skip_older", "force"]);
 export const windowAppearanceSchema = z.enum(["system", "light", "dark"]);
 export const localShellModeSchema = z.enum(["preset", "custom"]);
 export const localShellPresetSchema = z.enum(["system", "powershell", "cmd", "zsh", "sh", "bash"]);
+export const shellIntegrationModeSchema = z.enum(["auto", "off", "manual"]);
 export const connectionListQuerySchema = z.object({
   keyword: z.string().trim().optional(),
   group: z.string().trim().optional(),
@@ -492,7 +493,17 @@ export const appPreferencesSchema = z
           .max(2)
           .default(DEFAULT_APP_PREFERENCES.terminal.lineHeight),
         fontFamily: z.string().trim().min(1).default(DEFAULT_APP_PREFERENCES.terminal.fontFamily),
-        localShell: localShellSchema.default(DEFAULT_APP_PREFERENCES.terminal.localShell)
+        localShell: localShellSchema.default(DEFAULT_APP_PREFERENCES.terminal.localShell),
+        oscClipboardWrite: z
+          .boolean()
+          .default(DEFAULT_APP_PREFERENCES.terminal.oscClipboardWrite),
+        oscClipboardRead: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.oscClipboardRead),
+        oscNotifications: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.oscNotifications),
+        oscTitleUpdates: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.oscTitleUpdates),
+        hyperlinkConfirm: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.hyperlinkConfirm),
+        shellIntegration: shellIntegrationModeSchema.default(
+          DEFAULT_APP_PREFERENCES.terminal.shellIntegration
+        )
       })
       .default(DEFAULT_APP_PREFERENCES.terminal),
     ssh: z
@@ -637,7 +648,13 @@ export const appPreferencesPatchSchema = z.object({
             });
           }
         })
-        .optional()
+        .optional(),
+      oscClipboardWrite: z.boolean().optional(),
+      oscClipboardRead: z.boolean().optional(),
+      oscNotifications: z.boolean().optional(),
+      oscTitleUpdates: z.boolean().optional(),
+      hyperlinkConfirm: z.boolean().optional(),
+      shellIntegration: shellIntegrationModeSchema.optional()
     })
     .optional(),
   ssh: z
@@ -718,6 +735,32 @@ export const dialogOpenDirectorySchema = z.object({
 export const dialogOpenPathSchema = z.object({
   path: z.string().trim().min(1),
   revealInFolder: z.boolean().default(false)
+});
+
+// ── Terminal integration (OSC 9/777 notifications, OSC 9;4 taskbar progress) ──
+export const terminalNotificationSchema = z.object({
+  sessionId: z.string().min(1),
+  title: z.string().trim().min(1).max(200).optional(),
+  body: z.string().trim().min(1).max(500)
+});
+
+export const terminalProgressStateSchema = z.enum([
+  "none",
+  "normal",
+  "error",
+  "indeterminate",
+  "paused"
+]);
+
+export const terminalProgressSchema = z.object({
+  sessionId: z.string().min(1),
+  state: terminalProgressStateSchema,
+  value: z.coerce.number().min(0).max(100).optional()
+});
+
+/** Main→renderer event payload emitted when the user clicks a terminal notification. */
+export const terminalNotificationActionEventSchema = z.object({
+  sessionId: z.string().min(1)
 });
 
 export const sftpTransferStatusEventSchema = z.object({
@@ -943,6 +986,10 @@ export type SettingsUpdateInput = AppPreferencesPatchInput;
 export type DialogOpenFilesInput = z.infer<typeof dialogOpenFilesSchema>;
 export type DialogOpenDirectoryInput = z.infer<typeof dialogOpenDirectorySchema>;
 export type DialogOpenPathInput = z.infer<typeof dialogOpenPathSchema>;
+export type TerminalNotificationInput = z.infer<typeof terminalNotificationSchema>;
+export type TerminalProgressState = z.infer<typeof terminalProgressStateSchema>;
+export type TerminalProgressInput = z.infer<typeof terminalProgressSchema>;
+export type TerminalNotificationActionEvent = z.infer<typeof terminalNotificationActionEventSchema>;
 export type SftpTransferStatusEvent = z.infer<typeof sftpTransferStatusEventSchema>;
 export type SftpTransferCancelInput = z.infer<typeof sftpTransferCancelSchema>;
 export type BackupListInput = z.infer<typeof backupListSchema>;

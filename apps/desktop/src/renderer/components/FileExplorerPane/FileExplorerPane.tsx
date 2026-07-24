@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { App as AntdApp, Tree } from "antd";
 import { usePreferencesStore } from "../../store/usePreferencesStore";
+import { useSessionOscStore } from "../../store/useSessionOscStore";
 import { useTransferQueueStore } from "../../store/useTransferQueueStore";
-import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { ConnectionPrompt } from "../ConnectionPrompt";
 import { getVisibleFileExplorerToolbarActions } from "../FileExplorerPane.toolbar";
 import { normalizeRemotePath } from "./shared";
@@ -34,8 +34,8 @@ export const FileExplorerPane = ({
   const enqueueTask = useTransferQueueStore((state) => state.enqueueTask);
   const markFailed = useTransferQueueStore((state) => state.markFailed);
   const markSuccess = useTransferQueueStore((state) => state.markSuccess);
-  const followSessionCwd = useWorkspaceStore((state) =>
-    followSessionId ? state.sessionCwdById[followSessionId] : undefined
+  const followSessionCwd = useSessionOscStore((state) =>
+    followSessionId ? state.cwdBySession[followSessionId] : undefined
   );
 
   const explorer = useRemoteExplorerState({

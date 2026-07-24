@@ -21,7 +21,6 @@ import {
 import { formatErrorMessage } from "../utils/errorMessage";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { usePreferencesStore } from "../store/usePreferencesStore";
-import { consumeOsc7Chunk, createOsc7ParserState } from "../utils/osc7";
 import { shouldTrackTerminalSessionMetadata } from "../utils/terminalSessionMonitoring";
 import { shouldReconnectOnInput } from "../utils/terminal-reconnect";
 import {
@@ -39,6 +38,7 @@ import {
   createTerminalQueryReplyFilterState,
   installTerminalQueryCompatibilityGuards
 } from "../utils/terminalControlSequenceCompat";
+import { installOscRuntime, type OscRuntimeHandle } from "../terminal/oscRuntime";
 
 type LocalAwareSessionDescriptor = SessionDescriptor & {
   target?: "remote" | "local";
@@ -48,23 +48,6 @@ const isLocalSession = (session?: SessionDescriptor): boolean =>
   (session as LocalAwareSessionDescriptor | undefined)?.target === "local";
 
 const isRemoteSession = (session?: SessionDescriptor): boolean => !isLocalSession(session);
-
-interface SessionLookupEntry {
-  session: SessionDescriptor | undefined;
-  connection: ConnectionProfile | undefined;
-}
-
-/**
- * Per-session cache of store lookups used on the terminal data hot path
- * (~60 frames/s). The workspace store replaces its sessions/connections
- * arrays immutably on every change, so comparing array identities is a
- * complete and O(1) invalidation check.
- */
-interface SessionLookupCache {
-  sessions: SessionDescriptor[] | null;
-  connections: ConnectionProfile[] | null;
-  entries: Map<string, SessionLookupEntry>;
-}
 
 interface TerminalPaneProps {
   connection?: ConnectionProfile;
@@ -255,9 +238,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
     const lastStatusKeyBySessionRef = useRef<Map<string, string>>(new Map());
     const knownSessionIdsRef = useRef<Set<string>>(new Set());
     const frozenSessionIdRef = useRef<string | undefined>(undefined);
-    const osc7StateBySessionRef = useRef<Map<string, ReturnType<typeof createOsc7ParserState>>>(
-      new Map()
-    );
+    const oscRuntimeRef = useRef<OscRuntimeHandle | null>(null);
     const terminalQueryReplyStateBySessionRef = useRef<
       Map<string, ReturnType<typeof createTerminalQueryReplyFilterState>>
     >(new Map());
@@ -350,65 +331,6 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
     useEffect(() => {
       onRetrySessionAuthRef.current = onRetrySessionAuth;
     }, [onRetrySessionAuth]);
-
-    const setSessionCwd = useWorkspaceStore((state) => state.setSessionCwd);
-    const sessionLookupCacheRef = useRef<SessionLookupCache>({
-      sessions: null,
-      connections: null,
-      entries: new Map()
-    });
-
-    const sanitizeSessionOutput = useCallback(
-      (targetSessionId: string, text: string): string => {
-        const storeState = useWorkspaceStore.getState();
-        const cache = sessionLookupCacheRef.current;
-        if (
-          cache.sessions !== storeState.sessions ||
-          cache.connections !== storeState.connections
-        ) {
-          cache.sessions = storeState.sessions;
-          cache.connections = storeState.connections;
-          cache.entries.clear();
-        }
-
-        let resolved = cache.entries.get(targetSessionId);
-        if (!resolved) {
-          const session = storeState.sessions.find(
-            (item: SessionDescriptor) => item.id === targetSessionId
-          );
-          // The connection is only ever consulted for remote sessions with a
-          // connectionId; skip the scan otherwise, exactly like the uncached path.
-          const connection =
-            session && session.target === "remote" && session.connectionId
-              ? storeState.connections.find(
-                  (item: ConnectionProfile) => item.id === session.connectionId
-                )
-              : undefined;
-          resolved = { session, connection };
-          cache.entries.set(targetSessionId, resolved);
-        }
-
-        const targetSession = resolved.session;
-        if (!targetSession || targetSession.target !== "remote" || !targetSession.connectionId) {
-          return text;
-        }
-
-        const currentState =
-          osc7StateBySessionRef.current.get(targetSessionId) ?? createOsc7ParserState();
-        const parsed = consumeOsc7Chunk(currentState, text);
-        osc7StateBySessionRef.current.set(targetSessionId, parsed.state);
-
-        if (
-          shouldTrackTerminalSessionMetadata(targetSession, resolved.connection) &&
-          parsed.cwdPath
-        ) {
-          setSessionCwd(targetSessionId, parsed.cwdPath);
-        }
-
-        return parsed.visibleText;
-      },
-      [setSessionCwd]
-    );
 
     const appendSessionOutput = useCallback((targetSessionId: string, text: string) => {
       if (!knownSessionIdsRef.current.has(targetSessionId) || !text) {
@@ -556,7 +478,13 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
 
       const replay = toReplayChunks(buffer).join("");
       if (replay) {
-        terminal.write(replay);
+        // Buffered output may contain OSC sequences with side effects; the
+        // runtime keeps them silent until this write has been fully parsed.
+        const oscRuntime = oscRuntimeRef.current;
+        oscRuntime?.beginReplay();
+        terminal.write(replay, () => {
+          oscRuntime?.endReplay();
+        });
       }
     }, []);
 
@@ -727,7 +655,6 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         lastStatusKeyBySessionRef.current,
         authStateBySessionRef.current,
         sessionStatusBySessionRef.current,
-        osc7StateBySessionRef.current,
         terminalQueryReplyStateBySessionRef.current,
         terminalQuerySuppressionCountBySessionRef.current,
         reconnectPendingSessionIdsRef.current
@@ -797,10 +724,25 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         }
       });
 
+      oscRuntimeRef.current = installOscRuntime(terminal, {
+        getSessionId: () => sessionIdRef.current,
+        writeToRemote: (data) => {
+          const sessionId = sessionIdRef.current;
+          if (!sessionId) {
+            return;
+          }
+          void window.nextshell.session.write({ sessionId, data }).catch(() => undefined);
+        }
+      });
+
       terminal.open(containerRef.current);
       fitAddon.fit();
 
       terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+        if (oscRuntimeRef.current?.handleKeyEvent(event)) {
+          return false;
+        }
+
         if (event.type !== "keydown") {
           return true;
         }
@@ -987,6 +929,8 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         observer.disconnect();
         dataSub.dispose();
         resizeSub.dispose();
+        oscRuntimeRef.current?.dispose();
+        oscRuntimeRef.current = null;
         compatibilityGuard.dispose();
         terminal.dispose();
         terminalRef.current = null;
@@ -1044,11 +988,13 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
           return;
         }
 
-        const sanitized = sanitizeSessionOutput(event.sessionId, event.data);
-        appendSessionOutput(event.sessionId, sanitized);
+        // OSC sequences (cwd reports, ...) stay in the raw stream: the xterm
+        // parser consumes them via oscRuntime handlers, both live and on
+        // replay from the per-session buffer.
+        appendSessionOutput(event.sessionId, event.data);
         const terminal = terminalRef.current;
         if (event.sessionId === sessionIdRef.current && terminal) {
-          terminal.write(sanitized, () => {
+          terminal.write(event.data, () => {
             accumulateSessionAck(event.sessionId, event.deliveryId, event.byteLength);
           });
           return;
@@ -1124,8 +1070,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       beginLocalAuthPrompt,
       flushAllSessionAcks,
       flushSessionAck,
-      message,
-      sanitizeSessionOutput
+      message
     ]);
 
     useEffect(() => {

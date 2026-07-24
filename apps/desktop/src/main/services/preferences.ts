@@ -83,6 +83,16 @@ export const mergePreferences = (
     return trimmed.length > 0 ? trimmed : fallback;
   };
 
+  const normalizeShellIntegrationMode = (
+    value: "auto" | "off" | "manual" | undefined,
+    fallback: AppPreferences["terminal"]["shellIntegration"]
+  ): AppPreferences["terminal"]["shellIntegration"] => {
+    if (value === "auto" || value === "off" || value === "manual") {
+      return value;
+    }
+    return fallback;
+  };
+
   const normalizeBackgroundOpacity = (value: number | undefined, fallback: number): number => {
     if (!Number.isFinite(value)) {
       return fallback;
@@ -158,7 +168,17 @@ export const mergePreferences = (
           patch.terminal?.localShell?.customPath,
           current.terminal.localShell.customPath
         )
-      }
+      },
+      oscClipboardWrite:
+        patch.terminal?.oscClipboardWrite ?? current.terminal.oscClipboardWrite,
+      oscClipboardRead: patch.terminal?.oscClipboardRead ?? current.terminal.oscClipboardRead,
+      oscNotifications: patch.terminal?.oscNotifications ?? current.terminal.oscNotifications,
+      oscTitleUpdates: patch.terminal?.oscTitleUpdates ?? current.terminal.oscTitleUpdates,
+      hyperlinkConfirm: patch.terminal?.hyperlinkConfirm ?? current.terminal.hyperlinkConfirm,
+      shellIntegration: normalizeShellIntegrationMode(
+        patch.terminal?.shellIntegration,
+        current.terminal.shellIntegration
+      )
     },
     ssh: {
       keepAliveEnabled: patch.ssh?.keepAliveEnabled ?? current.ssh.keepAliveEnabled,

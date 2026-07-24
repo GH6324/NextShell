@@ -40,6 +40,7 @@ import type { ActiveSession } from "./container-types";
 
 // ─── Sub-services ──────────────────────────────────────────────────────────
 import { PreferencesDialogService } from "./preferences-dialog-service";
+import { TerminalIntegrationService } from "./terminal-integration-service";
 import { NetworkToolService } from "./network-tool-service";
 import { CommandService } from "./command-service";
 import { BackupPasswordService } from "./backup-password-service";
@@ -464,6 +465,8 @@ export const createServiceContainer = async (
     auditEnabledForSession
   });
 
+  const terminalIntegrationSvc = new TerminalIntegrationService();
+
   const networkToolSvc = new NetworkToolService({ connections });
 
   const monitorSvc = new MonitorService({
@@ -660,6 +663,7 @@ export const createServiceContainer = async (
     backupPassword: backupPasswordSvc,
     networkTools: networkToolSvc,
     preferences: prefsSvc,
+    terminalIntegration: terminalIntegrationSvc,
     cloudSync: cloudSyncManager,
     resourceOps: resourceOpsSvc,
 
