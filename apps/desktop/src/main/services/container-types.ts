@@ -57,6 +57,17 @@ export type ActiveSession = ActiveRemoteSession | ActiveLocalSession;
 export interface CreateServiceContainerOptions {
   dataDir: string;
   keytarServiceName?: string;
+  /**
+   * Keychain service to adopt secrets from when `keytarServiceName` has no item
+   * yet. Used by dev builds, which own a separate keychain item so they stop
+   * fighting the packaged app's ACL over a shared one.
+   */
+  keytarFallbackServiceName?: string;
+  /**
+   * Awaited right before the first OS keychain read. Lets the main process warn
+   * the user about the authorization dialog that is about to appear.
+   */
+  onBeforeKeychainAccess?: () => Promise<void>;
 }
 
 // ─── Monitor types ─────────────────────────────────────────────────────────

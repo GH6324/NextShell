@@ -817,6 +817,12 @@ export const masterPasswordClearRememberedSchema = z.object({});
 export const masterPasswordStatusSchema = z.object({});
 
 export const masterPasswordGetCachedSchema = z.object({});
+
+export const credentialStoreReauthorizeSchema = z.object({});
+
+export const mcpProxyCopyConfigSchema = z.object({
+  masterPassword: z.string().optional()
+});
 export const masterPasswordChangeSchema = z
   .object({
     oldPassword: z.string().min(1, "原密码不能为空"),
@@ -1006,6 +1012,8 @@ export type MasterPasswordClearRememberedInput = z.infer<
   typeof masterPasswordClearRememberedSchema
 >;
 export type MasterPasswordStatusInput = z.infer<typeof masterPasswordStatusSchema>;
+export type McpProxyCopyConfigInput = z.infer<typeof mcpProxyCopyConfigSchema>;
+export type CredentialStoreReauthorizeInput = z.infer<typeof credentialStoreReauthorizeSchema>;
 export type MasterPasswordGetCachedInput = z.infer<typeof masterPasswordGetCachedSchema>;
 export type MasterPasswordChangeInput = z.infer<typeof masterPasswordChangeSchema>;
 export type SshKeyListInput = z.infer<typeof sshKeyListSchema>;
@@ -1072,7 +1080,26 @@ export interface ConnectionBatchAuthUpdateResult {
 export interface MasterPasswordStatusResult {
   isSet: boolean;
   isUnlocked: boolean;
-  keytarAvailable: boolean;
+  /**
+   * Whether a remembered master password can be stored. It no longer depends on
+   * the OS keychain being present — only on the credential store being usable.
+   */
+  canRememberPassword: boolean;
+}
+
+export interface CredentialStoreReauthorizeResult {
+  ok: true;
+  /** False when the OS prompt was refused again. */
+  authorized: boolean;
+}
+
+export interface McpProxyCopyConfigResult {
+  /**
+   * The config JSON is written straight to the system clipboard by the main
+   * process — it carries the device key, which must never reach the renderer.
+   */
+  ok: true;
+  dbPath: string;
 }
 
 export interface MasterPasswordCachedResult {

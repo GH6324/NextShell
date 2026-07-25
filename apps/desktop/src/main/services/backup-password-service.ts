@@ -1,3 +1,5 @@
+import { clipboard } from "electron";
+import { DEVICE_KEY_ENV_VAR } from "@nextshell/core";
 import type {
   BackupArchiveMeta,
   BackupConflictPolicy,
@@ -5,13 +7,17 @@ import type {
 } from "@nextshell/core";
 import type { EncryptedSecretVault, KeytarPasswordCache } from "@nextshell/security";
 import {
+  APP_SECRET_PURPOSE,
   createMasterKeyMeta,
   clearDerivedKeyCache,
+  MASTER_PASSWORD_SECRET_ID,
+  MASTER_PASSWORD_SECRET_REF,
   verifyMasterPassword
 } from "@nextshell/security";
 import type { CachedConnectionRepository } from "@nextshell/storage";
 
 import type { BackupService } from "./backup-service";
+import type { DeviceKeyStatus } from "./device-key-provider";
 import { changeMasterPassword } from "./master-password-change";
 import { normalizeError } from "./container-utils";
 import { logger } from "../logger";
@@ -19,7 +25,11 @@ import { logger } from "../logger";
 interface BackupPasswordServiceOptions {
   connections: CachedConnectionRepository;
   vault: EncryptedSecretVault;
+  /** Only used to drain the pre-migration keychain item. */
   keytarCache: KeytarPasswordCache;
+  getCredentialStoreStatus: () => DeviceKeyStatus;
+  reauthorizeCredentialStore: () => void;
+  getDeviceKeyHex: () => Promise<string>;
   backupService: BackupService;
   getMasterPassword: () => string | undefined;
   setMasterPassword: (password: string | undefined) => void;
@@ -41,6 +51,7 @@ export class BackupPasswordService {
   }
 
   async backupRun(conflictPolicy: BackupConflictPolicy): Promise<{ ok: true; fileName?: string }> {
+    await this.ensureRecalled();
     return this.options.backupService.run(conflictPolicy);
   }
 
@@ -48,7 +59,26 @@ export class BackupPasswordService {
     archiveId: string,
     conflictPolicy: RestoreConflictPolicy
   ): Promise<{ ok: true }> {
+    await this.ensureRecalled();
     return this.options.backupService.restore(archiveId, conflictPolicy);
+  }
+
+  /**
+   * The master password is recalled from the keychain on demand rather than at
+   * startup, so anything reading it synchronously must pull it in first.
+   * Failures are swallowed — callers surface a "not unlocked" error of their own.
+   */
+  private async ensureRecalled(): Promise<void> {
+    if (this.options.getMasterPassword()) {
+      return;
+    }
+    try {
+      await this.options.tryRecallMasterPassword();
+    } catch (error) {
+      logger.warn("[Security] failed to recall master password from keytar", {
+        reason: normalizeError(error)
+      });
+    }
   }
 
   private async rememberPasswordBestEffort(
@@ -60,17 +90,21 @@ export class BackupPasswordService {
       return;
     }
     try {
-      await this.options.keytarCache.remember(password);
+      await this.options.vault.storeCredential(
+        MASTER_PASSWORD_SECRET_ID,
+        password,
+        APP_SECRET_PURPOSE
+      );
     } catch (error) {
       const reason = normalizeError(error);
-      logger.warn("[Security] failed to cache master password in keytar", {
+      logger.warn("[Security] failed to remember master password", {
         phase,
         reason
       });
       this.options.appendAuditLogIfEnabled({
         action: "master_password.cache_failed",
         level: "warn",
-        message: "Failed to cache master password in keytar",
+        message: "Failed to remember master password",
         metadata: { phase, reason }
       });
     }
@@ -125,6 +159,9 @@ export class BackupPasswordService {
   }
 
   async masterPasswordClearRemembered(): Promise<{ ok: true }> {
+    await this.options.vault.deleteCredential(MASTER_PASSWORD_SECRET_REF);
+    // Also drain the pre-migration keychain item for installs that never
+    // reached the migration path.
     await this.options.keytarCache.clear();
     clearDerivedKeyCache();
     return { ok: true };
@@ -133,13 +170,18 @@ export class BackupPasswordService {
   async masterPasswordStatus(): Promise<{
     isSet: boolean;
     isUnlocked: boolean;
-    keytarAvailable: boolean;
+    canRememberPassword: boolean;
   }> {
     const meta = this.options.connections.getMasterKeyMeta();
+    if (meta) {
+      await this.ensureRecalled();
+    }
     return {
       isSet: meta !== undefined,
       isUnlocked: this.options.getMasterPassword() !== undefined,
-      keytarAvailable: this.options.keytarCache.isAvailable()
+      // Remembering writes through the device-key-encrypted secret store, so it
+      // works everywhere except when keychain authorization was refused.
+      canRememberPassword: this.options.getCredentialStoreStatus() !== "denied"
     };
   }
 
@@ -178,6 +220,65 @@ export class BackupPasswordService {
       return recalled;
     }
     throw new Error("主密码未解锁，请先输入主密码。");
+  }
+
+  /**
+   * Retry a keychain read the user previously refused. A denial is sticky for
+   * the session so that every later credential access does not re-prompt, which
+   * would otherwise leave an accidental "Deny" only fixable by restarting.
+   */
+  async credentialStoreReauthorize(): Promise<{ ok: true; authorized: boolean }> {
+    this.options.reauthorizeCredentialStore();
+    try {
+      await this.options.getDeviceKeyHex();
+      return { ok: true, authorized: true };
+    } catch (error) {
+      logger.warn("[Security] credential store reauthorization failed", {
+        reason: normalizeError(error)
+      });
+      return { ok: true, authorized: false };
+    }
+  }
+
+  /**
+   * Put the MCP proxy's server config on the clipboard, device key included.
+   *
+   * The proxy is a separate headless process launched by an MCP client, so it
+   * cannot read the keychain itself — a macOS authorization dialog would have
+   * nobody to answer it, and its code identity differs from the desktop app's.
+   * Handing the key over through the client's config is the only path that keeps
+   * the proxy out of the keychain entirely.
+   *
+   * Gated on the master password like `revealConnectionPassword`: this key opens
+   * every stored credential, so it is at least as sensitive as any one of them.
+   * The config never passes through the renderer.
+   */
+  async mcpProxyCopyConfig(
+    providedMasterPassword?: string
+  ): Promise<{ ok: true; dbPath: string }> {
+    await this.resolveMasterPassword(providedMasterPassword);
+    const deviceKeyHex = await this.options.getDeviceKeyHex();
+    const dbPath = this.options.connections.getDbPath();
+
+    const config = {
+      mcpServers: {
+        "nextshell-ssh": {
+          command: "nextshell-mcp-ssh-proxy",
+          env: {
+            NEXTSHELL_DB_PATH: dbPath,
+            [DEVICE_KEY_ENV_VAR]: deviceKeyHex
+          }
+        }
+      }
+    };
+    clipboard.writeText(JSON.stringify(config, null, 2));
+
+    this.options.appendAuditLogIfEnabled({
+      action: "mcp_proxy.config_copied",
+      level: "warn",
+      message: "Copied MCP proxy config (device key included) to the clipboard"
+    });
+    return { ok: true, dbPath };
   }
 
   async revealConnectionPassword(

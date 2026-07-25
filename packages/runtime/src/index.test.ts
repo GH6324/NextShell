@@ -19,6 +19,8 @@ import {
   ConnectionTargetAmbiguousError,
   ConnectionTargetNotFoundError,
   createReadonlyCredentialContext,
+  CredentialStoreUnavailableError,
+  DEVICE_KEY_ENV_VAR,
   resolveConnectionTarget,
   resolveNextShellDataPaths,
   searchServerSummaries
@@ -26,6 +28,7 @@ import {
 
 interface Fixture {
   dbPath: string;
+  deviceKeyHex: string;
   cleanup: () => void;
 }
 
@@ -188,10 +191,18 @@ const createFixture = async (): Promise<Fixture> => {
 
   return {
     dbPath,
+    deviceKeyHex,
     cleanup: () => {
       fs.rmSync(rootDir, { recursive: true, force: true });
     }
   };
+};
+
+/** Mimic an install where the device key lives in the OS keychain, not the DB. */
+const purgeDeviceKeyFromDb = (dbPath: string): void => {
+  const repo = new SQLiteConnectionRepository(dbPath);
+  repo.clearDeviceKey();
+  repo.close();
 };
 
 describe("runtime data path resolution", () => {
@@ -333,6 +344,61 @@ describe("connection target resolution", () => {
       context.close();
       fixture.cleanup();
     }
+  });
+
+  test("takes the device key from the environment when the DB copy is gone", async () => {
+    const fixture = await createFixture();
+    purgeDeviceKeyFromDb(fixture.dbPath);
+
+    const context = createReadonlyCredentialContext({
+      dbPath: fixture.dbPath,
+      env: { [DEVICE_KEY_ENV_VAR]: fixture.deviceKeyHex }
+    });
+    try {
+      const resolved = resolveConnectionTarget(context, "server1");
+      const options = await buildSshConnectOptions(context, resolved.connection);
+      // Decrypting proves the handed-over key is the one credentials were sealed with.
+      assert.equal(options.password, "super-secret");
+    } finally {
+      context.close();
+      fixture.cleanup();
+    }
+  });
+
+  test("reports an unusable credential store when no device key is available", async () => {
+    const fixture = await createFixture();
+    purgeDeviceKeyFromDb(fixture.dbPath);
+
+    let error: unknown;
+    try {
+      createReadonlyCredentialContext({ dbPath: fixture.dbPath, env: {} });
+    } catch (caught) {
+      error = caught;
+    } finally {
+      fixture.cleanup();
+    }
+
+    assert.ok(error instanceof CredentialStoreUnavailableError);
+    assert.match((error as Error).message, new RegExp(DEVICE_KEY_ENV_VAR));
+  });
+
+  test("ignores a malformed device key in the environment", async () => {
+    const fixture = await createFixture();
+    purgeDeviceKeyFromDb(fixture.dbPath);
+
+    let error: unknown;
+    try {
+      createReadonlyCredentialContext({
+        dbPath: fixture.dbPath,
+        env: { [DEVICE_KEY_ENV_VAR]: "not-hex!!" }
+      });
+    } catch (caught) {
+      error = caught;
+    } finally {
+      fixture.cleanup();
+    }
+
+    assert.ok(error instanceof CredentialStoreUnavailableError);
   });
 
   test("throws a not found error when nothing matches", async () => {

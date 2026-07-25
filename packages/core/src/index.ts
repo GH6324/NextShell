@@ -501,6 +501,13 @@ export interface CommandHistoryEntry {
 
 export const MAX_COMMAND_HISTORY_ENTRIES = 500;
 
+/**
+ * Env var the desktop app uses to hand the device key to out-of-process helpers
+ * such as the MCP SSH proxy. Those run headless under someone else's process
+ * tree, so they must never reach for the OS keychain themselves.
+ */
+export const DEVICE_KEY_ENV_VAR = "NEXTSHELL_DEVICE_KEY";
+
 export interface SavedCommand {
   id: string;
   name: string;

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { resolveDeviceKey, type DeviceKeyDbAccess, type DeviceKeyStore } from "./index";
+import {
+  KeychainAccessDeniedError,
+  resolveDeviceKey,
+  type DeviceKeyDbAccess,
+  type DeviceKeyStore
+} from "./index";
 
 const FIXED_KEY = "a".repeat(64);
 const generate = () => FIXED_KEY;
@@ -117,5 +122,62 @@ describe("resolveDeviceKey", () => {
     expect(result.deviceKeyHex).toBe(legacy); // existing credentials still decrypt
     expect(result.storedIn).toBe("database");
     expect(db.value).toBe(legacy); // legacy key left intact, not cleared
+  });
+
+  test("refuses to mint a replacement key when a denied read leaves nothing to fall back on", async () => {
+    const db = makeDb(undefined); // already migrated: no plaintext copy left
+    let remembered = false;
+    const store: DeviceKeyStore = {
+      isAvailable: () => true,
+      recall: async () => {
+        throw new Error("User denied keychain access");
+      },
+      remember: async () => {
+        remembered = true;
+      }
+    };
+
+    await expect(resolveDeviceKey(store, db, generate)).rejects.toBeInstanceOf(
+      KeychainAccessDeniedError
+    );
+    // A fresh key here would silently orphan every stored credential.
+    expect(db.value).toBeUndefined();
+    expect(remembered).toBe(false);
+  });
+
+  test("degrades to DB storage when the keychain is empty but unwritable", async () => {
+    const db = makeDb(undefined);
+    const store: DeviceKeyStore = {
+      isAvailable: () => true,
+      recall: async () => undefined,
+      remember: async () => {
+        throw new Error("keychain is read-only");
+      }
+    };
+
+    const result = await resolveDeviceKey(store, db, generate);
+
+    // Nothing was in the keychain, so nothing can be orphaned by using the DB.
+    expect(result.deviceKeyHex).toBe(FIXED_KEY);
+    expect(result.storedIn).toBe("database");
+    expect(db.value).toBe(FIXED_KEY);
+  });
+
+  test("keeps the legacy DB key when the keychain is empty but unwritable", async () => {
+    const legacy = "f".repeat(64);
+    const db = makeDb(legacy);
+    const store: DeviceKeyStore = {
+      isAvailable: () => true,
+      recall: async () => undefined,
+      remember: async () => {
+        throw new Error("keychain is read-only");
+      }
+    };
+
+    const result = await resolveDeviceKey(store, db, generate);
+
+    expect(result.deviceKeyHex).toBe(legacy);
+    expect(result.storedIn).toBe("database");
+    expect(db.value).toBe(legacy); // not cleared — it is the only copy left
   });
 });

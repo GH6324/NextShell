@@ -17,9 +17,11 @@ import type {
   SftpTransferStatusEvent
 } from "../../../../../packages/shared/src/index";
 import {
+  APP_SECRET_PURPOSE,
   EncryptedSecretVault,
   KeytarPasswordCache,
-  resolveDeviceKey,
+  MASTER_PASSWORD_SECRET_ID,
+  MASTER_PASSWORD_SECRET_REF,
   verifyMasterPassword
 } from "../../../../../packages/security/src/index";
 import {
@@ -30,6 +32,7 @@ import {
   SQLiteProxyRepository,
   CachedProxyRepository
 } from "../../../../../packages/storage/src/index";
+import { DeviceKeyProvider } from "./device-key-provider";
 import { RemoteEditManager } from "./remote-edit-manager";
 import { BackupService, applyPendingRestore } from "./backup-service";
 import { resolveAuditRuntime } from "./audit-runtime";
@@ -80,47 +83,73 @@ export const createServiceContainer = async (
   // Fall back to DB storage only when the keychain is unavailable.
   const deviceKeyStore = new KeytarPasswordCache(
     options.keytarServiceName ?? "NextShell",
-    "device-key"
+    "device-key",
+    { fallbackService: options.keytarFallbackServiceName }
   );
-  const deviceKey = await resolveDeviceKey(deviceKeyStore, {
-    getLegacy: () => connections.getDeviceKey(),
-    saveLegacy: (key) => connections.saveDeviceKey(key),
-    clearLegacy: () => connections.clearDeviceKey()
+  // Resolved lazily: reading it eagerly would prompt for keychain authorization
+  // on every launch, including sessions that never open a stored credential.
+  // The notice is shown at most once per install, hence the persisted flag.
+  const { onBeforeKeychainAccess } = options;
+  const deviceKeyProvider = new DeviceKeyProvider({
+    store: deviceKeyStore,
+    db: {
+      getLegacy: () => connections.getDeviceKey(),
+      saveLegacy: (key) => connections.saveDeviceKey(key),
+      clearLegacy: () => connections.clearDeviceKey()
+    },
+    onBeforeKeychainAccess: onBeforeKeychainAccess
+      ? async () => {
+          if (connections.getKeychainNoticeAcknowledged()) return;
+          await onBeforeKeychainAccess();
+          connections.saveKeychainNoticeAcknowledged();
+        }
+      : undefined
   });
-  if (deviceKey.storedIn === "keychain") {
-    logger.info(
-      deviceKey.migratedFromDatabase
-        ? "[Security] migrated device key from database to system keychain"
-        : "[Security] device key resolved from system keychain"
-    );
-  } else {
-    logger.warn(
-      "[Security] system keychain unavailable; device key stored in local database (degraded)"
-    );
-  }
 
-  const vault = new EncryptedSecretVault(
-    connections.getSecretStore(),
-    Buffer.from(deviceKey.deviceKeyHex, "hex")
+  const vault = new EncryptedSecretVault(connections.getSecretStore(), () =>
+    deviceKeyProvider.get()
   );
 
   // ─── Master Password ────────────────────────────────────────────────────
+  // A remembered master password lives in the local secret store, encrypted
+  // with the device key. It used to have its own keychain item, which cost a
+  // second authorization prompt per launch and bought nothing: it sat next to
+  // the device key, so whoever could read one could read the other.
   const keytarServiceName = options.keytarServiceName ?? "NextShell";
-  const keytarCache = new KeytarPasswordCache(keytarServiceName);
+  const legacyMasterPasswordItem = new KeytarPasswordCache(keytarServiceName, undefined, {
+    fallbackService: options.keytarFallbackServiceName
+  });
   let masterPassword: string | undefined;
 
+  const recallRememberedMasterPassword = async (): Promise<string | undefined> => {
+    const stored = await vault.readCredential(MASTER_PASSWORD_SECRET_REF);
+    if (stored) return stored;
+
+    // Pre-migration install: adopt the old keychain item, then delete it so the
+    // prompt it causes is paid exactly once, ever.
+    const legacy = await legacyMasterPasswordItem.recall();
+    if (!legacy) return undefined;
+    await vault.storeCredential(MASTER_PASSWORD_SECRET_ID, legacy, APP_SECRET_PURPOSE);
+    await legacyMasterPasswordItem.clear();
+    logger.info("[Security] migrated remembered master password out of the system keychain");
+    return legacy;
+  };
+
+  // Deliberately lazy: reading this at startup costs a keychain authorization
+  // prompt on every launch, even for users who never touch backup/reveal. Every
+  // consumer (masterPasswordStatus, resolveMasterPassword, backupRun,
+  // backupRestore) awaits this before relying on masterPassword.
   const tryRecallMasterPassword = async (): Promise<void> => {
     if (masterPassword) return;
     const meta = connections.getMasterKeyMeta();
     if (!meta) return;
-    const cached = await keytarCache.recall();
-    if (!cached) return;
-    if (await verifyMasterPassword(cached, meta)) {
-      masterPassword = cached;
-      logger.info("[Security] recalled master password from keytar");
+    const remembered = await recallRememberedMasterPassword();
+    if (!remembered) return;
+    if (await verifyMasterPassword(remembered, meta)) {
+      masterPassword = remembered;
+      logger.info("[Security] recalled remembered master password");
     }
   };
-  void tryRecallMasterPassword();
 
   const backupService = new BackupService({
     dataDir: options.dataDir,
@@ -508,7 +537,10 @@ export const createServiceContainer = async (
   const backupPasswordSvc = new BackupPasswordService({
     connections,
     vault,
-    keytarCache,
+    keytarCache: legacyMasterPasswordItem,
+    getCredentialStoreStatus: () => deviceKeyProvider.getStatus(),
+    reauthorizeCredentialStore: () => deviceKeyProvider.reauthorize(),
+    getDeviceKeyHex: async () => (await deviceKeyProvider.get()).toString("hex"),
     backupService,
     getMasterPassword: () => masterPassword,
     setMasterPassword: (p) => {

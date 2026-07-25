@@ -35,7 +35,7 @@ export const BackupSection = ({
   rclonePath: string;
   backupConflictPolicy: "skip" | "force";
   restoreConflictPolicy: "skip_older" | "force";
-  pwdStatus: { isSet: boolean; isUnlocked: boolean; keytarAvailable: boolean };
+  pwdStatus: { isSet: boolean; isUnlocked: boolean; canRememberPassword: boolean };
   pwdStatusKnown: boolean;
   backupRunning: boolean;
   archiveList: BackupArchiveMeta[];

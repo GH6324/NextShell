@@ -82,6 +82,8 @@ export const IPCChannel = {
   MasterPasswordStatus: "nextshell:master-password:status",
   MasterPasswordGetCached: "nextshell:master-password:get-cached",
   MasterPasswordChange: "nextshell:master-password:change",
+  McpProxyCopyConfig: "nextshell:mcp-proxy:copy-config",
+  CredentialStoreReauthorize: "nextshell:credential-store:reauthorize",
   ConnectionRevealPassword: "nextshell:connection:reveal-password",
   SshKeyList: "nextshell:ssh-key:list",
   SshKeyUpsert: "nextshell:ssh-key:upsert",

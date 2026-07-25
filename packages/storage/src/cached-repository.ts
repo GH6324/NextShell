@@ -692,6 +692,14 @@ export class CachedConnectionRepository implements ConnectionRepository {
     this.deviceKeyCache = { loaded: true, value: undefined };
   }
 
+  getKeychainNoticeAcknowledged(): boolean {
+    return this.inner.getKeychainNoticeAcknowledged();
+  }
+
+  saveKeychainNoticeAcknowledged(): void {
+    this.inner.saveKeychainNoticeAcknowledged();
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Pass-through / Lifecycle
   // ═══════════════════════════════════════════════════════════════════════════

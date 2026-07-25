@@ -69,10 +69,18 @@ __nextshell_install_prompt_hooks() {
       ;;
   esac
 
-  case ";${PROMPT_COMMAND:-};" in
-    *';__nextshell_prompt_start;'*) return 0 ;;
+  case "${PROMPT_COMMAND:-}" in
+    *__nextshell_prompt_start*) return 0 ;;
   esac
-  PROMPT_COMMAND="__nextshell_prompt_start;${PROMPT_COMMAND:+$PROMPT_COMMAND;}__nextshell_prompt_end"
+
+  # Newline, not `;`, as the separator: a PROMPT_COMMAND that already ends in a
+  # separator (`history -a; ` is a common one) would otherwise splice into
+  # `history -a; ;__nextshell_prompt_end`, an empty command between two `;` —
+  # a syntax error that kills the whole prompt on every cycle. A trailing `;`
+  # before a newline is valid, and so is an empty line.
+  PROMPT_COMMAND="__nextshell_prompt_start
+${PROMPT_COMMAND:-}
+__nextshell_prompt_end"
 }
 
 __nextshell_install_prompt_hooks

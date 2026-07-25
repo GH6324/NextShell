@@ -1,7 +1,7 @@
 interface PasswordStatus {
   isSet: boolean;
   isUnlocked: boolean;
-  keytarAvailable: boolean;
+  canRememberPassword: boolean;
 }
 
 interface BackupSectionAccessInput {

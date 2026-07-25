@@ -35,7 +35,9 @@ const masterPasswordApi: NextShellApi["masterPassword"] = {
   changePassword: (payload) => invoke(IPCChannel.MasterPasswordChange, payload),
   clearRemembered: () => invoke(IPCChannel.MasterPasswordClearRemembered, {}),
   passwordStatus: () => invoke(IPCChannel.MasterPasswordStatus, {}),
-  getCached: () => invoke(IPCChannel.MasterPasswordGetCached, {})
+  getCached: () => invoke(IPCChannel.MasterPasswordGetCached, {}),
+  copyMcpProxyConfig: (payload) => invoke(IPCChannel.McpProxyCopyConfig, payload ?? {}),
+  reauthorizeCredentialStore: () => invoke(IPCChannel.CredentialStoreReauthorize, {})
 };
 
 const ackStreamDelivery = (payload: StreamDeliveryAckInput): Promise<{ ok: true }> => {

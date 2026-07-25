@@ -31,10 +31,12 @@ export const SecuritySection = ({
   onUnlockPassword,
   onChangePassword,
   onClearRemembered,
+  onCopyMcpProxyConfig,
+  onReauthorizeCredentialStore,
   onClearAuditLogs,
   save
 }: {
-  pwdStatus: { isSet: boolean; isUnlocked: boolean; keytarAvailable: boolean };
+  pwdStatus: { isSet: boolean; isUnlocked: boolean; canRememberPassword: boolean };
   pwdStatusLoading: boolean;
   pwdInput: string;
   pwdConfirm: string;
@@ -61,6 +63,8 @@ export const SecuritySection = ({
   onUnlockPassword: () => void;
   onChangePassword: () => void;
   onClearRemembered: () => void;
+  onCopyMcpProxyConfig: () => void;
+  onReauthorizeCredentialStore: () => void;
   onClearAuditLogs: () => void;
   save: SaveFn;
 }) => (
@@ -79,10 +83,15 @@ export const SecuritySection = ({
         ) : (
           <Badge status="default" text="未设置" />
         )}
-        {pwdStatus.keytarAvailable && (
-          <Tag color="blue" style={{ marginLeft: 4 }}>
-            钥匙串可用
-          </Tag>
+        {!pwdStatus.canRememberPassword && (
+          <>
+            <Tag color="orange" style={{ marginLeft: 4 }}>
+              钥匙串授权被拒绝
+            </Tag>
+            <Button size="small" onClick={onReauthorizeCredentialStore}>
+              重新授权
+            </Button>
+          </>
         )}
       </div>
 
@@ -122,16 +131,23 @@ export const SecuritySection = ({
               设置主密码
             </Button>
           )}
-          {pwdStatus.keytarAvailable && pwdStatus.isSet && (
-            <Button onClick={onClearRemembered}>清除钥匙串缓存</Button>
-          )}
+          {pwdStatus.isSet && <Button onClick={onClearRemembered}>清除已记住的主密码</Button>}
         </Space>
       </SettingsRow>
 
+      <SettingsRow
+        label="MCP 代理配置"
+        hint="复制 MCP SSH 代理的服务器配置（含解密凭据所需的设备密钥），需先解锁主密码"
+      >
+        <Button onClick={onCopyMcpProxyConfig} disabled={pwdBusy}>
+          复制 MCP 配置
+        </Button>
+      </SettingsRow>
+
       <SettingsSwitchRow
-        label="使用系统钥匙串记住主密码"
+        label="记住主密码（本机加密存储）"
         checked={backupRememberPassword}
-        disabled={loading || !pwdStatus.keytarAvailable}
+        disabled={loading || !pwdStatus.canRememberPassword}
         onChange={(v) => save({ backup: { rememberPassword: v } })}
       />
 

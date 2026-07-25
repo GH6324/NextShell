@@ -84,8 +84,8 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
   const [pwdStatus, setPwdStatus] = useState<{
     isSet: boolean;
     isUnlocked: boolean;
-    keytarAvailable: boolean;
-  }>({ isSet: false, isUnlocked: false, keytarAvailable: false });
+    canRememberPassword: boolean;
+  }>({ isSet: false, isUnlocked: false, canRememberPassword: false });
   const [pwdStatusLoading, setPwdStatusLoading] = useState(false);
   const [pwdStatusKnown, setPwdStatusKnown] = useState(false);
   const [pwdInput, setPwdInput] = useState("");
@@ -257,10 +257,33 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
   const handleClearRemembered = async (): Promise<void> => {
     try {
       await window.nextshell.masterPassword.clearRemembered();
-      message.success("已清除钥匙串中的主密码缓存");
+      message.success("已清除记住的主密码");
       await refreshPasswordStatus();
     } catch (error) {
-      message.error(`清除缓存失败：${formatErrorMessage(error, "请稍后重试")}`);
+      message.error(`清除失败：${formatErrorMessage(error, "请稍后重试")}`);
+    }
+  };
+
+  const handleReauthorizeCredentialStore = async (): Promise<void> => {
+    try {
+      const result = await window.nextshell.masterPassword.reauthorizeCredentialStore();
+      if (result.authorized) {
+        message.success("钥匙串授权成功，已保存的密码恢复可用");
+      } else {
+        message.warning("钥匙串授权仍被拒绝，请在系统弹窗中选择「始终允许」");
+      }
+      await refreshPasswordStatus();
+    } catch (error) {
+      message.error(`重新授权失败：${formatErrorMessage(error, "请稍后重试")}`);
+    }
+  };
+
+  const handleCopyMcpProxyConfig = async (): Promise<void> => {
+    try {
+      await window.nextshell.masterPassword.copyMcpProxyConfig();
+      message.success("MCP 配置已复制到剪贴板，粘贴到 MCP 客户端配置后即可使用");
+    } catch (error) {
+      message.error(`复制 MCP 配置失败：${formatErrorMessage(error, "请稍后重试")}`);
     }
   };
 
@@ -418,6 +441,8 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
             onUnlockPassword={() => void handleUnlockPassword()}
             onChangePassword={() => void handleChangePassword()}
             onClearRemembered={() => void handleClearRemembered()}
+            onCopyMcpProxyConfig={() => void handleCopyMcpProxyConfig()}
+            onReauthorizeCredentialStore={() => void handleReauthorizeCredentialStore()}
             onClearAuditLogs={handleClearAuditLogs}
             save={save}
           />

@@ -84,6 +84,8 @@ import {
   masterPasswordClearRememberedSchema,
   masterPasswordStatusSchema,
   masterPasswordGetCachedSchema,
+  mcpProxyCopyConfigSchema,
+  credentialStoreReauthorizeSchema,
   sshKeyListSchema,
   sshKeyUpsertSchema,
   sshKeyRemoveSchema,
@@ -678,6 +680,20 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     label: "获取主密码缓存",
     coerceEmptyPayload: true,
     dispatch: (services) => services.backupPassword.masterPasswordGetCached()
+  }),
+  define({
+    channel: IPCChannel.McpProxyCopyConfig,
+    schema: mcpProxyCopyConfigSchema,
+    label: "复制 MCP 代理配置",
+    coerceEmptyPayload: true,
+    dispatch: (services, input) => services.backupPassword.mcpProxyCopyConfig(input.masterPassword)
+  }),
+  define({
+    channel: IPCChannel.CredentialStoreReauthorize,
+    schema: credentialStoreReauthorizeSchema,
+    label: "重新授权凭据库",
+    coerceEmptyPayload: true,
+    dispatch: (services) => services.backupPassword.credentialStoreReauthorize()
   }),
 
   // ─── Cloud Sync ───────────────────────────────────────────────────────────

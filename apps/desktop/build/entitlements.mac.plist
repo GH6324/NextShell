@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Electron's V8 needs writable-executable memory; the hardened runtime
+         denies it by default. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Native modules (better-sqlite3, keytar, node-pty) are rebuilt locally
+         and are not signed by the same team, so library validation must be off
+         or the app cannot load them. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <!-- SSH sessions and the local shell spawn child processes. -->
+    <key>com.apple.security.inherit</key>
+    <true/>
+</dict>
+</plist>

@@ -8,6 +8,17 @@ const require = createRequire(import.meta.url);
 
 const SECRET_REF_PREFIX = "secret://";
 
+/**
+ * Secret-store id for a remembered master password. It lives in the local
+ * secret store (encrypted with the device key) rather than in its own keychain
+ * item: a separate item cost a second OS authorization prompt while adding no
+ * security, since it sat beside the device key and both were equally reachable.
+ */
+export const MASTER_PASSWORD_SECRET_ID = "master-password";
+export const MASTER_PASSWORD_SECRET_REF = `${SECRET_REF_PREFIX}${MASTER_PASSWORD_SECRET_ID}`;
+/** `purpose` column value that keeps app-level secrets out of credential sweeps. */
+export const APP_SECRET_PURPOSE = "app";
+
 // ─── Keytar (Optional) ──────────────────────────────────────────────────────
 
 interface KeytarModule {
@@ -312,7 +323,7 @@ export const decryptWorkspaceSecret = async (
 // ─── Credential Vault (interface) ───────────────────────────────────────────
 
 export interface CredentialVault {
-  storeCredential: (key: string, secret: string) => Promise<string>;
+  storeCredential: (key: string, secret: string, purpose?: string) => Promise<string>;
   readCredential: (ref: string) => Promise<string | undefined>;
   deleteCredential: (ref: string) => Promise<void>;
 }
@@ -378,12 +389,32 @@ export interface ResolveDeviceKeyResult {
 }
 
 /**
+ * The keychain was reachable but refused to hand over the device key — the user
+ * denied or cancelled the OS authorization prompt, or the read failed outright.
+ * Callers must surface this instead of falling back to a fresh key: the stored
+ * credentials are still encrypted with the key that could not be read.
+ */
+export class KeychainAccessDeniedError extends Error {
+  readonly reason: unknown;
+
+  constructor(reason?: unknown) {
+    super("系统钥匙串授权被拒绝，无法读取已保存凭据的加密密钥。");
+    this.name = "KeychainAccessDeniedError";
+    this.reason = reason;
+  }
+}
+
+/**
  * Resolve the device key that encrypts all stored credentials, preferring the OS
  * keychain over the database so the key never sits in plaintext next to the
  * ciphertext. On first run after upgrade it migrates the legacy plaintext key
- * into the keychain and purges it from the DB; if the keychain is unavailable or
- * fails at runtime it degrades to DB storage, always reusing the existing key so
- * previously-encrypted credentials still decrypt.
+ * into the keychain and purges it from the DB.
+ *
+ * Failure handling distinguishes two cases that must never be conflated:
+ * a keychain that is *absent* (no backend on this platform) may degrade to DB
+ * storage, but a keychain that is present and *refuses to answer* must not — the
+ * existing ciphertext is bound to the key behind that prompt, so minting a
+ * replacement would silently render every saved credential undecryptable.
  */
 export const resolveDeviceKey = async (
   store: DeviceKeyStore,
@@ -393,22 +424,44 @@ export const resolveDeviceKey = async (
   const legacy = db.getLegacy();
 
   if (store.isAvailable()) {
+    let existing: string | undefined;
     try {
-      let deviceKeyHex = await store.recall();
-      let migratedFromDatabase = false;
-      if (!deviceKeyHex) {
-        // No key in the keychain yet: migrate the legacy plaintext key or mint one.
-        deviceKeyHex = legacy ?? generate();
-        await store.remember(deviceKeyHex);
-        migratedFromDatabase = Boolean(legacy);
+      existing = await store.recall();
+    } catch (error) {
+      // A pre-migration install still holds the very same key in the DB, so it
+      // can carry on; everyone else has to be told, not silently re-keyed.
+      if (legacy) {
+        return { deviceKeyHex: legacy, storedIn: "database", migratedFromDatabase: false };
       }
+      throw new KeychainAccessDeniedError(error);
+    }
+
+    if (existing) {
       // The keychain is authoritative — drop any plaintext copy from the DB.
       if (legacy) {
         db.clearLegacy();
       }
-      return { deviceKeyHex, storedIn: "keychain", migratedFromDatabase };
+      return { deviceKeyHex: existing, storedIn: "keychain", migratedFromDatabase: false };
+    }
+
+    // No key in the keychain yet: migrate the legacy plaintext key or mint one.
+    const candidate = legacy ?? generate();
+    try {
+      await store.remember(candidate);
+      if (legacy) {
+        db.clearLegacy();
+      }
+      return {
+        deviceKeyHex: candidate,
+        storedIn: "keychain",
+        migratedFromDatabase: Boolean(legacy)
+      };
     } catch {
-      // Fall through to DB storage on any runtime keychain failure.
+      // Nothing was in the keychain to begin with, so DB storage loses nothing.
+      if (!legacy) {
+        db.saveLegacy(candidate);
+      }
+      return { deviceKeyHex: candidate, storedIn: "database", migratedFromDatabase: false };
     }
   }
 
@@ -419,17 +472,29 @@ export const resolveDeviceKey = async (
   return { deviceKeyHex, storedIn: "database", migratedFromDatabase: false };
 };
 
+/**
+ * Either the device key itself, or a resolver that produces it on demand. The
+ * lazy form lets the app defer the OS keychain read (and the authorization
+ * prompt that comes with it on macOS) until a secret is actually needed.
+ */
+export type DeviceKeyResolver = Buffer | (() => Promise<Buffer>);
+
 export class EncryptedSecretVault implements CredentialVault {
   constructor(
     private readonly store: SecretStoreDB,
-    private readonly deviceKey: Buffer
+    private readonly deviceKey: DeviceKeyResolver
   ) {}
 
-  async storeCredential(key: string, secret: string): Promise<string> {
+  private async resolveDeviceKey(): Promise<Buffer> {
+    return typeof this.deviceKey === "function" ? await this.deviceKey() : this.deviceKey;
+  }
+
+  async storeCredential(key: string, secret: string, purpose = "credential"): Promise<string> {
     const id = key;
     const aad = `nextshell-secret:${id}`;
-    const { ciphertextB64, ivB64, tagB64 } = encryptAesGcm(secret, this.deviceKey, aad);
-    this.store.putSecret(id, "credential", ciphertextB64, ivB64, tagB64, aad);
+    const deviceKey = await this.resolveDeviceKey();
+    const { ciphertextB64, ivB64, tagB64 } = encryptAesGcm(secret, deviceKey, aad);
+    this.store.putSecret(id, purpose, ciphertextB64, ivB64, tagB64, aad);
     return `${SECRET_REF_PREFIX}${id}`;
   }
 
@@ -438,8 +503,11 @@ export class EncryptedSecretVault implements CredentialVault {
     if (!id) return undefined;
     const row = this.store.getSecret(id);
     if (!row) return undefined;
+    // Resolved outside the try below on purpose: a keychain that is locked or
+    // denied must surface as an error, not masquerade as "no secret stored".
+    const deviceKey = await this.resolveDeviceKey();
     try {
-      return decryptAesGcm(row.ciphertext_b64, row.iv_b64, row.tag_b64, this.deviceKey, row.aad);
+      return decryptAesGcm(row.ciphertext_b64, row.iv_b64, row.tag_b64, deviceKey, row.aad);
     } catch {
       return undefined;
     }
@@ -457,15 +525,36 @@ export class EncryptedSecretVault implements CredentialVault {
 const KEYTAR_SERVICE = "NextShell";
 const KEYTAR_ACCOUNT = "backup-password";
 
+export interface KeytarPasswordCacheOptions {
+  /**
+   * Older service name to adopt from when the primary item is missing. Lets a
+   * dev build own a separate keychain item without orphaning secrets written
+   * under the shared name; the value is copied into the primary item on first
+   * read so later launches only touch the primary.
+   */
+  fallbackService?: string;
+  /** Injected keytar module (tests only). */
+  keytar?: KeytarModule;
+}
+
 export class KeytarPasswordCache {
   private readonly keytar: KeytarModule | undefined;
   private readonly service: string;
   private readonly account: string;
+  private readonly fallbackService: string | undefined;
+  /** Memoized read, including a negative result — `undefined` means "not read yet". */
+  private resolved: { value: string | undefined } | undefined;
+  private inFlight: Promise<string | undefined> | undefined;
 
-  constructor(service = KEYTAR_SERVICE, account = KEYTAR_ACCOUNT) {
-    this.keytar = loadKeytar();
+  constructor(
+    service = KEYTAR_SERVICE,
+    account = KEYTAR_ACCOUNT,
+    options: KeytarPasswordCacheOptions = {}
+  ) {
+    this.keytar = options.keytar ?? loadKeytar();
     this.service = service;
     this.account = account;
+    this.fallbackService = options.fallbackService;
   }
 
   isAvailable(): boolean {
@@ -476,25 +565,85 @@ export class KeytarPasswordCache {
     if (!this.keytar) {
       return;
     }
+    this.invalidate();
     await this.keytar.setPassword(this.service, this.account, password);
+    this.resolved = { value: password };
   }
 
+  /**
+   * Read the secret, hitting the OS keychain at most once per process. macOS
+   * prompts for authorization on every keychain access whose ACL does not match
+   * the running binary, so repeated reads mean repeated password dialogs.
+   */
   async recall(): Promise<string | undefined> {
     if (!this.keytar) {
       return undefined;
     }
-    const value = await this.keytar.getPassword(this.service, this.account);
-    return value ?? undefined;
+    if (this.resolved) {
+      return this.resolved.value;
+    }
+    if (this.inFlight) {
+      return this.inFlight;
+    }
+
+    const request = this.readThrough()
+      .then((value) => {
+        this.resolved = { value };
+        this.inFlight = undefined;
+        return value;
+      })
+      .catch((error: unknown) => {
+        // Leave the memo empty so a transient failure can be retried.
+        this.inFlight = undefined;
+        throw error;
+      });
+
+    this.inFlight = request;
+    return request;
   }
 
   async clear(): Promise<void> {
     if (!this.keytar) {
       return;
     }
+    this.invalidate();
     try {
       await this.keytar.deletePassword(this.service, this.account);
     } catch {
       // ignore if not found
     }
+    this.resolved = { value: undefined };
+  }
+
+  /** Drop the memoized read so the next `recall()` goes back to the keychain. */
+  invalidate(): void {
+    this.resolved = undefined;
+    this.inFlight = undefined;
+  }
+
+  private async readThrough(): Promise<string | undefined> {
+    const keytar = this.keytar;
+    if (!keytar) {
+      return undefined;
+    }
+
+    const primary = await keytar.getPassword(this.service, this.account);
+    if (primary) {
+      return primary;
+    }
+    if (!this.fallbackService) {
+      return undefined;
+    }
+
+    const adopted = await keytar.getPassword(this.fallbackService, this.account);
+    if (!adopted) {
+      return undefined;
+    }
+    try {
+      await keytar.setPassword(this.service, this.account, adopted);
+    } catch {
+      // Adoption is best-effort; the value is still usable this run.
+    }
+    return adopted;
   }
 }

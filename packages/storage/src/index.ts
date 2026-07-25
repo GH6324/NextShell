@@ -1572,6 +1572,8 @@ export interface ConnectionRepository {
   getDeviceKey: () => string | undefined;
   saveDeviceKey: (key: string) => void;
   clearDeviceKey: () => void;
+  getKeychainNoticeAcknowledged: () => boolean;
+  saveKeychainNoticeAcknowledged: () => void;
   getSecretStore: () => SecretStoreDB;
   clearTemplateParams: (commandId: string) => void;
   backupDatabase: (targetPath: string) => Promise<void>;
@@ -2984,6 +2986,35 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
 
   clearDeviceKey(): void {
     this.db.prepare("DELETE FROM app_settings WHERE key = ?").run("device_key");
+  }
+
+  getKeychainNoticeAcknowledged(): boolean {
+    const row = this.db
+      .prepare("SELECT value_json FROM app_settings WHERE key = ?")
+      .get("keychain_notice_acknowledged") as { value_json: string } | undefined;
+    if (!row?.value_json) return false;
+    try {
+      return JSON.parse(row.value_json) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  saveKeychainNoticeAcknowledged(): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO app_settings (key, value_json, updated_at)
+       VALUES (@key, @value_json, @updated_at)
+       ON CONFLICT(key) DO UPDATE SET
+         value_json = excluded.value_json,
+         updated_at = excluded.updated_at`
+      )
+      .run({
+        key: "keychain_notice_acknowledged",
+        value_json: JSON.stringify(true),
+        updated_at: now
+      });
   }
 
   getSecretStore(): SecretStoreDB {

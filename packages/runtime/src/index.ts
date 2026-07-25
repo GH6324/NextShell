@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { AppPreferences, ConnectionListQuery, ConnectionProfile } from "@nextshell/core";
+import {
+  DEVICE_KEY_ENV_VAR,
+  type AppPreferences,
+  type ConnectionListQuery,
+  type ConnectionProfile
+} from "@nextshell/core";
 import { EncryptedSecretVault } from "@nextshell/security";
 import type { SshConnectOptions } from "@nextshell/ssh";
 import {
@@ -27,7 +32,16 @@ export interface ResolveNextShellDataPathsOptions {
   homeDir?: string;
   platform?: NodeJS.Platform;
   productName?: string;
+  /**
+   * Hex device key handed over by the desktop app (see `NEXTSHELL_DEVICE_KEY`).
+   * This process must never reach for the OS keychain itself: it runs headless
+   * under an MCP client, where a macOS authorization dialog has nobody to
+   * answer it, and its code identity differs from the desktop app's anyway.
+   */
+  deviceKeyHex?: string;
 }
+
+export { DEVICE_KEY_ENV_VAR } from "@nextshell/core";
 
 export interface ServerSummary {
   nameId: string;
@@ -191,6 +205,26 @@ export const resolveNextShellDataPaths = (
   };
 };
 
+/**
+ * Device key sources, in order: explicit option, the env var the desktop app
+ * hands over, then the legacy plaintext copy in the DB (only present on installs
+ * where no keychain was available). Never the keychain itself.
+ */
+const resolveDeviceKeyHex = (
+  options: ResolveNextShellDataPathsOptions,
+  connections: SQLiteConnectionRepository
+): string | undefined => {
+  const env = options.env ?? process.env;
+  const candidates = [options.deviceKeyHex, env[DEVICE_KEY_ENV_VAR], connections.getDeviceKey()];
+  for (const candidate of candidates) {
+    const normalized = candidate?.trim();
+    if (normalized && isHexString(normalized)) {
+      return normalized;
+    }
+  }
+  return undefined;
+};
+
 export const createReadonlyCredentialContext = (
   options: ResolveNextShellDataPathsOptions = {}
 ): ReadonlyCredentialContext => {
@@ -206,11 +240,11 @@ export const createReadonlyCredentialContext = (
   const sshKeys = new SQLiteSshKeyRepository(connections.getDb());
   const proxies = new SQLiteProxyRepository(connections.getDb());
 
-  const deviceKeyHex = connections.getDeviceKey();
-  if (!deviceKeyHex || !isHexString(deviceKeyHex)) {
+  const deviceKeyHex = resolveDeviceKeyHex(options, connections);
+  if (!deviceKeyHex) {
     connections.close();
     throw new CredentialStoreUnavailableError(
-      "credential store unavailable: device key missing or invalid"
+      `credential store unavailable: device key missing or invalid. NextShell keeps it in the OS keychain, which this process must not read — set ${DEVICE_KEY_ENV_VAR} in the MCP server config (NextShell → 设置中心 → 安全 → 复制 MCP 配置).`
     );
   }
 

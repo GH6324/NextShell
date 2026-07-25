@@ -54,6 +54,10 @@ import type {
   MasterPasswordChangeInput,
   MasterPasswordClearRememberedInput,
   MasterPasswordGetCachedInput,
+  CredentialStoreReauthorizeInput,
+  CredentialStoreReauthorizeResult,
+  McpProxyCopyConfigInput,
+  McpProxyCopyConfigResult,
   MasterPasswordSetInput,
   MasterPasswordStatusInput,
   MasterPasswordStatusResult,
@@ -307,6 +311,12 @@ export interface NextShellApi {
     clearRemembered: (payload?: MasterPasswordClearRememberedInput) => Promise<{ ok: true }>;
     passwordStatus: (payload?: MasterPasswordStatusInput) => Promise<MasterPasswordStatusResult>;
     getCached: (payload?: MasterPasswordGetCachedInput) => Promise<MasterPasswordCachedResult>;
+    /** Copies the MCP proxy server config (device key included) to the clipboard. */
+    copyMcpProxyConfig: (payload?: McpProxyCopyConfigInput) => Promise<McpProxyCopyConfigResult>;
+    /** Retry a keychain read that was previously refused. */
+    reauthorizeCredentialStore: (
+      payload?: CredentialStoreReauthorizeInput
+    ) => Promise<CredentialStoreReauthorizeResult>;
   };
   sshKey: {
     list: (payload?: SshKeyListInput) => Promise<SshKeyProfile[]>;
@@ -420,6 +430,8 @@ export interface IpcInvokeMethods {
   [IPCChannel.MasterPasswordClearRemembered]: NextShellApi["masterPassword"]["clearRemembered"];
   [IPCChannel.MasterPasswordStatus]: NextShellApi["masterPassword"]["passwordStatus"];
   [IPCChannel.MasterPasswordGetCached]: NextShellApi["masterPassword"]["getCached"];
+  [IPCChannel.McpProxyCopyConfig]: NextShellApi["masterPassword"]["copyMcpProxyConfig"];
+  [IPCChannel.CredentialStoreReauthorize]: NextShellApi["masterPassword"]["reauthorizeCredentialStore"];
   [IPCChannel.CloudSyncWorkspaceList]: NextShellApi["cloudSync"]["workspaceList"];
   [IPCChannel.CloudSyncWorkspaceAdd]: NextShellApi["cloudSync"]["workspaceAdd"];
   [IPCChannel.CloudSyncWorkspaceUpdate]: NextShellApi["cloudSync"]["workspaceUpdate"];

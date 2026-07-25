@@ -10,6 +10,20 @@ files:
   - package.json
 mac:
   category: public.app-category.developer-tools
+  # A stable code-signing identity is what makes the macOS keychain's "Always
+  # Allow" survive an app update: the ACL matches the app by its designated
+  # requirement, and ad-hoc signing changes that on every build — so every
+  # release would ask for keychain authorization again.
+  #
+  # `identity` is left unset so electron-builder auto-discovers a "Developer ID
+  # Application" certificate; override with CSC_NAME, or supply CSC_LINK +
+  # CSC_KEY_PASSWORD in CI. With no certificate present the build still works,
+  # it just logs "skipped macOS application code signing" and the prompt keeps
+  # coming back.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
   target:
     - dmg
 win:
