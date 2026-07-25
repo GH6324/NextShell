@@ -253,9 +253,7 @@ export class BackupPasswordService {
    * every stored credential, so it is at least as sensitive as any one of them.
    * The config never passes through the renderer.
    */
-  async mcpProxyCopyConfig(
-    providedMasterPassword?: string
-  ): Promise<{ ok: true; dbPath: string }> {
+  async mcpProxyCopyConfig(providedMasterPassword?: string): Promise<{ ok: true; dbPath: string }> {
     await this.resolveMasterPassword(providedMasterPassword);
     const deviceKeyHex = await this.options.getDeviceKeyHex();
     const dbPath = this.options.connections.getDbPath();

@@ -26,6 +26,11 @@ CERT_NAME="${CERT_NAME:-NextShell Dev}"
 OUT_DIR="${OUT_DIR:-$HOME/.nextshell-signing}"
 VALID_DAYS="${VALID_DAYS:-3650}"
 KEYCHAIN="${KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
+# Pinned to the system LibreSSL on purpose: OpenSSL 3.x defaults to AES-256 +
+# PBKDF2 for PKCS#12, which macOS `security import` cannot read ("MAC
+# verification failed"). LibreSSL still writes the legacy format Security.
+# framework expects.
+OPENSSL="${OPENSSL:-/usr/bin/openssl}"
 
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "This script only applies to macOS." >&2
@@ -50,7 +55,7 @@ fi
 mkdir -p "$OUT_DIR"
 chmod 700 "$OUT_DIR"
 
-P12_PASSWORD="${P12_PASSWORD:-$(openssl rand -base64 24 | tr -d '\n')}"
+P12_PASSWORD="${P12_PASSWORD:-$("$OPENSSL" rand -base64 24 | tr -d '\n')}"
 KEY_PATH="$OUT_DIR/signing-key.pem"
 CERT_PATH="$OUT_DIR/signing-cert.pem"
 P12_PATH="$OUT_DIR/signing-cert.p12"
@@ -77,11 +82,11 @@ subjectKeyIdentifier   = hash
 EOF
 
 say "Generating a $VALID_DAYS-day self-signed code-signing certificate: $CERT_NAME"
-openssl req -x509 -newkey rsa:2048 -nodes \
+"$OPENSSL" req -x509 -newkey rsa:2048 -nodes \
   -keyout "$KEY_PATH" -out "$CERT_PATH" \
   -days "$VALID_DAYS" -config "$CONFIG_PATH" >/dev/null 2>&1
 
-openssl pkcs12 -export -inkey "$KEY_PATH" -in "$CERT_PATH" \
+"$OPENSSL" pkcs12 -export -inkey "$KEY_PATH" -in "$CERT_PATH" \
   -out "$P12_PATH" -name "$CERT_NAME" -passout "pass:$P12_PASSWORD" >/dev/null 2>&1
 
 printf '%s\n' "$P12_PASSWORD" >"$OUT_DIR/p12-password.txt"

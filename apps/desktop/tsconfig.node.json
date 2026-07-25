@@ -13,10 +13,5 @@
       "@nextshell/ui-kit": ["../../packages/ui-kit/src/index.ts"]
     }
   },
-  "include": [
-    "src/main/**/*.ts",
-    "src/preload/**/*.ts",
-    "src/shared/**/*.ts",
-    "vite.config.ts"
-  ]
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts", "vite.config.ts"]
 }

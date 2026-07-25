@@ -15,6 +15,9 @@
     "build": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && node --eval \"require('node:fs').rmSync('dist-electron', { recursive: true, force: true })\" && vite build",
     "dist": "pnpm run build && electron-builder --config build/electron-builder.yml",
     "dist:dir": "pnpm run build && electron-builder --dir --config build/electron-builder.yml",
+    "dist:mac": "pnpm run build && CSC_NAME=\"${CSC_NAME:-NextShell Dev}\" electron-builder --mac --config build/electron-builder.yml",
+    "dist:mac:dir": "pnpm run build && CSC_NAME=\"${CSC_NAME:-NextShell Dev}\" electron-builder --mac --dir --config build/electron-builder.yml",
+    "signing-cert": "bash scripts/create-signing-cert.sh",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "preview": "vite preview",
     "rebuild:native": "electron-rebuild -f --only better-sqlite3,keytar,ssh2,node-pty"
