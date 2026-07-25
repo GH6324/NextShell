@@ -221,3 +221,45 @@ const assertEqual = <T>(actual: T, expected: T, message: string): void => {
     "mergePreferences should fall back to current shellIntegration on invalid value"
   );
 })();
+
+(() => {
+  // The settings UI sends one wallpaper field at a time; the sibling must not
+  // be dropped by the nested merge.
+  const merged = mergePreferences(DEFAULT_APP_PREFERENCES, {
+    terminal: {
+      wallpaper: {
+        useWebgl: true
+      }
+    }
+  });
+
+  assertEqual(
+    merged.terminal.wallpaper.useWebgl,
+    true,
+    "mergePreferences should apply patched terminal wallpaper useWebgl"
+  );
+  assertEqual(
+    merged.terminal.wallpaper.seeThrough,
+    DEFAULT_APP_PREFERENCES.terminal.wallpaper.seeThrough,
+    "mergePreferences should preserve terminal wallpaper seeThrough when omitted"
+  );
+})();
+
+(() => {
+  const merged = mergePreferences(DEFAULT_APP_PREFERENCES, {
+    terminal: {
+      fontSize: 16
+    }
+  });
+
+  assertEqual(
+    merged.terminal.wallpaper.seeThrough,
+    DEFAULT_APP_PREFERENCES.terminal.wallpaper.seeThrough,
+    "mergePreferences should preserve terminal wallpaper when the block is absent"
+  );
+  assertEqual(
+    merged.terminal.wallpaper.useWebgl,
+    DEFAULT_APP_PREFERENCES.terminal.wallpaper.useWebgl,
+    "mergePreferences should preserve terminal wallpaper useWebgl when the block is absent"
+  );
+})();

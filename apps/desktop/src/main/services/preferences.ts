@@ -177,7 +177,11 @@ export const mergePreferences = (
       shellIntegration: normalizeShellIntegrationMode(
         patch.terminal?.shellIntegration,
         current.terminal.shellIntegration
-      )
+      ),
+      wallpaper: {
+        seeThrough: patch.terminal?.wallpaper?.seeThrough ?? current.terminal.wallpaper.seeThrough,
+        useWebgl: patch.terminal?.wallpaper?.useWebgl ?? current.terminal.wallpaper.useWebgl
+      }
     },
     ssh: {
       keepAliveEnabled: patch.ssh?.keepAliveEnabled ?? current.ssh.keepAliveEnabled,

@@ -290,3 +290,81 @@ const assert = (condition: boolean, message: string): void => {
     "appPreferencesSchema should reject non-boolean oscNotifications"
   );
 })();
+
+(() => {
+  assert(
+    DEFAULT_APP_PREFERENCES.terminal.wallpaper.seeThrough === true,
+    "terminal wallpaper seeThrough should default to true in core defaults"
+  );
+  assert(
+    DEFAULT_APP_PREFERENCES.terminal.wallpaper.useWebgl === false,
+    "terminal wallpaper useWebgl should default to false in core defaults"
+  );
+
+  const parsed = appPreferencesSchema.parse({});
+  assert(
+    parsed.terminal.wallpaper.seeThrough === true,
+    "appPreferencesSchema should inject default terminal wallpaper seeThrough"
+  );
+  assert(
+    parsed.terminal.wallpaper.useWebgl === false,
+    "appPreferencesSchema should inject default terminal wallpaper useWebgl"
+  );
+})();
+
+(() => {
+  // Preferences persisted before this feature existed carry no wallpaper block.
+  const parsed = appPreferencesSchema.safeParse({
+    terminal: {
+      backgroundColor: "#000000",
+      foregroundColor: "#d8eaff",
+      wallpaper: {
+        useWebgl: true
+      }
+    }
+  });
+
+  assert(parsed.success, "appPreferencesSchema should accept a partial terminal wallpaper block");
+  if (!parsed.success) {
+    return;
+  }
+
+  assert(
+    parsed.data.terminal.wallpaper.useWebgl === true,
+    "appPreferencesSchema should keep explicit terminal wallpaper useWebgl"
+  );
+  assert(
+    parsed.data.terminal.wallpaper.seeThrough === true,
+    "appPreferencesSchema should inject default seeThrough alongside explicit useWebgl"
+  );
+})();
+
+(() => {
+  const parsed = appPreferencesPatchSchema.safeParse({
+    terminal: {
+      wallpaper: {
+        seeThrough: false
+      }
+    }
+  });
+
+  assert(
+    parsed.success,
+    "appPreferencesPatchSchema should accept a single terminal wallpaper field"
+  );
+})();
+
+(() => {
+  const parsed = appPreferencesPatchSchema.safeParse({
+    terminal: {
+      wallpaper: {
+        seeThrough: "off"
+      }
+    }
+  });
+
+  assert(
+    parsed.success === false,
+    "appPreferencesPatchSchema should reject non-boolean terminal wallpaper seeThrough"
+  );
+})();

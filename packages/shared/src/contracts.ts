@@ -508,7 +508,13 @@ export const appPreferencesSchema = z
         hyperlinkConfirm: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.hyperlinkConfirm),
         shellIntegration: shellIntegrationModeSchema.default(
           DEFAULT_APP_PREFERENCES.terminal.shellIntegration
-        )
+        ),
+        wallpaper: z
+          .object({
+            seeThrough: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.wallpaper.seeThrough),
+            useWebgl: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.wallpaper.useWebgl)
+          })
+          .default(DEFAULT_APP_PREFERENCES.terminal.wallpaper)
       })
       .default(DEFAULT_APP_PREFERENCES.terminal),
     ssh: z
@@ -659,7 +665,13 @@ export const appPreferencesPatchSchema = z.object({
       oscNotifications: z.boolean().optional(),
       oscTitleUpdates: z.boolean().optional(),
       hyperlinkConfirm: z.boolean().optional(),
-      shellIntegration: shellIntegrationModeSchema.optional()
+      shellIntegration: shellIntegrationModeSchema.optional(),
+      wallpaper: z
+        .object({
+          seeThrough: z.boolean().optional(),
+          useWebgl: z.boolean().optional()
+        })
+        .optional()
     })
     .optional(),
   ssh: z

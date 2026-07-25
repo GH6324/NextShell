@@ -148,6 +148,10 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
         localShell: {
           ...prev.terminal.localShell,
           ...(patch.terminal?.localShell ?? {})
+        },
+        wallpaper: {
+          ...prev.terminal.wallpaper,
+          ...(patch.terminal?.wallpaper ?? {})
         }
       },
       ssh: { ...prev.ssh, ...(patch.ssh ?? {}) },

@@ -724,7 +724,17 @@ const parseAppPreferences = (value: string | null): AppPreferences => {
           parsed.terminal?.shellIntegration === "off" ||
           parsed.terminal?.shellIntegration === "manual"
             ? parsed.terminal.shellIntegration
-            : fallback.terminal.shellIntegration
+            : fallback.terminal.shellIntegration,
+        wallpaper: {
+          seeThrough:
+            typeof parsed.terminal?.wallpaper?.seeThrough === "boolean"
+              ? parsed.terminal.wallpaper.seeThrough
+              : fallback.terminal.wallpaper.seeThrough,
+          useWebgl:
+            typeof parsed.terminal?.wallpaper?.useWebgl === "boolean"
+              ? parsed.terminal.wallpaper.useWebgl
+              : fallback.terminal.wallpaper.useWebgl
+        }
       },
       ssh: {
         keepAliveEnabled:

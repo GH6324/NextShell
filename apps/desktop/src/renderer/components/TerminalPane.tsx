@@ -23,6 +23,7 @@ import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import { shouldTrackTerminalSessionMetadata } from "../utils/terminalSessionMonitoring";
 import { shouldReconnectOnInput } from "../utils/terminal-reconnect";
+import { resolveTerminalWallpaperRendering } from "../utils/terminalWallpaper";
 import {
   buildTerminalAuthIntro,
   buildTerminalAuthRetryNotice,
@@ -79,6 +80,8 @@ const DEFAULT_TERMINAL_OPTIONS: FrozenTerminalOptions = {
   deleteMode: "vt220-delete"
 };
 const MAX_BUFFERED_SESSION_COUNT = 32;
+/** Theme background used when the terminal lets the app wallpaper through. */
+const TRANSPARENT_TERMINAL_BACKGROUND = "rgba(0, 0, 0, 0)";
 
 /**
  * Delivery acks are batched per session: instead of one IPC invoke per frame
@@ -229,6 +232,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
   ) => {
     const { message } = AntdApp.useApp();
     const terminalPreferences = usePreferencesStore((state) => state.preferences.terminal);
+    const appBackgroundImagePath = usePreferencesStore(
+      (state) => state.preferences.window.backgroundImagePath
+    );
+    const { transparent: transparencyEnabled, webgl: webglEnabled } =
+      resolveTerminalWallpaperRendering(appBackgroundImagePath, terminalPreferences.wallpaper);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitRef = useRef<FitAddon | null>(null);
@@ -675,9 +683,15 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         return;
       }
 
-      const terminalBg = terminalPreferences.backgroundColor;
+      // A fully transparent canvas — the dimming that keeps text readable comes
+      // from `.terminal-shell`'s tinted background, so the cell grid and the
+      // padding around it share one surface with no seam.
+      const terminalBg = transparencyEnabled
+        ? TRANSPARENT_TERMINAL_BACKGROUND
+        : terminalPreferences.backgroundColor;
       const terminal = new Terminal({
         cursorBlink: true,
+        allowTransparency: transparencyEnabled,
         fontSize: terminalPreferences.fontSize,
         lineHeight: terminalPreferences.lineHeight,
         fontFamily: terminalPreferences.fontFamily,
@@ -700,14 +714,18 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       terminal.loadAddon(searchAddon);
       terminal.loadAddon(webLinksAddon);
 
-      try {
-        const webglAddon = new WebglAddon();
-        terminal.loadAddon(webglAddon);
-        webglAddon.onContextLoss(() => {
-          webglAddon.dispose();
-        });
-      } catch {
-        // webgl acceleration is optional
+      // Skipping the addon leaves xterm on its built-in DOM renderer (6.0
+      // dropped the canvas renderer, so DOM is the only other option).
+      if (webglEnabled) {
+        try {
+          const webglAddon = new WebglAddon();
+          terminal.loadAddon(webglAddon);
+          webglAddon.onContextLoss(() => {
+            webglAddon.dispose();
+          });
+        } catch {
+          // webgl acceleration is optional
+        }
       }
 
       const compatibilityGuard = installTerminalQueryCompatibilityGuards(terminal, {
@@ -927,6 +945,23 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       fitRef.current = fitAddon;
       searchAddonRef.current = searchAddon;
 
+      // `allowTransparency` and the renderer choice are construction-time only,
+      // so toggling either re-runs this effect and rebuilds the terminal. The
+      // output buffers live in refs and survive that, so the visible session is
+      // restored here instead of flashing empty until the next write.
+      const attachedSessionId = sessionIdRef.current;
+      if (attachedSessionId) {
+        replaySessionOutput(attachedSessionId);
+        fitAddon.fit();
+        runSessionAction(
+          window.nextshell.session.resize({
+            sessionId: attachedSessionId,
+            cols: terminal.cols,
+            rows: terminal.rows
+          })
+        );
+      }
+
       return () => {
         cancelAnimationFrame(resizeRafId);
         observer.disconnect();
@@ -940,7 +975,18 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         fitRef.current = null;
         searchAddonRef.current = null;
       };
-    }, [handleLocalAuthInput, message, tryReconnectOnEnter]);
+      // terminalPreferences values other than the two below are applied by the
+      // hot-update effect right after; only construction-time options belong in
+      // this dependency list, or every font tweak would rebuild the terminal.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+      handleLocalAuthInput,
+      message,
+      replaySessionOutput,
+      transparencyEnabled,
+      tryReconnectOnEnter,
+      webglEnabled
+    ]);
 
     useEffect(() => {
       const terminal = terminalRef.current;
@@ -948,7 +994,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         return;
       }
 
-      const terminalBg = terminalPreferences.backgroundColor;
+      const terminalBg = transparencyEnabled
+        ? TRANSPARENT_TERMINAL_BACKGROUND
+        : terminalPreferences.backgroundColor;
       terminal.options.theme = {
         ...terminal.options.theme,
         background: terminalBg,
@@ -977,7 +1025,8 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       terminalPreferences.foregroundColor,
       terminalPreferences.fontSize,
       terminalPreferences.lineHeight,
-      terminalPreferences.fontFamily
+      terminalPreferences.fontFamily,
+      transparencyEnabled
     ]);
 
     useEffect(() => {

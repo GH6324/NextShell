@@ -11,9 +11,20 @@ import {
   CUSTOM_FONT_PRESET,
   TERMINAL_THEME_PRESETS,
   TERMINAL_DEBOUNCE_MS,
+  OPACITY_COMMIT_DELAY_MS,
   getLocalShellOptions
 } from "./constants";
-import type { LocalShellMode, LocalShellPreset, LocalShellPreference, SaveFn } from "./types";
+import type {
+  LocalShellMode,
+  LocalShellPreset,
+  LocalShellPreference,
+  SaveFn,
+  TerminalWallpaperPreference
+} from "./types";
+
+/** App background opacity is persisted as an integer percentage in 30..80. */
+const clampAppBackgroundOpacity = (value: number): number =>
+  Math.min(80, Math.max(30, Math.round(value)));
 
 export const TerminalSection = ({
   loading,
@@ -32,6 +43,7 @@ export const TerminalSection = ({
   shellIntegration,
   appBackgroundImagePath,
   appBackgroundOpacity,
+  terminalWallpaper,
   setTerminalBackgroundColor,
   setTerminalForegroundColor,
   setTerminalThemePreset,
@@ -56,6 +68,7 @@ export const TerminalSection = ({
   shellIntegration: ShellIntegrationMode;
   appBackgroundImagePath: string;
   appBackgroundOpacity: number;
+  terminalWallpaper: TerminalWallpaperPreference;
   setTerminalBackgroundColor: (v: string) => void;
   setTerminalForegroundColor: (v: string) => void;
   setTerminalThemePreset: (v: string) => void;
@@ -112,6 +125,80 @@ export const TerminalSection = ({
     },
     [debouncedSave]
   );
+
+  // The opacity controls echo a local draft instead of the persisted value:
+  // fully controlled widgets on a debounced save snap back to the stale store
+  // value on any re-render, which reads as "the slider won't move / the box
+  // won't accept input". The draft moves with the pointer, and the value is
+  // committed on drag end (or shortly after a keyboard/typed change, which
+  // never fires onChangeComplete).
+  const [appBackgroundOpacityDraft, setAppBackgroundOpacityDraft] = useState(appBackgroundOpacity);
+  const opacityCommitTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** Value waiting on the backstop timer, or undefined when nothing is in flight. */
+  const opacityPendingRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    setAppBackgroundOpacityDraft(appBackgroundOpacity);
+  }, [appBackgroundOpacity]);
+
+  const persistAppBackgroundOpacity = useCallback(
+    (value: number | null): number => {
+      const numeric =
+        typeof value === "number" && Number.isFinite(value) ? value : appBackgroundOpacity;
+      // Clamp before saving: an in-progress number entry can be out of range
+      // (typing "3" on the way to "35") and the Zod patch schema rejects it.
+      const clamped = clampAppBackgroundOpacity(numeric);
+      if (clamped !== appBackgroundOpacity) {
+        save({ window: { backgroundOpacity: clamped } });
+      }
+      return clamped;
+    },
+    [appBackgroundOpacity, save]
+  );
+
+  const commitAppBackgroundOpacity = useCallback(
+    (value: number | null) => {
+      clearTimeout(opacityCommitTimerRef.current);
+      opacityCommitTimerRef.current = undefined;
+      opacityPendingRef.current = undefined;
+      setAppBackgroundOpacityDraft(persistAppBackgroundOpacity(value));
+    },
+    [persistAppBackgroundOpacity]
+  );
+
+  const scheduleAppBackgroundOpacityCommit = useCallback(
+    (value: number | null) => {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return;
+      }
+      setAppBackgroundOpacityDraft(value);
+      opacityPendingRef.current = value;
+      clearTimeout(opacityCommitTimerRef.current);
+      opacityCommitTimerRef.current = setTimeout(() => {
+        commitAppBackgroundOpacity(value);
+      }, OPACITY_COMMIT_DELAY_MS);
+    },
+    [commitAppBackgroundOpacity]
+  );
+
+  // Closing the settings modal (Esc or the close button) destroys this subtree,
+  // so an edit still waiting on the backstop timer has to be flushed here or it
+  // is silently dropped. Mirrors what the debounced-save cleanup below does.
+  const persistAppBackgroundOpacityRef = useRef(persistAppBackgroundOpacity);
+  useEffect(() => {
+    persistAppBackgroundOpacityRef.current = persistAppBackgroundOpacity;
+  }, [persistAppBackgroundOpacity]);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(opacityCommitTimerRef.current);
+      const pending = opacityPendingRef.current;
+      if (pending !== undefined) {
+        opacityPendingRef.current = undefined;
+        persistAppBackgroundOpacityRef.current(pending);
+      }
+    };
+  }, []);
 
   const terminalFontOptions = useMemo(() => getTerminalFontOptions(window.nextshell.platform), []);
   const [terminalFontFamilyInput, setTerminalFontFamilyInput] = useState(terminalFontFamily);
@@ -178,10 +265,7 @@ export const TerminalSection = ({
 
   return (
     <>
-      <SettingsCard
-        title="APP 背景"
-        description="设置应用背景图片和透明度（透明度修改后 3 秒生效）"
-      >
+      <SettingsCard title="APP 背景" description="设置应用背景图片、透明度与终端透出行为">
         <SettingsRow label="背景图片">
           <div className="flex gap-2 items-center">
             <Input
@@ -250,10 +334,9 @@ export const TerminalSection = ({
               step={1}
               disabled={loading || !appBackgroundImagePath}
               style={{ flex: 1, margin: 0 }}
-              value={appBackgroundOpacity}
-              onChange={(v) =>
-                debouncedSave("window", { backgroundOpacity: typeof v === "number" ? v : 60 })
-              }
+              value={appBackgroundOpacityDraft}
+              onChange={scheduleAppBackgroundOpacityCommit}
+              onChangeComplete={commitAppBackgroundOpacity}
             />
             <div className="flex items-center gap-1">
               <InputNumber
@@ -261,15 +344,30 @@ export const TerminalSection = ({
                 max={80}
                 precision={0}
                 disabled={loading || !appBackgroundImagePath}
-                value={appBackgroundOpacity}
-                onChange={(v) =>
-                  debouncedSave("window", { backgroundOpacity: typeof v === "number" ? v : 60 })
-                }
+                value={appBackgroundOpacityDraft}
+                onChange={scheduleAppBackgroundOpacityCommit}
+                onBlur={() => commitAppBackgroundOpacity(appBackgroundOpacityDraft)}
+                onPressEnter={() => commitAppBackgroundOpacity(appBackgroundOpacityDraft)}
               />
               <span>%</span>
             </div>
           </div>
         </SettingsRow>
+
+        <SettingsSwitchRow
+          label="终端透出背景图"
+          hint="终端画布转为透明，文字浮在背景图上；关闭则终端保持纯色。切换会重建终端（会话内容自动恢复）"
+          checked={terminalWallpaper.seeThrough}
+          disabled={loading || !appBackgroundImagePath}
+          onChange={(v) => save({ terminal: { wallpaper: { seeThrough: v } } })}
+        />
+        <SettingsSwitchRow
+          label="透出时启用 GPU 加速"
+          hint="实验性：大流量输出可能出现字形残影（上游 xterm #5847）；关闭时使用 DOM 渲染器"
+          checked={terminalWallpaper.useWebgl}
+          disabled={loading || !appBackgroundImagePath || !terminalWallpaper.seeThrough}
+          onChange={(v) => save({ terminal: { wallpaper: { useWebgl: v } } })}
+        />
       </SettingsCard>
 
       <SettingsCard title="终端颜色" description="选择终端配色主题或自定义颜色（修改后 3 秒生效）">

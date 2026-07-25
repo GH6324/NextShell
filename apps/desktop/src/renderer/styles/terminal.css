@@ -10,5 +10,21 @@
 }
 
 .app-shell--with-wallpaper .terminal-shell {
-  background: color-mix(in srgb, #0b1829 calc(var(--app-background-opacity, 60) * 1%), transparent);
+  background: color-mix(
+    in srgb,
+    var(--terminal-tint, #0b1829) calc(var(--app-background-opacity, 60) * 1%),
+    transparent
+  );
+}
+
+/* xterm 6.0.0 regression: the shipped xterm.css hard-codes
+   `.xterm .xterm-viewport { background-color: #000 }` with no guard, so a
+   transparent WebGL/DOM canvas still ends up on an opaque black pad (upstream
+   master guards it with `.xterm:not(.allow-transparency)`, 6.0.0 does not ship
+   that). Unconditional here on purpose: in opaque mode the terminal canvas
+   already covers this layer, and in see-through mode what shows instead is
+   `.terminal-shell`'s own tinted background. Remove once we run an xterm
+   version that restores the guard. */
+.terminal-shell .xterm-viewport {
+  background-color: transparent !important;
 }
