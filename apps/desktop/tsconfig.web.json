@@ -14,5 +14,10 @@
       "@nextshell/ui-kit": ["../../packages/ui-kit/src/index.ts"]
     }
   },
-  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "src/renderer/vite-env.d.ts"]
+  "include": [
+    "src/renderer/**/*.ts",
+    "src/renderer/**/*.tsx",
+    "src/renderer/vite-env.d.ts",
+    "src/shared/**/*.ts"
+  ]
 }

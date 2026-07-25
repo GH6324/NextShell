@@ -4,6 +4,7 @@ import {
   applyOptimisticCommandHistoryPush,
   applyOptimisticCommandHistoryRemove
 } from "./useCommandHistory.helpers";
+import { recordCommandHistoryEntry, subscribeCommandHistory } from "./commandHistoryBus";
 
 export type { CommandHistoryEntry };
 
@@ -20,25 +21,25 @@ export const useCommandHistory = () => {
     void reload();
   }, [reload]);
 
+  // Every executed command arrives through the bus, whichever source produced
+  // it (input bar submit, or an OSC 133 mark for a command typed straight into
+  // the terminal), so the rendered list stays in sync with what was persisted.
+  useEffect(
+    () =>
+      subscribeCommandHistory((command) => {
+        const optimisticEntry: CommandHistoryEntry = {
+          command,
+          useCount: 1,
+          lastUsedAt: new Date().toISOString()
+        };
+        setEntries((prev) => applyOptimisticCommandHistoryPush(prev, optimisticEntry));
+        navigatorRef.current = { index: -1, snapshot: [] };
+      }),
+    []
+  );
+
   const push = useCallback(async (command: string) => {
-    const trimmed = command.trim();
-    if (!trimmed) {
-      return;
-    }
-
-    // Optimistic: prepend immediately
-    const optimisticEntry: CommandHistoryEntry = {
-      command: trimmed,
-      useCount: 1,
-      lastUsedAt: new Date().toISOString()
-    };
-    setEntries((prev) => applyOptimisticCommandHistoryPush(prev, optimisticEntry));
-    navigatorRef.current = { index: -1, snapshot: [] };
-
-    // Fire-and-forget: persist to DB
-    window.nextshell.commandHistory.push({ command: trimmed }).catch(() => {
-      // Silent — will be synced on next reload
-    });
+    recordCommandHistoryEntry(command);
   }, []);
 
   const remove = useCallback(

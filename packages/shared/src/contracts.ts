@@ -167,7 +167,14 @@ export const sessionOpenSchema = z.discriminatedUnion("target", [
 
 export const sessionWriteSchema = z.object({
   sessionId: z.string().uuid(),
-  data: z.string().max(1024 * 1024)
+  data: z.string().max(1024 * 1024),
+  /**
+   * "protocol" marks writes the client generates on the user's behalf (OSC
+   * query replies, clipboard read answers). Only "user" writes represent real
+   * keystrokes, which is what shell-integration injection must not collide with.
+   * Optional so every existing caller keeps defaulting to "user".
+   */
+  origin: z.enum(["user", "protocol"]).optional()
 });
 
 export const sessionResizeSchema = z.object({
@@ -494,9 +501,7 @@ export const appPreferencesSchema = z
           .default(DEFAULT_APP_PREFERENCES.terminal.lineHeight),
         fontFamily: z.string().trim().min(1).default(DEFAULT_APP_PREFERENCES.terminal.fontFamily),
         localShell: localShellSchema.default(DEFAULT_APP_PREFERENCES.terminal.localShell),
-        oscClipboardWrite: z
-          .boolean()
-          .default(DEFAULT_APP_PREFERENCES.terminal.oscClipboardWrite),
+        oscClipboardWrite: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.oscClipboardWrite),
         oscClipboardRead: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.oscClipboardRead),
         oscNotifications: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.oscNotifications),
         oscTitleUpdates: z.boolean().default(DEFAULT_APP_PREFERENCES.terminal.oscTitleUpdates),

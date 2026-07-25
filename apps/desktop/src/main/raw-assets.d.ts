@@ -7,6 +7,16 @@ declare module "*.sh?raw" {
   export default content;
 }
 
+declare module "*.bash?raw" {
+  const content: string;
+  export default content;
+}
+
+declare module "*.zsh?raw" {
+  const content: string;
+  export default content;
+}
+
 declare module "*.fish?raw" {
   const content: string;
   export default content;

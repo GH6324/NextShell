@@ -35,6 +35,12 @@ export interface ActiveRemoteSession {
   terminalEncoding: TerminalEncoding;
   backspaceMode: BackspaceMode;
   deleteMode: DeleteMode;
+  /**
+   * Set once the user types into this session. Shell-integration injection
+   * writes to the same stdin, so it must not fire after input has started —
+   * the source line would splice into the user's half-typed command.
+   */
+  userInputSeen?: boolean;
 }
 
 export interface ActiveLocalSession {

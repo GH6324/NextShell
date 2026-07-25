@@ -20,6 +20,7 @@ import {
   encodeTerminalData
 } from "./container-utils";
 import {
+  SHELL_INTEGRATION_PROBE_COMMAND,
   resolveShellFamily,
   startShellIntegrationObserver,
   type ShellIntegrationFamily
@@ -134,19 +135,20 @@ export class SessionService {
 
     try {
       const connection = await this.ensureConnection(connectionId, authOverride);
-      // Shell integration ("auto" mode only): probe the login shell up front
-      // so the post-open observer knows which script to inject. The session
-      // itself always opens as a plain PTY shell; injection never restarts
-      // the user's shell. Probe failures silently disable injection.
-      let shellIntegrationFamily: ShellIntegrationFamily | undefined;
-      if (this.connections.getAppPreferences().terminal.shellIntegration === "auto") {
-        try {
-          const shellProbe = await connection.exec("printf '%s' \"${SHELL:-}\"");
-          shellIntegrationFamily = resolveShellFamily(shellProbe.stdout.trim() || undefined);
-        } catch {
-          shellIntegrationFamily = undefined;
-        }
-      }
+      // Shell integration ("auto" mode only): probe the login shell so the
+      // post-open observer knows which script to inject. Deliberately *not*
+      // awaited here — the family is only needed once the observation window
+      // expires, so the probe round-trip runs alongside session startup
+      // instead of adding latency to every connect. Probe failures silently
+      // disable injection. The session itself always opens as a plain PTY
+      // shell; injection never restarts the user's shell.
+      const shellIntegrationFamily: Promise<ShellIntegrationFamily | undefined> | undefined =
+        this.connections.getAppPreferences().terminal.shellIntegration === "auto"
+          ? connection
+              .exec(SHELL_INTEGRATION_PROBE_COMMAND)
+              .then((probe) => resolveShellFamily(probe.stdout.trim() || undefined))
+              .catch(() => undefined)
+          : undefined;
       const shell = await connection.openShell({
         cols: 140,
         rows: 40,
@@ -223,6 +225,10 @@ export class SessionService {
           shell,
           family: shellIntegrationFamily,
           isSessionActive: () => this.activeSessions.has(descriptor.id),
+          hasUserInput: () => {
+            const active = this.activeSessions.get(descriptor.id);
+            return active?.kind === "remote" && active.userInputSeen === true;
+          },
           decode: (chunk) => decodeTerminalData(chunk, profile.terminalEncoding),
           log: (message, metadata) =>
             logger.info(message, {
@@ -421,10 +427,16 @@ export class SessionService {
     }
   }
 
-  writeSession(sessionId: string, data: string): { ok: true } {
+  writeSession(sessionId: string, data: string, origin?: "user" | "protocol"): { ok: true } {
     const active = this.activeSessions.get(sessionId);
     if (!active) {
       throw new Error("Session not found");
+    }
+
+    if (origin !== "protocol" && active.kind === "remote") {
+      // Remembered for the shell-integration observer: once the user has typed,
+      // writing a source line into the same stdin would splice into their input.
+      active.userInputSeen = true;
     }
 
     if (active.kind === "local") {

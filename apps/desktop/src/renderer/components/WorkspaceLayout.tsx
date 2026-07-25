@@ -119,8 +119,7 @@ const EditorTabDirtyDot = ({ sessionId }: { sessionId: string }) => {
 const SessionTabTitle = ({ session }: { session: SessionDescriptor }) => {
   const oscTitle = useSessionOscStore((state) => state.titleBySession[session.id]);
 
-  const title =
-    oscTitle && isOscTitleEligibleStatus(session.status) ? oscTitle : session.title;
+  const title = oscTitle && isOscTitleEligibleStatus(session.status) ? oscTitle : session.title;
 
   return <span className="session-title">{title}</span>;
 };

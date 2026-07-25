@@ -4,11 +4,12 @@
 # from the live shell (auto mode) or from ~/.config/fish/config.fish (manual
 # mode). Modeled after WezTerm's and iTerm2's shell integration hooks.
 #
-# Emits OSC 7 (cwd report) and OSC 133 A/C/D marks. The B mark (prompt end)
-# is omitted: fish paints its prompt inside the fish_prompt function, so a
-# generic append-to-PROMPT hook does not exist; NextShell's renderer treats
-# B as optional. Idempotent: the NEXTSHELL_INTEGRATED sentinel guards the
-# whole body, and fish's --on-event handlers never touch user functions.
+# Emits OSC 7 (cwd report) and OSC 133 A/C/D marks. The B mark (prompt end) is
+# omitted: fish paints its prompt inside the fish_prompt function, so a generic
+# append-to-PROMPT hook does not exist; NextShell's renderer treats B as
+# optional and simply reports no command text for fish sessions. Idempotent:
+# the NEXTSHELL_INTEGRATED sentinel guards the whole body, and fish's
+# --on-event handlers never touch user functions.
 
 if not set -q NEXTSHELL_INTEGRATED
     set -g NEXTSHELL_INTEGRATED 1

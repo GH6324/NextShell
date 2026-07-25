@@ -53,10 +53,13 @@ interface NotificationRequest {
   body: string;
 }
 
-// Desktop notifications are noise when the user is already looking at the
-// session, so they fire only when the app prefers them, the sequence is not a
-// replay artifact, the per-session rate limit allows it, and the session is
-// not the active one in a focused window.
+// Sole decision point for whether a notification is warranted — the main
+// process renders whatever it is handed, because only the renderer knows both
+// the focus state and which session the user is looking at. Notifications are
+// noise when the user is already watching that session, so they fire only when
+// the app prefers them, the sequence is not a replay artifact, the per-session
+// rate limit allows it, and the session is not the active one in a focused
+// window. A background session finishing its build still notifies.
 const shouldNotify = (
   ctx: OscRuntimeContext,
   isAllowedByRateLimit: (sessionId: string) => boolean,

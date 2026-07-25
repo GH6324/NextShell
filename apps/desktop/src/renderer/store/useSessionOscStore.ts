@@ -9,7 +9,8 @@ export type { CommandMark } from "./osc/marksSlice";
 export type { SessionProgress, SessionProgressState } from "./osc/progressSlice";
 
 export interface SessionOscState
-  extends SessionOscCwdSlice,
+  extends
+    SessionOscCwdSlice,
     SessionOscTitleSlice,
     SessionOscMarksSlice,
     SessionOscProgressSlice,

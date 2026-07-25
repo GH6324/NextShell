@@ -464,8 +464,15 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
 
       terminal.reset();
 
+      // Opened before the early return: reset() already invalidated every
+      // marker and decoration the OSC runtime was holding, so the replay-start
+      // hooks must run even when the incoming session has nothing buffered.
+      const oscRuntime = oscRuntimeRef.current;
+      oscRuntime?.beginReplay();
+
       const buffer = bufferBySessionRef.current.get(targetSessionId);
       if (!buffer) {
+        oscRuntime?.endReplay();
         return;
       }
 
@@ -478,15 +485,16 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       );
 
       const replay = toReplayChunks(buffer).join("");
-      if (replay) {
-        // Buffered output may contain OSC sequences with side effects; the
-        // runtime keeps them silent until this write has been fully parsed.
-        const oscRuntime = oscRuntimeRef.current;
-        oscRuntime?.beginReplay();
-        terminal.write(replay, () => {
-          oscRuntime?.endReplay();
-        });
+      if (!replay) {
+        oscRuntime?.endReplay();
+        return;
       }
+
+      // Buffered output may contain OSC sequences with side effects; the
+      // runtime keeps them silent until this write has been fully parsed.
+      terminal.write(replay, () => {
+        oscRuntime?.endReplay();
+      });
     }, []);
 
     const findNext = useCallback(() => {
@@ -722,7 +730,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
           if (!sessionId) {
             return;
           }
-          void window.nextshell.session.write({ sessionId, data }).catch(() => undefined);
+          // Tagged as protocol traffic (OSC query replies, clipboard answers)
+          // so the main process does not mistake it for user keystrokes.
+          void window.nextshell.session
+            .write({ sessionId, data, origin: "protocol" })
+            .catch(() => undefined);
         }
       });
 

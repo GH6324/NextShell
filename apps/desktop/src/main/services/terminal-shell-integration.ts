@@ -1,67 +1,31 @@
 import type { ExecResult } from "@nextshell/ssh";
-import integrationSh from "../../shared/shell-integration/nextshell-shell-integration.sh?raw";
-import integrationFish from "../../shared/shell-integration/nextshell-shell-integration.fish?raw";
+import {
+  buildInstallCommand,
+  buildSourceLine,
+  shellIntegrationScriptText,
+  type ShellIntegrationFamily
+} from "../../shared/shell-integration";
 
 // Shell-integration injection ("auto" preference mode): after the PTY shell
 // opens, passively watch its output for a short window. A remote that already
 // emits OSC 133 or OSC 7 has its own integration (starship, wezterm, iTerm2,
 // VTE prompt hooks) and is left untouched; otherwise the integration script
 // is installed under $HOME/.cache/nextshell via an exec channel and activated
-// with a single visible `source` line written to the live shell. This
-// replaces the old restart-shell bootstrap (mktemp rcfile / ZDOTDIR via an
-// exec channel) and preserves real PTY semantics.
+// with a single visible source line written to the live shell. This replaces
+// the old restart-shell bootstrap (mktemp rcfile / ZDOTDIR via an exec
+// channel) and preserves real PTY semantics.
 
-export type ShellIntegrationFamily = "bash" | "zsh" | "sh" | "fish";
+// Re-exported so session-service has a single import for the whole feature.
+export {
+  SHELL_INTEGRATION_PROBE_COMMAND,
+  resolveShellFamily,
+  type ShellIntegrationFamily
+} from "../../shared/shell-integration";
 
-export const SHELL_INTEGRATION_REMOTE_DIR = "$HOME/.cache/nextshell";
-export const SHELL_INTEGRATION_SH_NAME = "nextshell-shell-integration.sh";
-export const SHELL_INTEGRATION_FISH_NAME = "nextshell-shell-integration.fish";
-
-const HEREDOC_DELIMITER = "__NEXTSHELL_INTEGRATION_EOF__";
 const DEFAULT_OBSERVE_WINDOW_MS = 2000;
 const INTEGRATED_SEQUENCE_PATTERN = /\u001b\](?:133|7);/;
-
-export const resolveShellFamily = (
-  shellPath?: string | null
-): ShellIntegrationFamily | undefined => {
-  const normalized = shellPath?.trim().toLowerCase();
-  if (!normalized) {
-    return undefined;
-  }
-
-  const basename = normalized.slice(normalized.lastIndexOf("/") + 1);
-  switch (basename) {
-    case "bash":
-      return "bash";
-    case "zsh":
-      return "zsh";
-    case "sh":
-      return "sh";
-    case "fish":
-      return "fish";
-    default:
-      return undefined;
-  }
-};
-
-export const resolveShellIntegrationScriptName = (family: ShellIntegrationFamily): string =>
-  family === "fish" ? SHELL_INTEGRATION_FISH_NAME : SHELL_INTEGRATION_SH_NAME;
-
-export const buildSourceLine = (family: ShellIntegrationFamily): string =>
-  `source "${SHELL_INTEGRATION_REMOTE_DIR}/${resolveShellIntegrationScriptName(family)}"`;
-
-export const buildHeredocInstallCommand = (
-  scriptText: string,
-  family: ShellIntegrationFamily
-): string => {
-  // The heredoc delimiter must sit alone on its line, so guarantee a trailing
-  // newline after the script body.
-  const body = scriptText.endsWith("\n") ? scriptText : `${scriptText}\n`;
-  return [
-    `mkdir -p "${SHELL_INTEGRATION_REMOTE_DIR}" && cat > "${SHELL_INTEGRATION_REMOTE_DIR}/${resolveShellIntegrationScriptName(family)}" <<'${HEREDOC_DELIMITER}'`,
-    body + HEREDOC_DELIMITER
-  ].join("\n");
-};
+/** Longest match (ESC ] 1 3 3 ;) minus one, so a chunk split never hides one. */
+const DETECTION_TAIL_LENGTH = 5;
 
 export interface ShellIntegrationChannelLike {
   on(event: "data", listener: (chunk: Buffer | string) => void): unknown;
@@ -78,15 +42,25 @@ export interface ShellIntegrationExecLike {
 export interface ShellIntegrationObserverOptions {
   connection: ShellIntegrationExecLike;
   shell: ShellIntegrationChannelLike;
-  family: ShellIntegrationFamily;
+  /**
+   * Awaited only at injection time so the login-shell probe can run in
+   * parallel with session startup instead of delaying the shell channel.
+   */
+  family: ShellIntegrationFamily | undefined | Promise<ShellIntegrationFamily | undefined>;
   /** False once the owning session is gone; pending injection is skipped. */
   isSessionActive: () => boolean;
+  /**
+   * True once the user has typed into this session. The source line is written
+   * to the shell's stdin, so injecting after the user started a command would
+   * splice into their input line and submit it.
+   */
+  hasUserInput?: () => boolean;
   /** Decode raw channel chunks with the session's terminal encoding. */
   decode?: (chunk: Buffer | string) => string;
   observeWindowMs?: number;
   /** setTimeout seam: schedules the callback, returns a cancel function. */
   schedule?: (callback: () => void, ms: number) => () => void;
-  /** Script body override for tests; defaults to the bundled script. */
+  /** Script body override for tests; defaults to the bundled per-family script. */
   scriptText?: string;
   log?: (message: string, metadata?: Record<string, unknown>) => void;
 }
@@ -102,20 +76,24 @@ export const startShellIntegrationObserver = (
   const {
     connection,
     shell,
-    family,
+    family: familyInput,
     isSessionActive,
+    hasUserInput = () => false,
     decode = (chunk) => (typeof chunk === "string" ? chunk : chunk.toString("utf-8")),
     observeWindowMs = DEFAULT_OBSERVE_WINDOW_MS,
     schedule = (callback, ms) => {
       const timer = setTimeout(callback, ms);
       return () => clearTimeout(timer);
     },
-    scriptText = family === "fish" ? integrationFish : integrationSh,
+    scriptText,
     log = () => undefined
   } = options;
 
   let settled = false;
   let cancelTimer: () => void = () => undefined;
+  // Carries the trailing bytes of the previous chunk so an escape sequence
+  // split across two IPC-sized reads is still recognised.
+  let pendingTail = "";
 
   const cleanup = (): void => {
     if (settled) {
@@ -128,19 +106,37 @@ export const startShellIntegrationObserver = (
     shell.removeListener("error", onClosed);
   };
 
-  const inject = async (): Promise<void> => {
+  const canInject = (): boolean => {
     if (!isSessionActive()) {
+      return false;
+    }
+    if (hasUserInput()) {
+      log("[ShellIntegration] user already typed; skipping injection");
+      return false;
+    }
+    return true;
+  };
+
+  const inject = async (): Promise<void> => {
+    if (!canInject()) {
       return;
     }
+
+    const family = await Promise.resolve(familyInput);
+    if (!family || !canInject()) {
+      return;
+    }
+
+    const script = scriptText ?? shellIntegrationScriptText(family);
     try {
-      const result = await connection.exec(buildHeredocInstallCommand(scriptText, family));
+      const result = await connection.exec(buildInstallCommand([family], () => script));
       if (result.exitCode !== 0) {
         log("[ShellIntegration] install command failed; skipping injection", {
           exitCode: result.exitCode
         });
         return;
       }
-      if (!isSessionActive()) {
+      if (!canInject()) {
         return;
       }
       // One short visible line is the accepted fallback (WindTerm/Tabby do
@@ -157,10 +153,13 @@ export const startShellIntegrationObserver = (
     if (settled) {
       return;
     }
-    if (INTEGRATED_SEQUENCE_PATTERN.test(decode(chunk))) {
+    const text = pendingTail + decode(chunk);
+    if (INTEGRATED_SEQUENCE_PATTERN.test(text)) {
       // The remote already runs its own integration; stay passive.
       cleanup();
+      return;
     }
+    pendingTail = text.slice(-DETECTION_TAIL_LENGTH);
   };
 
   const onClosed = (): void => {

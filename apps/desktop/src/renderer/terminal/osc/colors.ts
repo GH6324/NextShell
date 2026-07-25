@@ -5,8 +5,14 @@ import type { OscRuntimeContext } from "../oscRuntime";
 export type OscColorCode = 10 | 11 | 12;
 
 // OSC 10/11/12 color queries: answer with the real theme colors so remote
-// programs can detect light/dark and match the local palette. SET requests
-// are consumed silently — the remote must not mutate the local theme.
+// programs can detect light/dark and match the local palette.
+//
+// SET requests are deliberately consumed and dropped rather than forwarded to
+// xterm's built-in handler: the terminal palette belongs to the user's
+// preferences, and letting a remote host repaint it means any `cat`ed file can
+// leave the terminal in an unreadable state with no way back. Queries still
+// get a truthful answer, so well-behaved programs adapt to the theme instead
+// of overriding it.
 
 /**
  * "#rgb" / "#rrggbb" → xterm's 16-bit-per-channel "rrrr/gggg/bbbb" form

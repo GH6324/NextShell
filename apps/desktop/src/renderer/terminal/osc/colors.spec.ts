@@ -10,10 +10,7 @@ const BEL = "\u0007";
 const createPrefs = (foregroundColor = "#d8eaff", backgroundColor = "#000000") =>
   ({ foregroundColor, backgroundColor }) as AppPreferences["terminal"];
 
-const createHarness = (options?: {
-  replaying?: boolean;
-  prefs?: AppPreferences["terminal"];
-}) => {
+const createHarness = (options?: { replaying?: boolean; prefs?: AppPreferences["terminal"] }) => {
   const handlers = new Map<number, (data: string) => boolean>();
   const writes: string[] = [];
   const terminal = {

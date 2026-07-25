@@ -26,9 +26,7 @@ export const parseIterm2CurrentDir = (data: string): string | undefined => {
 
 // OSC 1337 `SetUserVar=<key>=<base64>`: iTerm2 base64-encodes the value. The
 // key stops at the first "=" so the base64 payload keeps its padding.
-export const parseIterm2SetUserVar = (
-  data: string
-): { key: string; value: string } | undefined => {
+export const parseIterm2SetUserVar = (data: string): { key: string; value: string } | undefined => {
   if (!data.startsWith(SET_USER_VAR_PREFIX)) {
     return undefined;
   }

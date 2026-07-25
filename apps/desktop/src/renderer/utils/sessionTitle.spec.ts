@@ -27,9 +27,9 @@ describe("resolveSessionBaseTitle", () => {
   });
 
   test("keeps the fallback chain intact without an OSC title", () => {
-    expect(
-      resolveSessionBaseTitle("session-title", { name: "prod-web", host: "10.0.0.1" })
-    ).toBe("prod-web");
+    expect(resolveSessionBaseTitle("session-title", { name: "prod-web", host: "10.0.0.1" })).toBe(
+      "prod-web"
+    );
     expect(resolveSessionBaseTitle("session-title", { host: "10.0.0.1" })).toBe("10.0.0.1");
     expect(resolveSessionBaseTitle("session-title")).toBe("session-title");
     expect(resolveSessionBaseTitle(undefined, { name: "  ", host: " " })).toBe("session");

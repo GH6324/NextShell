@@ -169,8 +169,7 @@ export const mergePreferences = (
           current.terminal.localShell.customPath
         )
       },
-      oscClipboardWrite:
-        patch.terminal?.oscClipboardWrite ?? current.terminal.oscClipboardWrite,
+      oscClipboardWrite: patch.terminal?.oscClipboardWrite ?? current.terminal.oscClipboardWrite,
       oscClipboardRead: patch.terminal?.oscClipboardRead ?? current.terminal.oscClipboardRead,
       oscNotifications: patch.terminal?.oscNotifications ?? current.terminal.oscNotifications,
       oscTitleUpdates: patch.terminal?.oscTitleUpdates ?? current.terminal.oscTitleUpdates,

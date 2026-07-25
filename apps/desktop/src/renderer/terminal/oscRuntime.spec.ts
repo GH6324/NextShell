@@ -1,11 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { Terminal } from "@xterm/xterm";
 import type { SessionDescriptor } from "@nextshell/core";
-import {
-  installOscRuntime,
-  type OscRuntimeContext,
-  type OscRuntimeModule
-} from "./oscRuntime";
+import { installOscRuntime, type OscRuntimeContext, type OscRuntimeModule } from "./oscRuntime";
 import { useSessionOscStore } from "../store/useSessionOscStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 

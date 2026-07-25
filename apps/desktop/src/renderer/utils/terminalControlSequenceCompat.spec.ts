@@ -12,11 +12,7 @@ const ST = `${ESC}\\`;
 describe("terminal control sequence compatibility", () => {
   test("strips concatenated DA/DECRQM/DECRPM query replies before they can be written upstream", () => {
     const state = createTerminalQueryReplyFilterState();
-    const chunk = [
-      `${ESC}[>0;276;0c`,
-      `${ESC}[?12;2$y`,
-      `${ESC}P1$r2 q${ST}`
-    ].join("");
+    const chunk = [`${ESC}[>0;276;0c`, `${ESC}[?12;2$y`, `${ESC}P1$r2 q${ST}`].join("");
 
     const result = consumeTerminalQueryReplyChunk(state, chunk);
 

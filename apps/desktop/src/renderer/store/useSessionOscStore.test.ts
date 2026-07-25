@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { useSessionOscStore } from "./useSessionOscStore";
+import { MAX_SESSION_COMMAND_MARKS } from "./osc/marksSlice";
 
 const resetStore = (): void => {
   useSessionOscStore.setState({
@@ -81,6 +82,33 @@ describe("useSessionOscStore", () => {
       iterm2_hostname: "example",
       iterm2_user: "root"
     });
+  });
+
+  test("appendSessionMark keeps only the most recent marks", () => {
+    const store = useSessionOscStore.getState();
+
+    for (let index = 0; index < MAX_SESSION_COMMAND_MARKS + 25; index += 1) {
+      store.appendSessionMark("s1", { id: `m${index}` });
+    }
+
+    const marks = useSessionOscStore.getState().marksBySession["s1"] ?? [];
+    expect(marks).toHaveLength(MAX_SESSION_COMMAND_MARKS);
+    // A long-lived shell would otherwise grow this list forever.
+    expect(marks[0]?.id).toBe("m25");
+    expect(marks.at(-1)?.id).toBe(`m${MAX_SESSION_COMMAND_MARKS + 24}`);
+  });
+
+  test("setSessionMarks applies the same cap to a bulk replace", () => {
+    const store = useSessionOscStore.getState();
+
+    store.setSessionMarks(
+      "s1",
+      Array.from({ length: MAX_SESSION_COMMAND_MARKS + 5 }, (_, index) => ({ id: `b${index}` }))
+    );
+
+    const marks = useSessionOscStore.getState().marksBySession["s1"] ?? [];
+    expect(marks).toHaveLength(MAX_SESSION_COMMAND_MARKS);
+    expect(marks[0]?.id).toBe("b5");
   });
 
   test("pruneSessions drops stale keys from every map", () => {

@@ -18,10 +18,7 @@ type TerminalLike = {
 };
 
 export type TerminalQuerySuppressionKind =
-  | "device-attributes"
-  | "ansi-mode-request"
-  | "private-mode-request"
-  | "status-string-request";
+  "device-attributes" | "ansi-mode-request" | "private-mode-request" | "status-string-request";
 
 interface TerminalQueryCompatibilityOptions {
   isEnabled?: () => boolean;

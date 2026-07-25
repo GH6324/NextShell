@@ -1,5 +1,6 @@
 import type { IDecoration, IMarker, Terminal } from "@xterm/xterm";
 import { useSessionOscStore, type CommandMark } from "../../store/useSessionOscStore";
+import { recordCommandHistoryEntry } from "../../hooks/commandHistoryBus";
 import type { OscRuntimeContext } from "../oscRuntime";
 
 // OSC 133 (FinalTerm semantic prompts / shell integration): the remote shell
@@ -82,13 +83,15 @@ export interface PromptJumpKeyEvent {
   repeat: boolean;
 }
 
-// Cmd+↑/↓ on macOS, Ctrl+↑/↓ elsewhere; only plain keydown with exactly the
-// one platform modifier, no repeats — anything else falls through.
+// Cmd+↑/↓ on macOS, Ctrl+Shift+↑/↓ elsewhere. Plain Ctrl+↑/↓ is deliberately
+// avoided off macOS: it is a real terminal sequence (CSI 1;5A/B) that tmux, mc
+// and assorted TUIs bind, and swallowing it would make those keys unusable.
+// Cmd carries no encoding, so it is free to take on macOS.
 export const resolvePromptJumpDirection = (
   event: PromptJumpKeyEvent,
   platform: string
 ): PromptJumpDirection | undefined => {
-  if (event.type !== "keydown" || event.repeat || event.altKey || event.shiftKey) {
+  if (event.type !== "keydown" || event.repeat || event.altKey) {
     return undefined;
   }
 
@@ -99,9 +102,14 @@ export const resolvePromptJumpDirection = (
   }
 
   const modifierPressed =
-    platform === "darwin" ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    platform === "darwin"
+      ? event.metaKey && !event.ctrlKey && !event.shiftKey
+      : event.ctrlKey && event.shiftKey && !event.metaKey;
   return modifierPressed ? direction : undefined;
 };
+
+/** Upper bound on live prompt markers kept per session for prompt jumping. */
+const MAX_TRACKED_PROMPT_MARKERS = 500;
 
 const EXIT_CODE_SUCCESS_BACKGROUND = "#3fb950";
 const EXIT_CODE_FAILURE_BACKGROUND = "#f85149";
@@ -220,11 +228,39 @@ export class ShellCommandTracker {
     this.lastPushedCommandBySession.clear();
   }
 
+  // xterm disposes a marker once its line falls out of the scrollback, but the
+  // dead handles stay in our arrays until swept. Runs once per prompt, so the
+  // tracked set never outgrows what is still on screen.
+  private sweepTrackedResources(sessionId: string): void {
+    const markers = this.promptMarkersBySession.get(sessionId);
+    if (markers) {
+      const alive = markers.filter((marker) => !marker.isDisposed);
+      const excess = alive.length - MAX_TRACKED_PROMPT_MARKERS;
+      if (excess > 0) {
+        for (const marker of alive.splice(0, excess)) {
+          marker.dispose();
+        }
+      }
+      this.promptMarkersBySession.set(sessionId, alive);
+    }
+
+    const decorations = this.decorationsBySession.get(sessionId);
+    if (decorations) {
+      this.decorationsBySession.set(
+        sessionId,
+        decorations.filter((decoration) => !decoration.isDisposed)
+      );
+    }
+  }
+
   private beginPending(sessionId: string): void {
     const promptMarker = this.deps.registerMarker();
     const markers = this.promptMarkersBySession.get(sessionId) ?? [];
     markers.push(promptMarker);
     this.promptMarkersBySession.set(sessionId, markers);
+    // After the push, so the tracked set is bounded at rest. The marker just
+    // added is the newest and the sweep only ever drops the oldest.
+    this.sweepTrackedResources(sessionId);
 
     // A new prompt while another command is still pending means the previous
     // one was abandoned (Ctrl+C without a D, prompt redraw): drop it without
@@ -369,7 +405,9 @@ export const install = (terminal: Terminal, ctx: OscRuntimeContext): (() => void
       useSessionOscStore.getState().clearSessionMarks(sessionId);
     },
     pushHistory: (command) => {
-      void window.nextshell.commandHistory.push({ command }).catch(() => undefined);
+      // Through the shared bus so the rendered history list updates too, not
+      // just the persisted one.
+      recordCommandHistoryEntry(command);
     }
   });
 

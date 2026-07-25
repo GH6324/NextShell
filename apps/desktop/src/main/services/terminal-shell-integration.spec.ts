@@ -1,8 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
 import {
-  buildHeredocInstallCommand,
-  buildSourceLine,
-  resolveShellFamily,
   startShellIntegrationObserver,
   type ShellIntegrationChannelLike
 } from "./terminal-shell-integration";
@@ -80,57 +77,6 @@ const flushMicrotasks = async (): Promise<void> => {
   await new Promise((resolve) => setImmediate(resolve));
 };
 
-describe("resolveShellFamily", () => {
-  test("matches supported shells by basename", () => {
-    expect(resolveShellFamily("/bin/bash")).toBe("bash");
-    expect(resolveShellFamily("/usr/bin/zsh")).toBe("zsh");
-    expect(resolveShellFamily("/bin/sh")).toBe("sh");
-    expect(resolveShellFamily("/usr/local/bin/fish")).toBe("fish");
-    expect(resolveShellFamily("bash")).toBe("bash");
-    expect(resolveShellFamily("  /opt/homebrew/bin/FISH  ")).toBe("fish");
-  });
-
-  test("returns undefined for unsupported or empty shells", () => {
-    expect(resolveShellFamily("/bin/dash")).toBeUndefined();
-    expect(resolveShellFamily("/usr/bin/tcsh")).toBeUndefined();
-    expect(resolveShellFamily("")).toBeUndefined();
-    expect(resolveShellFamily(undefined)).toBeUndefined();
-    expect(resolveShellFamily(null)).toBeUndefined();
-  });
-});
-
-describe("buildSourceLine", () => {
-  test("sources the .sh script for bash/zsh/sh and the .fish script for fish", () => {
-    const shLine = 'source "$HOME/.cache/nextshell/nextshell-shell-integration.sh"';
-    expect(buildSourceLine("bash")).toBe(shLine);
-    expect(buildSourceLine("zsh")).toBe(shLine);
-    expect(buildSourceLine("sh")).toBe(shLine);
-    expect(buildSourceLine("fish")).toBe(
-      'source "$HOME/.cache/nextshell/nextshell-shell-integration.fish"'
-    );
-  });
-});
-
-describe("buildHeredocInstallCommand", () => {
-  test("creates the cache dir and writes the script through a quoted heredoc", () => {
-    const command = buildHeredocInstallCommand("# script\necho hi\n", "zsh");
-
-    expect(command).toContain('mkdir -p "$HOME/.cache/nextshell"');
-    expect(command).toContain(
-      "cat > \"$HOME/.cache/nextshell/nextshell-shell-integration.sh\" <<'__NEXTSHELL_INTEGRATION_EOF__'"
-    );
-    expect(command).toContain("# script\necho hi\n__NEXTSHELL_INTEGRATION_EOF__");
-    expect(command.endsWith("__NEXTSHELL_INTEGRATION_EOF__")).toBe(true);
-  });
-
-  test("targets the .fish file for fish and appends the missing trailing newline", () => {
-    const command = buildHeredocInstallCommand("# fish script", "fish");
-
-    expect(command).toContain("$HOME/.cache/nextshell/nextshell-shell-integration.fish");
-    expect(command).toContain("# fish script\n__NEXTSHELL_INTEGRATION_EOF__");
-  });
-});
-
 describe("startShellIntegrationObserver", () => {
   test("installs and injects the source line when the window expires with no OSC", async () => {
     const shell = createFakeShell();
@@ -152,11 +98,56 @@ describe("startShellIntegrationObserver", () => {
 
     expect(exec).toHaveBeenCalledTimes(1);
     const installCommand = exec.mock.calls[0]?.[0];
+    expect(installCommand?.startsWith("/bin/sh -c '")).toBe(true);
     expect(installCommand).toContain("__NEXTSHELL_INTEGRATION_EOF__");
     expect(installCommand).toContain("# test script");
+    expect(installCommand).toContain("nextshell-shell-integration.bash");
     expect(shell.written).toEqual([
-      'source "$HOME/.cache/nextshell/nextshell-shell-integration.sh"\r'
+      '. "$HOME/.cache/nextshell/nextshell-shell-integration.bash"\r'
     ]);
+  });
+
+  test("awaits a pending family probe instead of blocking session startup", async () => {
+    const shell = createFakeShell();
+    const scheduler = createManualScheduler();
+    const exec = vi.fn(async (_command: string) => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    startShellIntegrationObserver({
+      connection: { exec },
+      shell,
+      family: Promise.resolve("fish" as const),
+      isSessionActive: () => true,
+      schedule: scheduler.schedule,
+      scriptText: "# fish\n"
+    });
+
+    scheduler.fireAll();
+    await flushMicrotasks();
+
+    expect(exec.mock.calls[0]?.[0]).toContain("nextshell-shell-integration.fish");
+    expect(shell.written).toEqual([
+      'source "$HOME/.cache/nextshell/nextshell-shell-integration.fish"\r'
+    ]);
+  });
+
+  test("skips injection when the probe never resolved to a supported family", async () => {
+    const shell = createFakeShell();
+    const scheduler = createManualScheduler();
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    startShellIntegrationObserver({
+      connection: { exec },
+      shell,
+      family: Promise.resolve(undefined),
+      isSessionActive: () => true,
+      schedule: scheduler.schedule
+    });
+
+    scheduler.fireAll();
+    await flushMicrotasks();
+
+    expect(exec).not.toHaveBeenCalled();
+    expect(shell.written).toEqual([]);
   });
 
   test("stays passive when the remote already emits OSC 133", async () => {
@@ -199,6 +190,102 @@ describe("startShellIntegrationObserver", () => {
     await flushMicrotasks();
 
     expect(exec).not.toHaveBeenCalled();
+    expect(shell.written).toEqual([]);
+  });
+
+  test("detects a marker split across two chunks", async () => {
+    const shell = createFakeShell();
+    const scheduler = createManualScheduler();
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    startShellIntegrationObserver({
+      connection: { exec },
+      shell,
+      family: "bash",
+      isSessionActive: () => true,
+      schedule: scheduler.schedule
+    });
+
+    // The IPC stream dispatcher slices on byte windows, so a sequence can
+    // straddle two reads.
+    shell.emitData(`output${ESC}]13`);
+    shell.emitData(`3;A${BEL}prompt$ `);
+    scheduler.fireAll();
+    await flushMicrotasks();
+
+    expect(exec).not.toHaveBeenCalled();
+    expect(shell.written).toEqual([]);
+  });
+
+  test("does not treat plain text that looks like a marker as integration", async () => {
+    const shell = createFakeShell();
+    const scheduler = createManualScheduler();
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    startShellIntegrationObserver({
+      connection: { exec },
+      shell,
+      family: "bash",
+      isSessionActive: () => true,
+      schedule: scheduler.schedule,
+      scriptText: "# test\n"
+    });
+
+    shell.emitData("see ]133; in this log line");
+    scheduler.fireAll();
+    await flushMicrotasks();
+
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  test("skips injection once the user has typed into the session", async () => {
+    const shell = createFakeShell();
+    const scheduler = createManualScheduler();
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const log = vi.fn();
+
+    startShellIntegrationObserver({
+      connection: { exec },
+      shell,
+      family: "bash",
+      isSessionActive: () => true,
+      hasUserInput: () => true,
+      schedule: scheduler.schedule,
+      log
+    });
+
+    scheduler.fireAll();
+    await flushMicrotasks();
+
+    // Writing the source line now would splice into the half-typed command.
+    expect(exec).not.toHaveBeenCalled();
+    expect(shell.written).toEqual([]);
+    expect(log).toHaveBeenCalled();
+  });
+
+  test("skips the source line when the user starts typing during the install", async () => {
+    const shell = createFakeShell();
+    const scheduler = createManualScheduler();
+    let typed = false;
+    const exec = vi.fn(async () => {
+      typed = true;
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+
+    startShellIntegrationObserver({
+      connection: { exec },
+      shell,
+      family: "bash",
+      isSessionActive: () => true,
+      hasUserInput: () => typed,
+      schedule: scheduler.schedule,
+      scriptText: "# test\n"
+    });
+
+    scheduler.fireAll();
+    await flushMicrotasks();
+
+    expect(exec).toHaveBeenCalledTimes(1);
     expect(shell.written).toEqual([]);
   });
 

@@ -10,10 +10,12 @@ export interface TerminalIntegrationResult {
 
 /**
  * Main-process side of the terminal OSC integration:
- * - OSC 9 / 777 desktop notifications. The renderer pre-filters per-session
- *   activity (background sessions only); this service enforces the remaining
- *   window-focus gate so no notification pops while the user is looking at
- *   the app.
+ * - OSC 9 / 777 desktop notifications. Whether a notification is warranted is
+ *   decided entirely in the renderer, which is the only side that knows both
+ *   the focus state and which session the user is looking at: a background
+ *   session finishing its build *should* notify even while the window is
+ *   focused. Re-testing focus here would silently drop exactly that case, so
+ *   this service only renders what it is asked to render.
  * - OSC 9;4 taskbar/dock progress bar, mapped onto
  *   `BrowserWindow.setProgressBar`.
  *
@@ -26,9 +28,7 @@ export class TerminalIntegrationService {
     input: TerminalNotificationInput
   ): TerminalIntegrationResult {
     const owner = BrowserWindow.fromWebContents(sender);
-    // No owning window, or the user is already looking at the app: stay
-    // silent instead of popping a redundant notification.
-    if (!owner || owner.isFocused()) {
+    if (!owner || !Notification.isSupported()) {
       return { ok: true };
     }
 

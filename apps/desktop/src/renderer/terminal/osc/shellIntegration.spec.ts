@@ -81,6 +81,9 @@ const createHarness = () => {
         isDisposed: false
       };
       fake.handle = {
+        get isDisposed() {
+          return fake.isDisposed;
+        },
         dispose() {
           fake.isDisposed = true;
         }
@@ -494,18 +497,39 @@ describe("resolvePromptJumpDirection", () => {
     ).toBe("next");
   });
 
-  test("Ctrl+ArrowUp/Down on other platforms", () => {
-    expect(resolvePromptJumpDirection(keyEvent({ ctrlKey: true }), "linux")).toBe("previous");
+  test("Ctrl+Shift+ArrowUp/Down on other platforms", () => {
+    expect(resolvePromptJumpDirection(keyEvent({ ctrlKey: true, shiftKey: true }), "linux")).toBe(
+      "previous"
+    );
     expect(
-      resolvePromptJumpDirection(keyEvent({ ctrlKey: true, key: "ArrowDown" }), "win32")
+      resolvePromptJumpDirection(
+        keyEvent({ ctrlKey: true, shiftKey: true, key: "ArrowDown" }),
+        "win32"
+      )
     ).toBe("next");
   });
 
+  test("leaves plain Ctrl+Arrow to the remote — it is a real terminal sequence", () => {
+    // CSI 1;5A/B is bound by tmux, mc and friends; swallowing it would break them.
+    expect(resolvePromptJumpDirection(keyEvent({ ctrlKey: true }), "linux")).toBeUndefined();
+    expect(
+      resolvePromptJumpDirection(keyEvent({ ctrlKey: true, key: "ArrowDown" }), "win32")
+    ).toBeUndefined();
+  });
+
   test("rejects the wrong modifier for the platform", () => {
-    expect(resolvePromptJumpDirection(keyEvent({ ctrlKey: true }), "darwin")).toBeUndefined();
+    expect(
+      resolvePromptJumpDirection(keyEvent({ ctrlKey: true, shiftKey: true }), "darwin")
+    ).toBeUndefined();
     expect(resolvePromptJumpDirection(keyEvent({ metaKey: true }), "linux")).toBeUndefined();
     expect(
       resolvePromptJumpDirection(keyEvent({ metaKey: true, ctrlKey: true }), "darwin")
+    ).toBeUndefined();
+    expect(
+      resolvePromptJumpDirection(
+        keyEvent({ ctrlKey: true, shiftKey: true, metaKey: true }),
+        "linux"
+      )
     ).toBeUndefined();
   });
 
@@ -525,5 +549,42 @@ describe("resolvePromptJumpDirection", () => {
     expect(
       resolvePromptJumpDirection(keyEvent({ metaKey: true, key: "ArrowLeft" }), "darwin")
     ).toBeUndefined();
+  });
+});
+
+describe("tracked resource sweeping", () => {
+  test("stops tracking markers xterm disposed when their line left the scrollback", () => {
+    const harness = createHarness();
+
+    for (let index = 0; index < 5; index += 1) {
+      driveCommand(harness, { promptLine: index, command: "ls", exitCode: 0 });
+    }
+    expect(harness.tracker.getPromptLines("s1")).toHaveLength(5);
+
+    // xterm drops a marker once its line scrolls out of the buffer. Only the
+    // prompt markers are still alive here — input markers die with their D.
+    harness.markers
+      .filter((marker) => !marker.isDisposed)
+      .slice(0, 3)
+      .forEach((marker) => marker.handle.dispose());
+
+    // The next prompt sweeps the dead handles instead of accumulating them.
+    driveCommand(harness, { promptLine: 5, command: "pwd", exitCode: 0 });
+
+    expect(harness.tracker.getPromptLines("s1")).toEqual([3, 4, 5]);
+  });
+
+  test("caps live prompt markers, disposing the oldest first", () => {
+    const harness = createHarness();
+
+    for (let index = 0; index < 520; index += 1) {
+      driveCommand(harness, { promptLine: index, command: "ls", exitCode: 0 });
+    }
+
+    const alive = harness.markers.filter((marker) => !marker.isDisposed);
+    expect(alive.length).toBeLessThanOrEqual(500);
+    // The survivors are the most recent prompts, so jumping still works.
+    expect(harness.tracker.getPromptLines("s1").at(-1)).toBe(519);
+    expect(harness.markers[0]?.isDisposed).toBe(true);
   });
 });

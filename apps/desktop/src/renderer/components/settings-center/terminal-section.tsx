@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App as AntdApp, Button, Input, InputNumber, Radio, Select, Slider } from "antd";
 import { SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS } from "@nextshell/shared";
 import type { ShellIntegrationMode } from "@nextshell/core";
-import integrationSh from "../../../shared/shell-integration/nextshell-shell-integration.sh?raw";
-import integrationFish from "../../../shared/shell-integration/nextshell-shell-integration.fish?raw";
+import { buildManualInstallInstructions } from "../../../shared/shell-integration";
 import { canonicalizeFontFamily, getTerminalFontOptions } from "../../utils/terminalFonts";
 import { SettingsCard, SettingsRow, SettingsSwitchRow } from "./shared-components";
 import {
@@ -15,30 +14,6 @@ import {
   getLocalShellOptions
 } from "./constants";
 import type { LocalShellMode, LocalShellPreset, LocalShellPreference, SaveFn } from "./types";
-
-const SHELL_INTEGRATION_HEREDOC_DELIMITER = "__NEXTSHELL_INTEGRATION_EOF__";
-const SHELL_INTEGRATION_REMOTE_DIR = "$HOME/.cache/nextshell";
-const SHELL_INTEGRATION_SH_NAME = "nextshell-shell-integration.sh";
-const SHELL_INTEGRATION_FISH_NAME = "nextshell-shell-integration.fish";
-
-const buildScriptInstallBlock = (fileName: string, scriptText: string): string => {
-  const body = scriptText.endsWith("\n") ? scriptText : `${scriptText}\n`;
-  return `cat > "${SHELL_INTEGRATION_REMOTE_DIR}/${fileName}" <<'${SHELL_INTEGRATION_HEREDOC_DELIMITER}'\n${body}${SHELL_INTEGRATION_HEREDOC_DELIMITER}`;
-};
-
-// 「手动」Shell 集成模式下复制给用户的安装命令：把两份集成脚本写入远端
-// $HOME/.cache/nextshell，再提示用户把对应 source 行加进自己的 shell 配置。
-const buildManualInstallCommand = (): string =>
-  [
-    "# NextShell 终端集成：在远端 shell 中粘贴执行以下命令",
-    `mkdir -p "${SHELL_INTEGRATION_REMOTE_DIR}"`,
-    buildScriptInstallBlock(SHELL_INTEGRATION_SH_NAME, integrationSh),
-    buildScriptInstallBlock(SHELL_INTEGRATION_FISH_NAME, integrationFish),
-    "# 然后把与你的 shell 对应的一行追加到登录配置文件中：",
-    `#   bash → echo 'source "${SHELL_INTEGRATION_REMOTE_DIR}/${SHELL_INTEGRATION_SH_NAME}"' >> ~/.bashrc`,
-    `#   zsh  → echo 'source "${SHELL_INTEGRATION_REMOTE_DIR}/${SHELL_INTEGRATION_SH_NAME}"' >> ~/.zshrc`,
-    `#   fish → echo 'source "${SHELL_INTEGRATION_REMOTE_DIR}/${SHELL_INTEGRATION_FISH_NAME}"' >> ~/.config/fish/config.fish`
-  ].join("\n");
 
 export const TerminalSection = ({
   loading,
@@ -596,7 +571,7 @@ export const TerminalSection = ({
                 onClick={() =>
                   void (async () => {
                     try {
-                      await navigator.clipboard.writeText(buildManualInstallCommand());
+                      await navigator.clipboard.writeText(buildManualInstallInstructions());
                       msg.success("已复制，请粘贴到远端 shell 执行");
                     } catch {
                       msg.error("复制失败，请检查剪贴板权限后重试");
