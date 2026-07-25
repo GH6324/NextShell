@@ -491,6 +491,7 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
             shellIntegration={preferences.terminal.shellIntegration}
             appBackgroundImagePath={appBackgroundImagePath}
             appBackgroundOpacity={preferences.window.backgroundOpacity}
+            terminalWallpaper={preferences.terminal.wallpaper}
             setTerminalBackgroundColor={setTerminalBackgroundColor}
             setTerminalForegroundColor={setTerminalForegroundColor}
             setTerminalThemePreset={setTerminalThemePreset}

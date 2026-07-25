@@ -570,6 +570,17 @@ export interface AppPreferences {
     hyperlinkConfirm: boolean;
     /** Shell 集成注入策略：auto 自动检测注入 / manual 仅提供安装命令 / off 纯被动解析 */
     shellIntegration: ShellIntegrationMode;
+    /** 设置了 APP 背景图时终端本体的透出行为 */
+    wallpaper: {
+      /** 终端画布是否透明，让 APP 背景图透出（无背景图时该项无效） */
+      seeThrough: boolean;
+      /**
+       * 透出时是否仍加载 WebGL 渲染器。默认关闭：xterm 的
+       * 透明 + 大流量输出字形残影修复（上游 #5847 / PR #5883）
+       * 尚未进入 stable 版本，透出时走 DOM 渲染器更稳妥。
+       */
+      useWebgl: boolean;
+    };
   };
   ssh: {
     /** 是否对所有连接启用 keepalive（发送空包） */
@@ -662,6 +673,10 @@ export interface AppPreferencesPatch {
     oscTitleUpdates?: boolean;
     hyperlinkConfirm?: boolean;
     shellIntegration?: ShellIntegrationMode;
+    wallpaper?: {
+      seeThrough?: boolean;
+      useWebgl?: boolean;
+    };
   };
   ssh?: {
     keepAliveEnabled?: boolean;
@@ -828,7 +843,11 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
     oscNotifications: true,
     oscTitleUpdates: true,
     hyperlinkConfirm: true,
-    shellIntegration: "auto"
+    shellIntegration: "auto",
+    wallpaper: {
+      seeThrough: true,
+      useWebgl: false
+    }
   },
   ssh: {
     keepAliveEnabled: true,

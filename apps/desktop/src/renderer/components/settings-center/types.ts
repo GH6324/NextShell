@@ -17,4 +17,9 @@ export type LocalShellPreference = {
   customPath: string;
 };
 
+export type TerminalWallpaperPreference = {
+  seeThrough: boolean;
+  useWebgl: boolean;
+};
+
 export type SaveFn = (patch: Record<string, unknown>) => void;

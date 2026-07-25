@@ -94,6 +94,9 @@ export const App = () => {
   const appBackgroundOpacity = usePreferencesStore(
     (state) => state.preferences.window.backgroundOpacity
   );
+  const terminalBackgroundColor = usePreferencesStore(
+    (state) => state.preferences.terminal.backgroundColor
+  );
   const applyTransferEvent = useTransferQueueStore((state) => state.applyEvent);
   const enqueueTransferTask = useTransferQueueStore((state) => state.enqueueTask);
   const getTransferTask = useTransferQueueStore((state) => state.getTask);
@@ -627,9 +630,13 @@ export const App = () => {
       return undefined;
     }
     return {
-      "--app-background-opacity": String(appBackgroundOpacity)
+      "--app-background-opacity": String(appBackgroundOpacity),
+      // The terminal shell's translucent pad doubles as the see-through
+      // terminal's dimming layer, so it tracks the user's terminal background
+      // colour instead of a hard-coded navy.
+      "--terminal-tint": terminalBackgroundColor
     } as CSSProperties;
-  }, [appBackgroundOpacity, hasAppBackgroundImage]);
+  }, [appBackgroundOpacity, hasAppBackgroundImage, terminalBackgroundColor]);
 
   if (!appReady) {
     return <AppSkeleton />;
