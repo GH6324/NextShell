@@ -40,6 +40,7 @@ import {
   installTerminalQueryCompatibilityGuards
 } from "../utils/terminalControlSequenceCompat";
 import { installOscRuntime, type OscRuntimeHandle } from "../terminal/oscRuntime";
+import { installParserHandlerGuards } from "../terminal/parserGuards";
 import { openExternalLink } from "../terminal/osc/linkOpening";
 
 type LocalAwareSessionDescriptor = SessionDescriptor & {
@@ -847,6 +848,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         : terminalPreferences.backgroundColor;
       const terminal = new Terminal({
         cursorBlink: true,
+        // registerDecoration (OSC 133 exit-code marks) is proposed API and
+        // throws without this flag — from inside the parse loop, which kills
+        // xterm's write queue for good and froze every session sharing this
+        // terminal the moment shell integration reported a finished command.
+        allowProposedApi: true,
         allowTransparency: transparencyEnabled,
         fontSize: terminalPreferences.fontSize,
         lineHeight: terminalPreferences.lineHeight,
@@ -857,6 +863,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
           cursor: terminalPreferences.foregroundColor
         }
       });
+      // Before any handler registration (compat guards, OSC runtime, addons):
+      // every parser handler registered from here on is exception-contained.
+      installParserHandlerGuards(terminal);
 
       const fitAddon = new FitAddon();
       const searchAddon = new SearchAddon();

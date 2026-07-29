@@ -19,12 +19,7 @@ import {
   decodeTerminalData,
   encodeTerminalData
 } from "./container-utils";
-import {
-  SHELL_INTEGRATION_PROBE_COMMAND,
-  resolveShellFamily,
-  startShellIntegrationObserver,
-  type ShellIntegrationFamily
-} from "./terminal-shell-integration";
+import { prepareShellIntegrationLaunch } from "./terminal-shell-integration";
 import { resolveLocalShellLaunch } from "./local-shell";
 import type { createOrderedBytesDispatcher } from "./ipc-stream-dispatcher";
 import { logger } from "../logger";
@@ -155,25 +150,35 @@ export class SessionService {
       const lease = await this.acquireTerminalConnection(connectionId, authOverride);
       const connection = lease.connection;
       releaseChannelSlot = lease.release;
-      // Shell integration ("auto" mode only): probe the login shell so the
-      // post-open observer knows which script to inject. Deliberately *not*
-      // awaited here — the family is only needed once the observation window
-      // expires, so the probe round-trip runs alongside session startup
-      // instead of adding latency to every connect. Probe failures silently
-      // disable injection. The session itself always opens as a plain PTY
-      // shell; injection never restarts the user's shell.
-      const shellIntegrationFamily: Promise<ShellIntegrationFamily | undefined> | undefined =
+      // Shell integration ("auto" mode only): activate at shell startup by
+      // opening the terminal as an exec+PTY request that launches the login
+      // shell with a bootstrap file — never by typing into the shell's stdin
+      // (no history pollution, no echoed line, no race with TUIs/prompts).
+      // The probe + install round trips run once per connection and are
+      // cached; every failure falls back to a plain shell with no integration.
+      const integrationLaunchCommand =
         this.connections.getAppPreferences().terminal.shellIntegration === "auto"
-          ? connection
-              .exec(SHELL_INTEGRATION_PROBE_COMMAND)
-              .then((probe) => resolveShellFamily(probe.stdout.trim() || undefined))
-              .catch(() => undefined)
+          ? await prepareShellIntegrationLaunch({
+              connection,
+              connectionId,
+              log: (message, metadata) =>
+                logger.info(message, { sessionId: descriptor.id, connectionId, ...metadata })
+            })
           : undefined;
-      const shell = await connection.openShell({
-        cols: 140,
-        rows: 40,
-        term: "xterm-256color"
-      });
+      const shellWindow = { cols: 140, rows: 40, term: "xterm-256color" } as const;
+      const shell = integrationLaunchCommand
+        ? await connection
+            .openExecChannel(integrationLaunchCommand, shellWindow)
+            .catch((error: unknown) => {
+              // e.g. sshd with exec requests restricted: degrade to a plain
+              // shell rather than failing the session over an enhancement.
+              logger.warn("[ShellIntegration] exec+PTY launch failed; opening plain shell", {
+                connectionId,
+                reason: normalizeError(error)
+              });
+              return connection.openShell(shellWindow);
+            })
+        : await connection.openShell(shellWindow);
       // The real channel now holds the budget slot the lease was standing in for.
       releaseChannelSlot();
 
@@ -237,29 +242,6 @@ export class SessionService {
         shell.stderr.removeAllListeners();
         this.finalizeRemoteSession(descriptor.id, "failed", normalizeError(error));
       });
-
-      // Auto shell integration: observe the first prompt cycle; a remote that
-      // already emits OSC 7/133 is left alone, otherwise install + inject the
-      // integration script. Never blocks or fails the session.
-      if (shellIntegrationFamily) {
-        startShellIntegrationObserver({
-          connection,
-          shell,
-          family: shellIntegrationFamily,
-          isSessionActive: () => this.activeSessions.has(descriptor.id),
-          hasUserInput: () => {
-            const active = this.activeSessions.get(descriptor.id);
-            return active?.kind === "remote" && active.userInputSeen === true;
-          },
-          decode: (chunk) => decodeTerminalData(chunk, profile.terminalEncoding),
-          log: (message, metadata) =>
-            logger.info(message, {
-              sessionId: descriptor.id,
-              connectionId,
-              ...metadata
-            })
-        });
-      }
 
       let connectedReason = await this.warmupSftp(connectionId, connection);
       if (authOverride) {
@@ -458,16 +440,10 @@ export class SessionService {
     }
   }
 
-  writeSession(sessionId: string, data: string, origin?: "user" | "protocol"): { ok: true } {
+  writeSession(sessionId: string, data: string): { ok: true } {
     const active = this.activeSessions.get(sessionId);
     if (!active) {
       throw new Error("Session not found");
-    }
-
-    if (origin !== "protocol" && active.kind === "remote") {
-      // Remembered for the shell-integration observer: once the user has typed,
-      // writing a source line into the same stdin would splice into their input.
-      active.userInputSeen = true;
     }
 
     if (active.kind === "local") {

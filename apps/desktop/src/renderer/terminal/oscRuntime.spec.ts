@@ -314,6 +314,49 @@ describe("oscRuntime", () => {
     handle.dispose();
   });
 
+  test("a throwing onParsed callback is contained inside the write callback", () => {
+    const { terminal, settleWrite } = createMockTerminal();
+    const handle = installOscRuntime(terminal, {
+      getSessionId: () => "live",
+      writeToRemote: () => {}
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    handle.writeSessionData("a", "chunk-a", () => {
+      throw new Error("ack flush bug");
+    });
+
+    // xterm runs write callbacks inside its parse loop; a throw escaping here
+    // would abort the loop with the queue non-empty and freeze the terminal
+    // for good, so the runtime must swallow it.
+    expect(() => settleWrite(0)).not.toThrow();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+
+    consoleError.mockRestore();
+    handle.dispose();
+  });
+
+  test("a throwing runAfterPendingWrites continuation is contained", () => {
+    const { terminal, settleWrite } = createMockTerminal();
+    const handle = installOscRuntime(terminal, {
+      getSessionId: () => "live",
+      writeToRemote: () => {}
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    handle.writeSessionData("a", "chunk-a");
+    handle.runAfterPendingWrites(() => {
+      throw new Error("reset/replay bug");
+    });
+
+    settleWrite(0);
+    expect(() => settleWrite(1)).not.toThrow();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+
+    consoleError.mockRestore();
+    handle.dispose();
+  });
+
   test("a lost write callback does not strand attribution on the dead chunk", () => {
     const { terminal, settleWrite } = createMockTerminal();
     const { probe, getCtx } = captureContext();

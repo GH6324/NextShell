@@ -271,8 +271,7 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     channel: IPCChannel.SessionWrite,
     schema: sessionWriteSchema,
     label: "会话写入",
-    dispatch: (services, input) =>
-      services.sessions.writeSession(input.sessionId, input.data, input.origin)
+    dispatch: (services, input) => services.sessions.writeSession(input.sessionId, input.data)
   }),
   define({
     channel: IPCChannel.SessionResize,

@@ -1,14 +1,34 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
   SHELL_INTEGRATION_FAMILIES,
+  buildBootstrapInstallCommand,
   buildInstallCommand,
+  buildIntegrationLaunchCommand,
   buildSourceLine,
   shellIntegrationScriptText
 } from "../../shared/shell-integration";
+
+const canRunZsh = (() => {
+  if (process.platform === "win32") return false;
+  try {
+    execFileSync("/usr/bin/env", ["zsh", "-c", "exit 0"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 // Escaping a shell script that is itself full of quotes into a single `sh -c`
 // argument is the most fragile part of the injection path, and a mistake there
@@ -180,5 +200,111 @@ describe.skipIf(!canRunBash)("bash PROMPT_COMMAND splicing", () => {
   test("re-sourcing in a fresh shell does not stack the hooks twice", () => {
     const once = spliceInto("history -a; ");
     expect(spliceInto(once)).toBe(once);
+  });
+});
+
+// The startup bootstrap replaces stdin injection entirely: nothing may ever be
+// typed into the user's shell, so the only correctness surface left is "the
+// right files land on the remote and the startup chain sources them". Run the
+// generated install commands for real against a throwaway HOME.
+describe.skipIf(!canRunPosixShell)("bootstrap install command", () => {
+  let home!: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(path.join(tmpdir(), "nextshell-bootstrap-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const runInHome = (command: string): string =>
+    execFileSync("/bin/sh", ["-c", command], {
+      env: { ...process.env, HOME: home }
+    }).toString();
+
+  const cacheEntries = (): string[] => readdirSync(path.join(home, ".cache/nextshell"));
+
+  test("bash installs the integration script plus the --init-file bootstrap", () => {
+    runInHome(buildBootstrapInstallCommand("bash"));
+
+    expect(cacheEntries().sort()).toEqual([
+      "nextshell-bash-init.bash",
+      "nextshell-shell-integration.bash"
+    ]);
+  });
+
+  test("zsh installs the integration script plus all four ZDOTDIR shims", () => {
+    runInHome(buildBootstrapInstallCommand("zsh"));
+
+    expect(cacheEntries()).toEqual(["nextshell-shell-integration.zsh", "zdotdir"]);
+    expect(readdirSync(path.join(home, ".cache/nextshell/zdotdir")).sort()).toEqual(
+      [".zshenv", ".zprofile", ".zshrc", ".zlogin"].sort()
+    );
+  });
+
+  test("fish installs only the integration script and leaves no staging files", () => {
+    runInHome(buildBootstrapInstallCommand("fish"));
+
+    expect(cacheEntries()).toEqual(["nextshell-shell-integration.fish"]);
+    expect(cacheEntries().filter((entry) => entry.includes(".tmp"))).toEqual([]);
+  });
+
+  test.skipIf(!canRunBash)(
+    "the bash init file emulates a login shell, then activates the integration",
+    () => {
+      // A marker script keeps the assertion about OUR plumbing, not about the
+      // bundled integration script's internals.
+      runInHome(buildBootstrapInstallCommand("bash", () => "NEXTSHELL_TEST_MARKER=integration\n"));
+      writeFileSync(path.join(home, ".bash_profile"), "NEXTSHELL_TEST_PROFILE=login\n");
+
+      const output = execFileSync(
+        "/bin/bash",
+        [
+          "--norc",
+          "--noprofile",
+          "-c",
+          '. "$HOME/.cache/nextshell/nextshell-bash-init.bash"; printf %s "$NEXTSHELL_TEST_PROFILE:$NEXTSHELL_TEST_MARKER"'
+        ],
+        { env: { HOME: home, PATH: process.env.PATH ?? "" } }
+      ).toString();
+
+      // The profile ran BEFORE the integration (login emulation first).
+      expect(output).toBe("login:integration");
+    }
+  );
+
+  test.skipIf(!canRunZsh)(
+    "the ZDOTDIR shims source the user's zshrc, then activate the integration",
+    () => {
+      runInHome(buildBootstrapInstallCommand("zsh", () => "NEXTSHELL_TEST_MARKER=integration\n"));
+      writeFileSync(path.join(home, ".zshrc"), "NEXTSHELL_TEST_RC=user\n");
+
+      const output = execFileSync(
+        "/usr/bin/env",
+        ["zsh", "-i", "-c", 'printf %s "$NEXTSHELL_TEST_RC:$NEXTSHELL_TEST_MARKER"'],
+        {
+          env: {
+            HOME: home,
+            PATH: process.env.PATH ?? "",
+            NEXTSHELL_USER_ZDOTDIR: home,
+            ZDOTDIR: path.join(home, ".cache/nextshell/zdotdir")
+          }
+        }
+      ).toString();
+
+      expect(output).toBe("user:integration");
+    }
+  );
+
+  test("launch commands guard against a missing bootstrap and fall back to a plain shell", () => {
+    for (const family of ["bash", "zsh", "fish"] as const) {
+      const launch = buildIntegrationLaunchCommand(family);
+      expect(launch).toBeDefined();
+      // Belt and braces: a wiped cache dir must yield a login shell, never a
+      // broken terminal.
+      expect(launch).toContain('|| exec "${SHELL:-/bin/sh}" -l');
+    }
+    expect(buildIntegrationLaunchCommand("sh")).toBeUndefined();
   });
 });

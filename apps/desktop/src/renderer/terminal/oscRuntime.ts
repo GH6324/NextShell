@@ -147,7 +147,17 @@ export const installOscRuntime = (
     try {
       terminal.write(data, () => {
         settlePendingWrite(entry);
-        onParsed?.();
+        if (!onParsed) {
+          return;
+        }
+        try {
+          onParsed();
+        } catch (error) {
+          // An exception escaping a write callback aborts xterm's parse loop
+          // with the queue non-empty and nothing ever reschedules it — the
+          // terminal would freeze permanently. Contain and log instead.
+          console.error("[oscRuntime] write completion callback threw", error);
+        }
       });
     } catch (error) {
       settlePendingWrite(entry);
@@ -239,7 +249,17 @@ export const installOscRuntime = (
       try {
         // An empty chunk parses to nothing but still takes its place in the
         // queue, so its callback runs after everything queued before it.
-        terminal.write("", onDrained);
+        terminal.write("", () => {
+          try {
+            onDrained();
+          } catch (error) {
+            // Same containment as enqueueWrite: the continuation runs inside
+            // xterm's write loop (it performs reset + replay), and a throw
+            // there would kill the loop — and with it every session — for
+            // the life of this terminal instance.
+            console.error("[oscRuntime] pending-write continuation threw", error);
+          }
+        });
       } catch {
         // Terminal already torn down — run the continuation anyway so callers
         // never wait forever on a callback that can no longer arrive.

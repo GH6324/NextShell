@@ -58,6 +58,7 @@ import { ResourceOperationsService } from "./resource-operations-service";
 import { MonitorService } from "./monitor-service";
 import { SftpService } from "./sftp-service";
 import { SessionService } from "./session-service";
+import { forgetShellIntegrationInstalls } from "./terminal-shell-integration";
 
 const cloudSyncWorkspacePasswordRef = (workspaceId: string): string =>
   `secret://cloud-sync-ws-${workspaceId}`;
@@ -469,7 +470,11 @@ export const createServiceContainer = async (
       reason,
       remainingClients: clients.length
     });
-    if (isLastClient) void remoteEditManager.cleanupByConnectionId(connectionId);
+    if (isLastClient) {
+      void remoteEditManager.cleanupByConnectionId(connectionId);
+      // Reconnects must re-probe/re-install: the remote cache dir may be gone.
+      forgetShellIntegrationInstalls(connectionId);
+    }
   }
 
   /** Live pool members, pruning clients that died without their close handler
