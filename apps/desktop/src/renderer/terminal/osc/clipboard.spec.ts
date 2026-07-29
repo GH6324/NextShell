@@ -1,8 +1,12 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import type { Terminal } from "@xterm/xterm";
+import type { AppPreferences } from "@nextshell/core";
+import type { OscRuntimeContext } from "../oscRuntime";
 import {
   decodeOsc52Base64,
   encodeOsc52Base64,
   handleOsc52Sequence,
+  install,
   OSC52_MAX_DECODED_BYTES,
   parseOsc52Payload
 } from "./clipboard";
@@ -226,5 +230,76 @@ describe("handleOsc52Sequence read path", () => {
     await flushMicrotasks();
 
     expect(writeReply).not.toHaveBeenCalled();
+  });
+});
+
+const createInstallHarness = (initialSessionId: string | undefined) => {
+  const handlers = new Map<number, (data: string) => boolean>();
+  const terminal = {
+    parser: {
+      registerOscHandler(ident: number, callback: (data: string) => boolean) {
+        handlers.set(ident, callback);
+        return { dispose: () => handlers.delete(ident) };
+      }
+    }
+  } as unknown as Terminal;
+
+  const parser = { sessionId: initialSessionId };
+  const replies: { sessionId: string; data: string }[] = [];
+  const ctx = {
+    getSessionId: () => parser.sessionId,
+    isReplaying: () => false,
+    getTerminalPreferences: () =>
+      ({ oscClipboardWrite: true, oscClipboardRead: true }) as AppPreferences["terminal"],
+    // Resolving the target late is exactly the bug under test: route it to a
+    // distinguishable id so a regression is visible instead of coincidental.
+    writeToRemote: (data: string) => replies.push({ sessionId: "<late>", data }),
+    writeToRemoteAs: (sessionId: string, data: string) => replies.push({ sessionId, data }),
+    registerKeyHandler: () => () => undefined,
+    onReplayStart: () => () => undefined
+  } satisfies OscRuntimeContext;
+
+  const dispose = install(terminal, ctx);
+  return { handlers, parser, replies, dispose };
+};
+
+describe("install (OSC 52 session attribution)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("sends the read reply to the session that asked, not the one in front later", async () => {
+    vi.stubGlobal("navigator", {
+      clipboard: {
+        readText: () => Promise.resolve("hi"),
+        writeText: () => Promise.resolve()
+      }
+    });
+    const { handlers, parser, replies, dispose } = createInstallHarness("a");
+
+    expect(handlers.get(52)?.("c;?")).toBe(true);
+    // The user switches tabs while the clipboard promise is still pending.
+    parser.sessionId = "b";
+    await flushMicrotasks();
+
+    expect(replies).toEqual([{ sessionId: "a", data: "\x1b]52;c;aGk=\x07" }]);
+    dispose();
+  });
+
+  test("drops the reply when no session owned the request", async () => {
+    vi.stubGlobal("navigator", {
+      clipboard: {
+        readText: () => Promise.resolve("hi"),
+        writeText: () => Promise.resolve()
+      }
+    });
+    const { handlers, parser, replies, dispose } = createInstallHarness(undefined);
+
+    expect(handlers.get(52)?.("c;?")).toBe(true);
+    parser.sessionId = "b";
+    await flushMicrotasks();
+
+    expect(replies).toEqual([]);
+    dispose();
   });
 });

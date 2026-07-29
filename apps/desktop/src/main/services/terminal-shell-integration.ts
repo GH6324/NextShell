@@ -39,9 +39,72 @@ export interface ShellIntegrationExecLike {
   exec(command: string): Promise<ExecResult>;
 }
 
+/**
+ * Per-connection install bookkeeping. Several sessions on one server finish
+ * their observation window within milliseconds of each other and would
+ * otherwise each rewrite the same remote script while the previous session's
+ * shell is sourcing it. Keeping this module-level (rather than in
+ * session-service) makes every caller of `startShellIntegrationObserver` share
+ * the guard for free.
+ *
+ * Value semantics: a settled `true` means "installed on this connection, do not
+ * install again"; a pending promise means an install is in flight and later
+ * observers must await it; a failed install removes the entry so the next
+ * session retries.
+ */
+type FamilyInstalls = Map<ShellIntegrationFamily, Promise<boolean>>;
+
+const installsByConnectionId = new Map<string, FamilyInstalls>();
+/** Weak, so connections that go away take their bookkeeping with them. */
+let installsByConnection = new WeakMap<ShellIntegrationExecLike, FamilyInstalls>();
+
+const resolveFamilyInstalls = (
+  connectionId: string | undefined,
+  connection: ShellIntegrationExecLike
+): FamilyInstalls => {
+  if (connectionId !== undefined) {
+    const existing = installsByConnectionId.get(connectionId);
+    if (existing) {
+      return existing;
+    }
+    const created: FamilyInstalls = new Map();
+    installsByConnectionId.set(connectionId, created);
+    return created;
+  }
+
+  const existing = installsByConnection.get(connection);
+  if (existing) {
+    return existing;
+  }
+  const created: FamilyInstalls = new Map();
+  installsByConnection.set(connection, created);
+  return created;
+};
+
+/**
+ * Drops the "already installed" memory for one connection (or all of them).
+ * Call it when a connection is torn down so a reconnect — possibly to a host
+ * whose cache dir was wiped meanwhile — installs again.
+ */
+export const forgetShellIntegrationInstalls = (connectionId?: string): void => {
+  if (connectionId === undefined) {
+    installsByConnectionId.clear();
+    installsByConnection = new WeakMap();
+    return;
+  }
+  installsByConnectionId.delete(connectionId);
+};
+
 export interface ShellIntegrationObserverOptions {
   connection: ShellIntegrationExecLike;
   shell: ShellIntegrationChannelLike;
+  /**
+   * Dedupe key for the install step. Tabs opened against the same server share
+   * one connection and one remote script path, so only the first observer runs
+   * the install; the rest wait for it and then inject. Falls back to the
+   * `connection` object's identity when omitted.
+   */
+  connectionId?: string;
   /**
    * Awaited only at injection time so the login-shell probe can run in
    * parallel with session startup instead of delaying the shell channel.
@@ -76,6 +139,7 @@ export const startShellIntegrationObserver = (
   const {
     connection,
     shell,
+    connectionId,
     family: familyInput,
     isSessionActive,
     hasUserInput = () => false,
@@ -117,6 +181,47 @@ export const startShellIntegrationObserver = (
     return true;
   };
 
+  const runInstall = async (family: ShellIntegrationFamily): Promise<boolean> => {
+    const script = scriptText ?? shellIntegrationScriptText(family);
+    try {
+      const result = await connection.exec(buildInstallCommand([family], () => script));
+      if (result.exitCode !== 0) {
+        log("[ShellIntegration] install command failed; skipping injection", {
+          exitCode: result.exitCode
+        });
+        return false;
+      }
+      return true;
+    } catch (error) {
+      log("[ShellIntegration] injection skipped", {
+        reason: error instanceof Error ? error.message : String(error)
+      });
+      return false;
+    }
+  };
+
+  /** Runs the install at most once per connection+family; never rejects. */
+  const ensureInstalled = (family: ShellIntegrationFamily): Promise<boolean> => {
+    const installs = resolveFamilyInstalls(connectionId, connection);
+    const inFlight = installs.get(family);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    // Annotated because the callback below refers to `pending` itself.
+    const pending: Promise<boolean> = runInstall(family).then((installed) => {
+      if (!installed) {
+        // Keep failures out of the cache so the next session tries again.
+        if (installs.get(family) === pending) {
+          installs.delete(family);
+        }
+      }
+      return installed;
+    });
+    installs.set(family, pending);
+    return pending;
+  };
+
   const inject = async (): Promise<void> => {
     if (!canInject()) {
       return;
@@ -127,26 +232,13 @@ export const startShellIntegrationObserver = (
       return;
     }
 
-    const script = scriptText ?? shellIntegrationScriptText(family);
-    try {
-      const result = await connection.exec(buildInstallCommand([family], () => script));
-      if (result.exitCode !== 0) {
-        log("[ShellIntegration] install command failed; skipping injection", {
-          exitCode: result.exitCode
-        });
-        return;
-      }
-      if (!canInject()) {
-        return;
-      }
-      // One short visible line is the accepted fallback (WindTerm/Tabby do
-      // the same); the script itself is idempotent and append-only.
-      shell.write(`${buildSourceLine(family)}\r`);
-    } catch (error) {
-      log("[ShellIntegration] injection skipped", {
-        reason: error instanceof Error ? error.message : String(error)
-      });
+    if (!(await ensureInstalled(family)) || !canInject()) {
+      return;
     }
+
+    // One short visible line is the accepted fallback (WindTerm/Tabby do
+    // the same); the script itself is idempotent and append-only.
+    shell.write(`${buildSourceLine(family)}\r`);
   };
 
   const onData = (chunk: Buffer | string): void => {

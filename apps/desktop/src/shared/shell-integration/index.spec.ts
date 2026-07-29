@@ -10,6 +10,7 @@ import {
   resolveShellFamily,
   shellIntegrationScriptName,
   shellIntegrationScriptPath,
+  shellIntegrationScriptTempPath,
   shellIntegrationScriptText,
   wrapForPosixShell
 } from "./index";
@@ -129,10 +130,28 @@ describe("buildInstallScript", () => {
 
     expect(script).toContain('mkdir -p "$HOME/.cache/nextshell"');
     expect(script).toContain(
-      "cat > \"$HOME/.cache/nextshell/nextshell-shell-integration.zsh\" <<'__NEXTSHELL_INTEGRATION_EOF__'"
+      "cat > \"$HOME/.cache/nextshell/nextshell-shell-integration.zsh.$$.tmp\" <<'__NEXTSHELL_INTEGRATION_EOF__'"
     );
     expect(script).toContain("# script\necho hi\n__NEXTSHELL_INTEGRATION_EOF__");
     expect(script.endsWith("__NEXTSHELL_INTEGRATION_EOF__")).toBe(true);
+  });
+
+  test("never truncates the live script — it stages a temp file and renames it", () => {
+    // Two tabs on one server install milliseconds apart. `cat > final` would
+    // hand the other tab's sourcing shell an empty/half file; a same-directory
+    // rename is atomic, and `$$` keeps the two writers off each other's temp.
+    const script = buildInstallScript(["bash"], () => "# script\n");
+    const final = "$HOME/.cache/nextshell/nextshell-shell-integration.bash";
+    const temp = `${final}.$$.tmp`;
+
+    expect(shellIntegrationScriptTempPath("bash")).toBe(temp);
+    expect(script).not.toContain(`cat > "${final}"`);
+    expect(script).toContain(`cat > "${temp}"`);
+    expect(script).toContain(`mv -f "${temp}" "${final}"`);
+    // The publish must be conditional on the write, and a failed write must
+    // clean up after itself instead of leaving a stale temp file behind.
+    expect(script).toContain(`<<'__NEXTSHELL_INTEGRATION_EOF__' && mv -f`);
+    expect(script).toContain(`|| { rm -f "${temp}"; exit 1; }`);
   });
 
   test("appends the missing trailing newline so the delimiter sits alone", () => {

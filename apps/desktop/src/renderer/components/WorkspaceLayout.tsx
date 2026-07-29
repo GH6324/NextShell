@@ -1006,10 +1006,10 @@ const WorkspaceLayoutComponent = ({
                   />
                 </div>
                 {activeSession?.type === "processManager" ? (
-                  <ProcessManagerPane session={activeSession} />
+                  <ProcessManagerPane key={activeSession.id} session={activeSession} />
                 ) : null}
                 {activeSession?.type === "networkMonitor" ? (
-                  <NetworkMonitorPane session={activeSession} />
+                  <NetworkMonitorPane key={activeSession.id} session={activeSession} />
                 ) : null}
                 {sessions
                   .filter((session) => session.type === "editor")
@@ -1032,7 +1032,11 @@ const WorkspaceLayoutComponent = ({
                     </div>
                   ))}
                 {activeSession?.type === "quickTransfer" ? (
-                  <QuickTransferPane connections={connections} sessions={sessions} />
+                  <QuickTransferPane
+                    key={activeSession.id}
+                    connections={connections}
+                    sessions={sessions}
+                  />
                 ) : null}
               </div>
             </Panel>

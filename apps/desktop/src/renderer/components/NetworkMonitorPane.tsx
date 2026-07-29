@@ -26,6 +26,7 @@ const getListenerKey = (listener: NetworkListener): string => {
 export const NetworkMonitorPane = ({ session }: NetworkMonitorPaneProps) => {
   const { message } = AntdApp.useApp();
   const connectionId = session.connectionId;
+  const sessionId = session.id;
   if (!connectionId) {
     throw new Error("NetworkMonitorPane requires a remote session connectionId");
   }
@@ -40,6 +41,10 @@ export const NetworkMonitorPane = ({ session }: NetworkMonitorPaneProps) => {
   const [detailError, setDetailError] = useState<string>();
   const [initialLoading, setInitialLoading] = useState(true);
   const detailRequestIdRef = useRef(0);
+  // Mirrors the connection the pane currently renders so late responses from a
+  // previous connection can never land in this table.
+  const connectionIdRef = useRef(connectionId);
+  connectionIdRef.current = connectionId;
   const [listenerTableRef, listenerTableScrollY] = useTableScrollY();
   const [connectionTableRef, connectionTableScrollY] = useTableScrollY();
   const allListeners = networkSnapshot?.listeners ?? [];
@@ -52,15 +57,19 @@ export const NetworkMonitorPane = ({ session }: NetworkMonitorPaneProps) => {
       }
     });
 
-    void window.nextshell.monitor.startNetwork({ connectionId }).catch((err: unknown) => {
-      message.error(`启动网络监控失败：${formatErrorMessage(err, "请检查连接状态")}`);
-    });
+    // sessionId identifies this pane as one monitor subscriber, so closing it
+    // only drops its own demand instead of stopping every tab on this host.
+    void window.nextshell.monitor
+      .startNetwork({ connectionId, sessionId })
+      .catch((err: unknown) => {
+        message.error(`启动网络监控失败：${formatErrorMessage(err, "请检查连接状态")}`);
+      });
 
     return () => {
       unsub();
-      void window.nextshell.monitor.stopNetwork({ connectionId }).catch(() => {});
+      void window.nextshell.monitor.stopNetwork({ connectionId, sessionId }).catch(() => {});
     };
-  }, [connectionId, setNetworkSnapshot]);
+  }, [connectionId, sessionId, setNetworkSnapshot]);
 
   const listeners = useMemo(() => {
     if (allListeners.length === 0) {
@@ -115,6 +124,9 @@ export const NetworkMonitorPane = ({ session }: NetworkMonitorPaneProps) => {
     async (listener: NetworkListener, silent: boolean) => {
       const requestId = detailRequestIdRef.current + 1;
       detailRequestIdRef.current = requestId;
+      const requestConnectionId = connectionId;
+      const isCurrentRequest = (): boolean =>
+        detailRequestIdRef.current === requestId && connectionIdRef.current === requestConnectionId;
 
       if (!silent) {
         setDetailLoading(true);
@@ -123,23 +135,23 @@ export const NetworkMonitorPane = ({ session }: NetworkMonitorPaneProps) => {
 
       try {
         const rows = await window.nextshell.monitor.getNetworkConnections({
-          connectionId,
+          connectionId: requestConnectionId,
           port: listener.port
         });
 
-        if (detailRequestIdRef.current !== requestId) {
+        if (!isCurrentRequest()) {
           return;
         }
 
         setPortConnections(rows);
         setDetailCapturedAt(new Date().toISOString());
       } catch (error) {
-        if (detailRequestIdRef.current !== requestId) {
+        if (!isCurrentRequest()) {
           return;
         }
         setDetailError(formatErrorMessage(error, "读取端口连接失败"));
       } finally {
-        if (detailRequestIdRef.current === requestId) {
+        if (isCurrentRequest()) {
           setDetailLoading(false);
         }
       }

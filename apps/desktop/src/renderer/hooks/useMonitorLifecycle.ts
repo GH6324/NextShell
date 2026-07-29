@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { App as AntdApp } from "antd";
 import type { SessionDescriptor } from "@nextshell/core";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
@@ -14,6 +14,10 @@ export function useMonitorLifecycle(
   const setMonitor = useWorkspaceStore((state) => state.setMonitor);
   const appendNetworkRate = useWorkspaceStore((state) => state.appendNetworkRate);
   const removeSession = useWorkspaceStore((state) => state.removeSession);
+  // Stable subscriber key for this hook instance: the main process reference
+  // counts monitor consumers, so our stop must only drop our own demand and
+  // never the system monitor another window/tab still needs.
+  const [subscriberId] = useState(() => crypto.randomUUID());
 
   // Receive system monitor snapshots
   useEffect(() => {
@@ -48,14 +52,14 @@ export function useMonitorLifecycle(
     if (!shouldStartSystemMonitor) {
       setMonitor(undefined);
       void window.nextshell.monitor
-        .stopSystem({ connectionId: activeConnectionId })
+        .stopSystem({ connectionId: activeConnectionId, sessionId: subscriberId })
         .catch(() => {});
       return;
     }
 
     let disposed = false;
     void window.nextshell.monitor
-      .startSystem({ connectionId: activeConnectionId })
+      .startSystem({ connectionId: activeConnectionId, sessionId: subscriberId })
       .catch((error) => {
         if (disposed) return;
         message.error(`启动系统监控失败：${formatErrorMessage(error, "请检查连接状态")}`);
@@ -65,10 +69,16 @@ export function useMonitorLifecycle(
     return () => {
       disposed = true;
       void window.nextshell.monitor
-        .stopSystem({ connectionId: activeConnectionId })
+        .stopSystem({ connectionId: activeConnectionId, sessionId: subscriberId })
         .catch(() => {});
     };
-  }, [monitorSessionEnabled, activeConnectionId, isActiveConnectionTerminalConnected, setMonitor]);
+  }, [
+    monitorSessionEnabled,
+    activeConnectionId,
+    isActiveConnectionTerminalConnected,
+    setMonitor,
+    subscriberId
+  ]);
 
   // Remove stale monitor sessions when their terminal disconnects
   useEffect(() => {

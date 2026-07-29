@@ -187,8 +187,12 @@ export class ShellCommandTracker {
   // is already dead — drop them all, then clear the incoming session's marks
   // so the replayed OSC 133 stream rebuilds them without duplicates. History
   // is a side effect and stays untouched: replay never pushes.
-  handleReplayStart = (): void => {
-    const sessionId = this.deps.getSessionId();
+  //
+  // The incoming session arrives as an argument rather than through
+  // `getSessionId()`: an earlier replay may still be in the parser, in which
+  // case the runtime reports *that* write's session, not the one about to be
+  // replayed.
+  handleReplayStart = (sessionId: string | undefined): void => {
     this.disposeTrackedResources();
     if (sessionId) {
       this.deps.clearMarks(sessionId);

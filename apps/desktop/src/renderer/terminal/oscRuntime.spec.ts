@@ -7,9 +7,18 @@ import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 type OscHandler = (data: string) => boolean | Promise<boolean>;
 
+interface QueuedWrite {
+  data: string;
+  callback?: () => void;
+}
+
 const createMockTerminal = () => {
   const oscHandlers = new Map<number, OscHandler>();
   const titleListeners = new Set<(title: string) => void>();
+  // xterm parses writes in submission order and runs each write's callback once
+  // that chunk has been parsed; the queue below lets a test stand in for the
+  // parser and settle chunks one at a time.
+  const writes: QueuedWrite[] = [];
   const terminal = {
     parser: {
       registerOscHandler(ident: number, callback: OscHandler) {
@@ -31,10 +40,21 @@ const createMockTerminal = () => {
           titleListeners.delete(listener);
         }
       };
+    },
+    write(data: string, callback?: () => void) {
+      writes.push({ data, callback });
     }
   } as unknown as Terminal;
 
-  return { terminal, oscHandlers };
+  const settleWrite = (index: number): void => {
+    const queued = writes[index];
+    if (!queued) {
+      throw new Error(`no queued write at index ${index}`);
+    }
+    queued.callback?.();
+  };
+
+  return { terminal, oscHandlers, writes, settleWrite };
 };
 
 // The notify module subscribes `window.nextshell.terminal.onNotificationAction`
@@ -132,7 +152,7 @@ describe("oscRuntime", () => {
     handle.dispose();
   });
 
-  test("beginReplay/endReplay toggles isReplaying and fires onReplayStart listeners", () => {
+  test("notifyReplayStart hands the incoming session id to its listeners", () => {
     const { terminal } = createMockTerminal();
     const { probe, getCtx } = captureContext();
     const handle = installOscRuntime(
@@ -142,20 +162,198 @@ describe("oscRuntime", () => {
     );
 
     const ctx = getCtx();
-    const events: string[] = [];
-    const offReplayStart = ctx.onReplayStart(() => events.push("replay-start"));
+    const events: (string | undefined)[] = [];
+    const offReplayStart = ctx.onReplayStart((sessionId) => events.push(sessionId));
 
-    expect(ctx.isReplaying()).toBe(false);
-    handle.beginReplay();
-    expect(ctx.isReplaying()).toBe(true);
-    handle.endReplay();
-    expect(ctx.isReplaying()).toBe(false);
-    expect(events).toEqual(["replay-start"]);
+    // The id is passed explicitly rather than read back from the runtime: an
+    // earlier replay may still be in the parser when the next one starts.
+    handle.notifyReplayStart("s2");
+    expect(events).toEqual(["s2"]);
 
     offReplayStart();
-    handle.beginReplay();
-    handle.endReplay();
-    expect(events).toEqual(["replay-start"]);
+    handle.notifyReplayStart("s3");
+    expect(events).toEqual(["s2"]);
+
+    handle.dispose();
+  });
+
+  test("credits OSC output to the session being parsed while replays overlap", () => {
+    const { terminal, oscHandlers, settleWrite } = createMockTerminal();
+    // The foreground session is already "c" — the value a mutable ref would
+    // have reported for every one of the writes below.
+    const handle = installOscRuntime(terminal, {
+      getSessionId: () => "c",
+      writeToRemote: () => {}
+    });
+
+    const osc7 = oscHandlers.get(7);
+    expect(osc7).toBeDefined();
+
+    // Two tab switches in quick succession leave both replays queued.
+    handle.replaySessionData("a", "scrollback-a");
+    handle.replaySessionData("b", "scrollback-b");
+
+    osc7?.("file://host/home/a");
+    expect(useSessionOscStore.getState().cwdBySession["a"]).toBe("/home/a");
+    expect(useSessionOscStore.getState().cwdBySession["c"]).toBeUndefined();
+
+    settleWrite(0);
+
+    osc7?.("file://host/home/b");
+    expect(useSessionOscStore.getState().cwdBySession["b"]).toBe("/home/b");
+    expect(useSessionOscStore.getState().cwdBySession["a"]).toBe("/home/a");
+
+    settleWrite(1);
+
+    // Nothing in flight: sequences fall back to the foreground session.
+    osc7?.("file://host/home/c");
+    expect(useSessionOscStore.getState().cwdBySession["c"]).toBe("/home/c");
+
+    handle.dispose();
+  });
+
+  test("isReplaying and writeToRemote follow the chunk in the parser", () => {
+    const { terminal, settleWrite } = createMockTerminal();
+    const { probe, getCtx } = captureContext();
+    const replies: { sessionId: string; data: string }[] = [];
+    const handle = installOscRuntime(
+      terminal,
+      {
+        getSessionId: () => "live",
+        writeToRemote: (sessionId, data) => replies.push({ sessionId, data })
+      },
+      [probe]
+    );
+
+    const ctx = getCtx();
+    expect(ctx.isReplaying()).toBe(false);
+
+    handle.replaySessionData("a", "scrollback-a");
+    handle.writeSessionData("b", "live-b");
+
+    expect(ctx.isReplaying()).toBe(true);
+    expect(ctx.getSessionId()).toBe("a");
+
+    settleWrite(0);
+    expect(ctx.isReplaying()).toBe(false);
+    expect(ctx.getSessionId()).toBe("b");
+    ctx.writeToRemote("reply");
+    expect(replies).toEqual([{ sessionId: "b", data: "reply" }]);
+
+    settleWrite(1);
+    expect(ctx.isReplaying()).toBe(false);
+    expect(ctx.getSessionId()).toBe("live");
+
+    handle.dispose();
+  });
+
+  test("writeToRemoteAs replies to the named session whatever the parser is doing", () => {
+    const { terminal } = createMockTerminal();
+    const { probe, getCtx } = captureContext();
+    const replies: { sessionId: string; data: string }[] = [];
+    const handle = installOscRuntime(
+      terminal,
+      {
+        getSessionId: () => "live",
+        writeToRemote: (sessionId, data) => replies.push({ sessionId, data })
+      },
+      [probe]
+    );
+
+    const ctx = getCtx();
+    // A replay for another session is in the parser: the late reply of an async
+    // OSC handler must still reach the session that issued the request.
+    handle.replaySessionData("b", "scrollback-b");
+    ctx.writeToRemoteAs("a", "reply");
+
+    expect(replies).toEqual([{ sessionId: "a", data: "reply" }]);
+
+    handle.dispose();
+  });
+
+  test("runAfterPendingWrites orders its continuation behind the queued chunks", () => {
+    const { terminal, writes, settleWrite } = createMockTerminal();
+    const handle = installOscRuntime(terminal, {
+      getSessionId: () => "live",
+      writeToRemote: () => {}
+    });
+
+    const order: string[] = [];
+    handle.replaySessionData("a", "scrollback-a", () => order.push("a-parsed"));
+    handle.runAfterPendingWrites(() => order.push("drained"));
+
+    // Queued, not run: xterm's reset() would otherwise jump the backlog.
+    expect(order).toEqual([]);
+    expect(writes).toHaveLength(2);
+    expect(writes[1]?.data).toBe("");
+
+    settleWrite(0);
+    expect(order).toEqual(["a-parsed"]);
+
+    settleWrite(1);
+    expect(order).toEqual(["a-parsed", "drained"]);
+
+    handle.dispose();
+  });
+
+  test("runAfterPendingWrites stays synchronous when nothing is queued", () => {
+    const { terminal, writes } = createMockTerminal();
+    const handle = installOscRuntime(terminal, {
+      getSessionId: () => "live",
+      writeToRemote: () => {}
+    });
+
+    let drained = 0;
+    handle.runAfterPendingWrites(() => {
+      drained += 1;
+    });
+
+    expect(drained).toBe(1);
+    expect(writes).toHaveLength(0);
+
+    handle.dispose();
+  });
+
+  test("a lost write callback does not strand attribution on the dead chunk", () => {
+    const { terminal, settleWrite } = createMockTerminal();
+    const { probe, getCtx } = captureContext();
+    const handle = installOscRuntime(
+      terminal,
+      { getSessionId: () => "live", writeToRemote: () => {} },
+      [probe]
+    );
+
+    const ctx = getCtx();
+    handle.writeSessionData("a", "chunk-a");
+    handle.writeSessionData("b", "chunk-b");
+
+    // "a" never settles (terminal torn down mid-parse, write discarded);
+    // settling "b" must clear the whole prefix rather than leave "a" pinned as
+    // the attribution for everything that follows.
+    settleWrite(1);
+    expect(ctx.getSessionId()).toBe("live");
+
+    handle.dispose();
+  });
+
+  test("empty writes are not queued and still run their completion hook", () => {
+    const { terminal, writes } = createMockTerminal();
+    const { probe, getCtx } = captureContext();
+    const handle = installOscRuntime(
+      terminal,
+      { getSessionId: () => "live", writeToRemote: () => {} },
+      [probe]
+    );
+
+    const ctx = getCtx();
+    let parsed = 0;
+    handle.writeSessionData("a", "", () => {
+      parsed += 1;
+    });
+
+    expect(parsed).toBe(1);
+    expect(writes).toHaveLength(0);
+    expect(ctx.getSessionId()).toBe("live");
 
     handle.dispose();
   });

@@ -198,20 +198,41 @@ interface TraceroutePaneProps {
   connected: boolean;
 }
 
+/** Identity of the traceroute run a pane currently owns. */
+export interface TracerouteRunHandle {
+  host: string;
+  runId: string;
+}
+
+/**
+ * Traceroute events are broadcast to every listener in the renderer, so a pane must
+ * only consume the events produced by the run it started itself.
+ */
+export const isEventForRun = (
+  event: Pick<TracerouteEvent, "host" | "runId">,
+  active: TracerouteRunHandle | null
+): boolean => active !== null && event.host === active.host && event.runId === active.runId;
+
 export const TraceroutePane = ({ connection, connected }: TraceroutePaneProps) => {
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string>();
   const outputRef = useRef<HTMLPreElement>(null);
   const prevHostRef = useRef<string | undefined>(undefined);
+  /** The run this pane currently owns; every incoming event is matched against it. */
+  const activeRunRef = useRef<TracerouteRunHandle | null>(null);
 
-  // Reset output when connection changes
+  // Reset output when connection changes, and abandon whatever run the old host had started.
   useEffect(() => {
-    if (connection?.host !== prevHostRef.current) {
-      prevHostRef.current = connection?.host;
-      setLines([]);
-      setError(undefined);
+    if (connection?.host === prevHostRef.current) return;
+    prevHostRef.current = connection?.host;
+    if (activeRunRef.current) {
+      activeRunRef.current = null;
+      void window.nextshell.traceroute.stop();
     }
+    setLines([]);
+    setError(undefined);
+    setRunning(false);
   }, [connection?.host]);
 
   // Auto-scroll to bottom
@@ -225,14 +246,17 @@ export const TraceroutePane = ({ connection, connected }: TraceroutePaneProps) =
   // Subscribe to traceroute events
   useEffect(() => {
     const unsubscribe = window.nextshell.traceroute.onData((event: TracerouteEvent) => {
+      if (!isEventForRun(event, activeRunRef.current)) return;
       switch (event.type) {
         case "data":
           setLines((prev) => [...prev, event.line]);
           break;
         case "done":
+          activeRunRef.current = null;
           setRunning(false);
           break;
         case "error":
+          activeRunRef.current = null;
           setError(event.message);
           setRunning(false);
           break;
@@ -243,33 +267,44 @@ export const TraceroutePane = ({ connection, connected }: TraceroutePaneProps) =
     };
   }, []);
 
-  // Cleanup on unmount
+  // Cleanup on unmount — only stop a run this pane actually owns.
   useEffect(() => {
     return () => {
+      if (!activeRunRef.current) return;
+      activeRunRef.current = null;
       void window.nextshell.traceroute.stop();
     };
   }, []);
 
   const handleStart = useCallback(async () => {
-    if (!connection?.host) return;
+    // The main process validates with a trimming schema, so echoed events carry the trimmed host.
+    const host = connection?.host?.trim();
+    if (!host) return;
+    const runId = crypto.randomUUID();
     setLines([]);
     setError(undefined);
     setRunning(true);
+    // Claim the run before awaiting so no event can land before we know its id.
+    activeRunRef.current = { host, runId };
     try {
-      await window.nextshell.traceroute.run({ host: connection.host });
+      await window.nextshell.traceroute.run({ host, runId });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "启动路由追踪失败");
-      setRunning(false);
+      if (activeRunRef.current?.runId === runId) {
+        activeRunRef.current = null;
+        setError(err instanceof Error ? err.message : "启动路由追踪失败");
+        setRunning(false);
+      }
     }
   }, [connection?.host]);
 
   const handleStop = useCallback(async () => {
+    activeRunRef.current = null;
+    setRunning(false);
     try {
       await window.nextshell.traceroute.stop();
     } catch {
       // ignore
     }
-    setRunning(false);
   }, []);
 
   if (!connection) {

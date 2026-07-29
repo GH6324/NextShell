@@ -15,6 +15,12 @@ interface NetworkToolServiceOptions {
   connections: CachedConnectionRepository;
 }
 
+/** A traceroute event before it is stamped with the run it belongs to. */
+type TracerouteEventBody =
+  | { type: "data"; line: string }
+  | { type: "done"; exitCode: number | null }
+  | { type: "error"; message: string };
+
 export class NetworkToolService {
   private readonly connections: CachedConnectionRepository;
   private activeTracerouteProcess: ChildProcess | null = null;
@@ -127,8 +133,12 @@ export class NetworkToolService {
     }
   }
 
-  async tracerouteRun(host: string, sender: WebContents): Promise<{ ok: true }> {
+  async tracerouteRun(host: string, runId: string, sender: WebContents): Promise<{ ok: true }> {
     if (this.activeTracerouteProcess) {
+      // Detach before killing so the superseded run cannot emit a trailing done/data event.
+      this.activeTracerouteProcess.removeAllListeners();
+      this.activeTracerouteProcess.stdout?.removeAllListeners();
+      this.activeTracerouteProcess.stderr?.removeAllListeners();
       this.activeTracerouteProcess.kill();
       this.activeTracerouteProcess = null;
     }
@@ -183,8 +193,20 @@ export class NetworkToolService {
       }
     };
 
-    const sendEvent = (event: TracerouteEvent): void => {
+    const stamp = (body: TracerouteEventBody): TracerouteEvent => {
+      switch (body.type) {
+        case "data":
+          return { type: "data", host, runId, line: body.line };
+        case "done":
+          return { type: "done", host, runId, exitCode: body.exitCode };
+        default:
+          return { type: "error", host, runId, message: body.message };
+      }
+    };
+
+    const sendEvent = (body: TracerouteEventBody): void => {
       if (sender.isDestroyed()) return;
+      const event = stamp(body);
       if (event.type === "done" || event.type === "error") {
         if (tracerouteFlushTimer) {
           clearTimeout(tracerouteFlushTimer);

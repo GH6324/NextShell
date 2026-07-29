@@ -63,6 +63,58 @@ function getSessionConnectionId(session?: SessionDescriptor): string | undefined
   return (session as LocalAwareSessionDescriptor | undefined)?.connectionId;
 }
 
+function hasSessionForConnection(
+  sessions: SessionDescriptor[],
+  connectionId: string,
+  type: SessionDescriptor["type"]
+): boolean {
+  return sessions.some(
+    (session) => session.type === type && getSessionConnectionId(session) === connectionId
+  );
+}
+
+interface MonitorSnapshotState {
+  processSnapshots: Record<string, ProcessSnapshot>;
+  networkSnapshots: Record<string, NetworkSnapshot>;
+}
+
+/**
+ * Drop a connection's monitor snapshot only when the removed session was the *last*
+ * pane of that kind for the connection. Multiple tabs against the same host share one
+ * snapshot entry, so clearing eagerly blanks the panes that are still open.
+ */
+function pruneMonitorSnapshots(
+  state: MonitorSnapshotState,
+  remainingSessions: SessionDescriptor[],
+  removedSessions: SessionDescriptor[]
+): MonitorSnapshotState {
+  let processSnapshots = state.processSnapshots;
+  let networkSnapshots = state.networkSnapshots;
+
+  for (const removed of removedSessions) {
+    const connectionId = getSessionConnectionId(removed);
+    if (!connectionId) {
+      continue;
+    }
+
+    if (
+      removed.type === "processManager" &&
+      !hasSessionForConnection(remainingSessions, connectionId, "processManager")
+    ) {
+      processSnapshots = omitConnectionSnapshot(processSnapshots, connectionId);
+    }
+
+    if (
+      removed.type === "networkMonitor" &&
+      !hasSessionForConnection(remainingSessions, connectionId, "networkMonitor")
+    ) {
+      networkSnapshots = omitConnectionSnapshot(networkSnapshots, connectionId);
+    }
+  }
+
+  return { processSnapshots, networkSnapshots };
+}
+
 function isLocalSession(session?: SessionDescriptor): boolean {
   return (session as LocalAwareSessionDescriptor | undefined)?.target === "local";
 }
@@ -187,14 +239,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           : getSessionConnectionId(nextActiveSession)
         : undefined;
 
-      const processSnapshots =
-        target?.type === "processManager" && getSessionConnectionId(target)
-          ? omitConnectionSnapshot(state.processSnapshots, getSessionConnectionId(target)!)
-          : state.processSnapshots;
-      const networkSnapshots =
-        target?.type === "networkMonitor" && getSessionConnectionId(target)
-          ? omitConnectionSnapshot(state.networkSnapshots, getSessionConnectionId(target)!)
-          : state.networkSnapshots;
+      const { processSnapshots, networkSnapshots } = pruneMonitorSnapshots(
+        state,
+        sessions,
+        target ? [target] : []
+      );
 
       return {
         sessions,
@@ -237,13 +286,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         );
       }
 
+      const { processSnapshots, networkSnapshots } = pruneMonitorSnapshots(
+        state,
+        sessions,
+        removedSessions
+      );
+      // Only wipe the rate history once nothing else references the connection.
+      const networkRateHistory = sessions.some(
+        (session) => getSessionConnectionId(session) === connectionId
+      )
+        ? state.networkRateHistory
+        : pruneNetworkRateHistory(state.networkRateHistory, connectionId);
+
       return {
         sessions,
         activeSessionId: nextActiveSession?.id,
         activeConnectionId: nextActiveConnectionId,
-        processSnapshots: omitConnectionSnapshot(state.processSnapshots, connectionId),
-        networkSnapshots: omitConnectionSnapshot(state.networkSnapshots, connectionId),
-        networkRateHistory: pruneNetworkRateHistory(state.networkRateHistory, connectionId),
+        processSnapshots,
+        networkSnapshots,
+        networkRateHistory,
         lastActiveRemoteTerminalByConnection
       };
     }),

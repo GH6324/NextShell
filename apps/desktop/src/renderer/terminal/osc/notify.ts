@@ -59,7 +59,19 @@ interface NotificationRequest {
 // noise when the user is already watching that session, so they fire only when
 // the app prefers them, the sequence is not a replay artifact, the per-session
 // rate limit allows it, and the session is not the active one in a focused
-// window. A background session finishing its build still notifies.
+// window.
+//
+// Known limitation — background sessions never notify. The app multiplexes
+// every session through one xterm instance, so only the foreground session's
+// bytes reach the parser; a background session's OSC 9/777 sits in its output
+// buffer until the user switches to that tab, and by then the bytes arrive as
+// a replay (suppressed here) for a session the user is looking at anyway.
+// Deliberately not relaxed for replays: the replayed scrollback can be
+// megabytes of history, so the "notification" would be an arbitrarily old
+// event announced at the exact moment it stopped being news. Real background
+// notifications need the session's stream parsed while it is in the
+// background — a headless per-session parser or one xterm per session — not a
+// tweak to this predicate.
 const shouldNotify = (
   ctx: OscRuntimeContext,
   isAllowedByRateLimit: (sessionId: string) => boolean,

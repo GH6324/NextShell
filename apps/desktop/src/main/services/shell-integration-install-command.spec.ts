@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -49,6 +49,58 @@ describe.skipIf(!canRunPosixShell)("generated install command", () => {
       "utf-8"
     );
     expect(installed).toBe(shellIntegrationScriptText("sh"));
+  });
+
+  test("leaves no staging files behind in the cache dir", () => {
+    runInHome(buildInstallCommand(SHELL_INTEGRATION_FAMILIES));
+
+    const entries = readdirSync(path.join(home, ".cache/nextshell"));
+    expect(entries.filter((entry) => entry.includes(".tmp"))).toEqual([]);
+  });
+
+  test("a script stays sourceable while another session reinstalls it", () => {
+    // The bug: `cat > final` truncates in place, so a second tab installing
+    // while this tab's shell is mid-`source` reads an empty or half-written
+    // file — parse errors, or OSC 7/133 silently never arriving.
+    runInHome(buildInstallCommand(["sh"]));
+
+    const sourceLine = buildSourceLine("sh");
+    // The writer keeps reinstalling until the reader is done, so the two are
+    // guaranteed to overlap instead of racing to finish first.
+    const output = runInHome(
+      [
+        'lock="$HOME/.nextshell-install-race"',
+        ': > "$lock"',
+        `w=0; while [ -f "$lock" ] && [ $w -lt 500 ]; do ${buildInstallCommand(["sh"])}; w=$((w+1)); done &`,
+        "writer=$!",
+        "bad=0; reads=0",
+        "while [ $reads -lt 30 ]; do",
+        `  out=$(/bin/sh -c '${sourceLine}; __nextshell_emit_cwd' 2>&1) || bad=$((bad+1))`,
+        '  case "$out" in *"]7;file://"*) ;; *) bad=$((bad+1)) ;; esac',
+        "  reads=$((reads+1))",
+        "done",
+        'rm -f "$lock"',
+        "wait $writer",
+        'printf "reads=%s bad=%s" "$reads" "$bad"'
+      ].join("\n")
+    );
+
+    expect(output).toBe("reads=30 bad=0");
+  });
+
+  test("a write that cannot be published leaves the previous script intact", () => {
+    const scriptPath = path.join(home, ".cache/nextshell", "nextshell-shell-integration.sh");
+    runInHome(buildInstallCommand(["sh"]));
+
+    chmodSync(path.dirname(scriptPath), 0o500);
+    try {
+      expect(() => runInHome(buildInstallCommand(["sh"]))).toThrow();
+    } finally {
+      chmodSync(path.dirname(scriptPath), 0o700);
+    }
+
+    expect(readFileSync(scriptPath, "utf-8")).toBe(shellIntegrationScriptText("sh"));
+    expect(readdirSync(path.dirname(scriptPath)).filter((e) => e.includes(".tmp"))).toEqual([]);
   });
 
   test("the POSIX source line loads the script and emits OSC 7", () => {

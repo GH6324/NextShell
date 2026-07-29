@@ -32,6 +32,7 @@ type SortKey = "cpu" | "memory" | "pid";
 export const ProcessManagerPane = ({ session }: ProcessManagerPaneProps) => {
   const { message } = AntdApp.useApp();
   const connectionId = session.connectionId;
+  const sessionId = session.id;
   if (!connectionId) {
     throw new Error("ProcessManagerPane requires a remote session connectionId");
   }
@@ -51,6 +52,11 @@ export const ProcessManagerPane = ({ session }: ProcessManagerPaneProps) => {
     undefined
   );
   const unsubRef = useRef<(() => void) | undefined>(undefined);
+  const detailRequestIdRef = useRef(0);
+  // Mirrors the connection the pane currently renders so a late detail response
+  // from a previous connection (or an earlier PID) cannot land in the drawer.
+  const connectionIdRef = useRef(connectionId);
+  connectionIdRef.current = connectionId;
 
   // Subscribe to process data events + start monitor on mount
   useEffect(() => {
@@ -64,17 +70,22 @@ export const ProcessManagerPane = ({ session }: ProcessManagerPaneProps) => {
     });
     unsubRef.current = unsub;
 
-    void window.nextshell.monitor.startProcess({ connectionId }).catch((err: unknown) => {
-      if (disposed) return;
-      message.error(`启动进程监控失败：${formatErrorMessage(err, "请检查连接状态")}`);
-    });
+    // sessionId identifies this pane as one monitor subscriber, so closing it
+    // only drops its own demand instead of stopping every tab on this host.
+    void window.nextshell.monitor
+      .startProcess({ connectionId, sessionId })
+      .catch((err: unknown) => {
+        if (disposed) return;
+        message.error(`启动进程监控失败：${formatErrorMessage(err, "请检查连接状态")}`);
+      });
 
     return () => {
       disposed = true;
+      detailRequestIdRef.current += 1;
       unsub();
-      void window.nextshell.monitor.stopProcess({ connectionId }).catch(() => {});
+      void window.nextshell.monitor.stopProcess({ connectionId, sessionId }).catch(() => {});
     };
-  }, [connectionId, setProcessSnapshot]);
+  }, [connectionId, sessionId, setProcessSnapshot]);
 
   const handleKill = useCallback(
     async (pid: number, signal: "SIGTERM" | "SIGKILL") => {
@@ -103,6 +114,12 @@ export const ProcessManagerPane = ({ session }: ProcessManagerPaneProps) => {
 
   const handleViewDetail = useCallback(
     async (pid: number) => {
+      const requestId = detailRequestIdRef.current + 1;
+      detailRequestIdRef.current = requestId;
+      const requestConnectionId = connectionId;
+      const isCurrentRequest = (): boolean =>
+        detailRequestIdRef.current === requestId && connectionIdRef.current === requestConnectionId;
+
       setDetailOpen(true);
       setDetailLoading(true);
       setDetailPid(pid);
@@ -110,12 +127,23 @@ export const ProcessManagerPane = ({ session }: ProcessManagerPaneProps) => {
       setDetailSnapshot(undefined);
 
       try {
-        const snapshot = await window.nextshell.monitor.getProcessDetail({ connectionId, pid });
+        const snapshot = await window.nextshell.monitor.getProcessDetail({
+          connectionId: requestConnectionId,
+          pid
+        });
+        if (!isCurrentRequest()) {
+          return;
+        }
         setDetailSnapshot(snapshot);
       } catch (error) {
+        if (!isCurrentRequest()) {
+          return;
+        }
         setDetailError(formatErrorMessage(error, "读取进程详情失败"));
       } finally {
-        setDetailLoading(false);
+        if (isCurrentRequest()) {
+          setDetailLoading(false);
+        }
       }
     },
     [connectionId]

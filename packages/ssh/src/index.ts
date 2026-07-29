@@ -6,6 +6,13 @@ import os from "node:os";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import type { Client, ClientChannel, ConnectConfig, SFTPWrapper, Stats } from "ssh2";
+import { ChannelBudget, DEFAULT_MAX_CHANNELS_PER_CONNECTION } from "./channel-budget";
+
+export {
+  ChannelBudget,
+  CHANNEL_RESERVATION_TTL_MS,
+  DEFAULT_MAX_CHANNELS_PER_CONNECTION
+} from "./channel-budget";
 
 type AuthType = "password" | "privateKey" | "agent" | "interactive";
 type ProxyType = "socks4" | "socks5";
@@ -388,18 +395,110 @@ export const matchHostFingerprint = (expected: string, key: Buffer | string): bo
   );
 };
 
+/** ssh2 channel bookkeeping: `open` → `eof` → `closing` → `closed`. */
+interface ChannelEndpointStates {
+  incoming?: { state?: string };
+  outgoing?: { state?: string };
+}
+
+/**
+ * True once the endpoint state says the channel is past half-close.
+ *
+ * `eof` is deliberately *not* closed: a channel that sent EOF on one direction
+ * still holds its server-side session slot. Missing state is treated as alive.
+ */
+const isEndpointClosed = (state: string | undefined): boolean =>
+  state === "closing" || state === "closed";
+
+/**
+ * A channel is finished once ssh2's own endpoint bookkeeping says so.
+ *
+ * Node's `destroyed`/`closed` flags are useless here: ssh2 builds `Channel`
+ * with `emitClose: false` and overrides `destroy()` as `{ end(); close(); }`,
+ * so `Duplex.prototype.destroy` never runs and both flags stay `false` for the
+ * channel's entire life — including after ssh2 manually emits `close` from
+ * `onCHANNEL_CLOSE`. Probing them would make this a dead fallback and leak one
+ * budget slot per tab closed via `removeAllListeners() + end()`. `incoming` is
+ * what the peer closed, `outgoing` what we closed; either is enough.
+ */
+export const isChannelClosed = (channel: ClientChannel): boolean => {
+  const states = channel as unknown as ChannelEndpointStates;
+  if (isEndpointClosed(states.incoming?.state) || isEndpointClosed(states.outgoing?.state)) {
+    return true;
+  }
+  // Last resort for non-ssh2 duplexes (test doubles, future transports).
+  return channel.destroyed === true;
+};
+
+/**
+ * SFTPWrapper is not a stream; ssh2 exposes the underlying channel state on
+ * `outgoing.state` (`open` → `eof` → `closing`/`closed`). Missing state is
+ * treated as alive — the close/end/error listeners still free the slot.
+ */
+const isSftpClosed = (sftp: SFTPWrapper): boolean =>
+  isEndpointClosed((sftp as unknown as ChannelEndpointStates).outgoing?.state);
+
 export class SshConnection {
   private readonly client: Client;
   private readonly readyPromise: Promise<void>;
   private readonly sharedSftp: SharedSftpChannel;
+  private readonly channelBudget = new ChannelBudget();
   private closed = false;
+  private terminated = false;
   private hostKeyError: Error | undefined;
 
   private constructor(private readonly options: SshConnectOptions) {
     const ssh2 = loadSsh2();
     this.client = new ssh2.Client();
-    this.sharedSftp = new SharedSftpChannel(() => this.openSftp());
+    // The shared SFTP channel is deliberately unbudgeted: it is at most one
+    // long-lived channel per client and must not push terminals onto a new one.
+    this.sharedSftp = new SharedSftpChannel(() => this.openSftp(false));
+    // Registered before the handshake so a post-handshake client error can
+    // never reach `uncaughtException`, and so the pool can drop dead clients
+    // even if it never attaches its own listener.
+    this.client.on("error", () => {
+      this.terminated = true;
+    });
+    this.client.on("close", () => {
+      this.terminated = true;
+      this.channelBudget.clear();
+    });
     this.readyPromise = this.connect();
+  }
+
+  /** False once the underlying client has closed or errored out. */
+  get isAlive(): boolean {
+    return !this.closed && !this.terminated;
+  }
+
+  /**
+   * Channels currently counted against this client's budget: shells, execs and
+   * dedicated SFTP transfer channels, plus slots reserved via `reserveChannel`.
+   */
+  get budgetedChannelCount(): number {
+    return this.channelBudget.count(true);
+  }
+
+  /** Every channel currently open on this client, shared SFTP included. */
+  get openChannelCount(): number {
+    return this.channelBudget.count(false);
+  }
+
+  /**
+   * Whether another channel fits before the server's `MaxSessions` bites. The
+   * pool uses this to decide between reusing this client and opening a new one.
+   */
+  hasChannelCapacity(budget: number = DEFAULT_MAX_CHANNELS_PER_CONNECTION): boolean {
+    return this.isAlive && this.channelBudget.hasCapacity(budget);
+  }
+
+  /**
+   * Claim a channel slot before the channel exists, so concurrent callers that
+   * are handed this client do not all measure the same pre-open load. The
+   * returned release is idempotent and the slot expires on its own.
+   */
+  reserveChannel(): () => void {
+    return this.channelBudget.reserve();
   }
 
   static async connect(options: SshConnectOptions): Promise<SshConnection> {
@@ -588,150 +687,196 @@ export class SshConnection {
   }
 
   async openShell(options: ShellOpenOptions): Promise<ClientChannel> {
-    await this.readyPromise;
+    // Reserved synchronously (before the first await) so a burst of concurrent
+    // opens on the same client is visible to the pool immediately.
+    const releaseSlot = this.reserveChannel();
+    try {
+      await this.readyPromise;
 
-    return new Promise((resolve, reject) => {
-      const windowOptions = createWindowOptions(options);
-      const onOpen = (error: Error | undefined, channel: ClientChannel | undefined) => {
-        if (error || !channel) {
-          reject(error ?? new Error("Failed to open SSH shell"));
+      const channel = await new Promise<ClientChannel>((resolve, reject) => {
+        const windowOptions = createWindowOptions(options);
+        const onOpen = (error: Error | undefined, channel: ClientChannel | undefined) => {
+          if (error || !channel) {
+            reject(error ?? new Error("Failed to open SSH shell"));
+            return;
+          }
+          resolve(channel);
+        };
+
+        if (options.env) {
+          this.client.shell(windowOptions, { env: options.env }, onOpen);
           return;
         }
-        resolve(channel);
-      };
 
-      if (options.env) {
-        this.client.shell(windowOptions, { env: options.env }, onOpen);
-        return;
-      }
+        this.client.shell(windowOptions, onOpen);
+      });
 
-      this.client.shell(windowOptions, onOpen);
-    });
+      this.channelBudget.track(channel, () => isChannelClosed(channel), true);
+      return channel;
+    } finally {
+      // Released only after the real lease exists, so the count never dips.
+      releaseSlot();
+    }
   }
 
   async openExecChannel(command: string, options: ShellOpenOptions): Promise<ClientChannel> {
-    await this.readyPromise;
+    const releaseSlot = this.reserveChannel();
+    try {
+      await this.readyPromise;
 
-    return new Promise((resolve, reject) => {
-      const execOptions = {
-        pty: createWindowOptions(options),
-        env: options.env
-      };
+      const channel = await new Promise<ClientChannel>((resolve, reject) => {
+        const execOptions = {
+          pty: createWindowOptions(options),
+          env: options.env
+        };
 
-      this.client.exec(command, execOptions, (error, channel) => {
-        if (error || !channel) {
-          reject(error ?? new Error("Failed to open SSH exec channel"));
-          return;
-        }
+        this.client.exec(command, execOptions, (error, channel) => {
+          if (error || !channel) {
+            reject(error ?? new Error("Failed to open SSH exec channel"));
+            return;
+          }
 
-        resolve(channel);
+          resolve(channel);
+        });
       });
-    });
+
+      this.channelBudget.track(channel, () => isChannelClosed(channel), true);
+      return channel;
+    } finally {
+      releaseSlot();
+    }
   }
 
   async exec(command: string, options?: { signal?: AbortSignal }): Promise<ExecResult> {
-    await this.readyPromise;
+    const releaseSlot = this.reserveChannel();
+    let handedOver = false;
+    try {
+      await this.readyPromise;
 
-    return new Promise((resolve, reject) => {
-      const signal = options?.signal;
-      if (signal?.aborted) {
-        reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-        return;
-      }
-
-      this.client.exec(command, (error, channel) => {
-        if (error || !channel) {
-          reject(error ?? new Error("Failed to execute command"));
-          return;
-        }
-
+      return await new Promise<ExecResult>((resolve, reject) => {
+        const signal = options?.signal;
         if (signal?.aborted) {
-          channel.close();
-          channel.removeAllListeners();
           reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
           return;
         }
 
-        let settled = false;
+        this.client.exec(command, (error, channel) => {
+          if (error || !channel) {
+            reject(error ?? new Error("Failed to execute command"));
+            return;
+          }
 
-        const onAbort = () => {
-          if (settled) return;
-          settled = true;
-          channel.removeAllListeners();
-          channel.close();
-          reject(signal!.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-        };
+          // The reservation covered the open; the channel's own lease takes
+          // over from here (it outlives this promise on the abort path).
+          this.channelBudget.track(channel, () => isChannelClosed(channel), true);
+          handedOver = true;
+          releaseSlot();
 
-        signal?.addEventListener("abort", onAbort, { once: true });
+          if (signal?.aborted) {
+            channel.close();
+            channel.removeAllListeners();
+            reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+            return;
+          }
 
-        let stdout = "";
-        let stderr = "";
-        const MAX_OUTPUT = 10 * 1024 * 1024;
-        let stdoutTruncated = false;
-        let stderrTruncated = false;
+          let settled = false;
 
-        channel.on("data", (chunk: Buffer | string) => {
-          if (!stdoutTruncated) {
-            stdout += chunk.toString();
-            if (stdout.length > MAX_OUTPUT) {
-              stdout = stdout.slice(0, MAX_OUTPUT);
-              stdoutTruncated = true;
+          const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            channel.removeAllListeners();
+            channel.close();
+            reject(signal!.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+          };
+
+          signal?.addEventListener("abort", onAbort, { once: true });
+
+          let stdout = "";
+          let stderr = "";
+          const MAX_OUTPUT = 10 * 1024 * 1024;
+          let stdoutTruncated = false;
+          let stderrTruncated = false;
+
+          channel.on("data", (chunk: Buffer | string) => {
+            if (!stdoutTruncated) {
+              stdout += chunk.toString();
+              if (stdout.length > MAX_OUTPUT) {
+                stdout = stdout.slice(0, MAX_OUTPUT);
+                stdoutTruncated = true;
+              }
             }
-          }
-        });
-
-        channel.stderr.on("data", (chunk: Buffer | string) => {
-          if (!stderrTruncated) {
-            stderr += chunk.toString();
-            if (stderr.length > MAX_OUTPUT) {
-              stderr = stderr.slice(0, MAX_OUTPUT);
-              stderrTruncated = true;
-            }
-          }
-        });
-
-        channel.once("close", (exitCode?: number) => {
-          if (settled) return;
-          settled = true;
-          signal?.removeEventListener("abort", onAbort);
-          if (stdoutTruncated || stderrTruncated) {
-            stderr += "\n[output truncated: exceeded 10MB limit]";
-          }
-          resolve({
-            stdout,
-            stderr,
-            exitCode: exitCode ?? 0
           });
-          // "close" is the final channel event; drop listener closures so the
-          // channel does not retain them (mirrors the abort path above).
-          channel.stderr.removeAllListeners();
-          channel.removeAllListeners();
-        });
 
-        channel.once("error", (err: Error) => {
-          if (settled) return;
-          settled = true;
-          signal?.removeEventListener("abort", onAbort);
-          reject(err);
-          channel.stderr.removeAllListeners();
-          channel.removeAllListeners();
+          channel.stderr.on("data", (chunk: Buffer | string) => {
+            if (!stderrTruncated) {
+              stderr += chunk.toString();
+              if (stderr.length > MAX_OUTPUT) {
+                stderr = stderr.slice(0, MAX_OUTPUT);
+                stderrTruncated = true;
+              }
+            }
+          });
+
+          channel.once("close", (exitCode?: number) => {
+            if (settled) return;
+            settled = true;
+            signal?.removeEventListener("abort", onAbort);
+            if (stdoutTruncated || stderrTruncated) {
+              stderr += "\n[output truncated: exceeded 10MB limit]";
+            }
+            resolve({
+              stdout,
+              stderr,
+              exitCode: exitCode ?? 0
+            });
+            // "close" is the final channel event; drop listener closures so the
+            // channel does not retain them (mirrors the abort path above).
+            channel.stderr.removeAllListeners();
+            channel.removeAllListeners();
+          });
+
+          channel.once("error", (err: Error) => {
+            if (settled) return;
+            settled = true;
+            signal?.removeEventListener("abort", onAbort);
+            reject(err);
+            channel.stderr.removeAllListeners();
+            channel.removeAllListeners();
+          });
         });
       });
-    });
+    } finally {
+      // Already released once the channel was tracked; this only covers the
+      // paths where the channel never opened.
+      if (!handedOver) releaseSlot();
+    }
   }
 
-  private async openSftp(): Promise<SFTPWrapper> {
-    await this.readyPromise;
+  /**
+   * Open an SFTP subsystem channel. `budgeted` is false only for the shared
+   * metadata channel, which is one long-lived channel per client and must not
+   * count against the terminal budget.
+   */
+  private async openSftp(budgeted = true): Promise<SFTPWrapper> {
+    const releaseSlot = budgeted ? this.reserveChannel() : undefined;
+    try {
+      await this.readyPromise;
 
-    return new Promise((resolve, reject) => {
-      this.client.sftp((error, sftp) => {
-        if (error || !sftp) {
-          reject(error ?? new Error("Failed to open SFTP subsystem"));
-          return;
-        }
-        resolve(sftp);
+      const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
+        this.client.sftp((error, sftp) => {
+          if (error || !sftp) {
+            reject(error ?? new Error("Failed to open SFTP subsystem"));
+            return;
+          }
+          resolve(sftp);
+        });
       });
-    });
+
+      this.channelBudget.track(sftp, () => isSftpClosed(sftp), budgeted);
+      return sftp;
+    } finally {
+      releaseSlot?.();
+    }
   }
 
   private async withSftp<T>(work: (sftp: SFTPWrapper) => Promise<T>): Promise<T> {
@@ -1100,6 +1245,7 @@ export class SshConnection {
     }
 
     this.closed = true;
+    this.channelBudget.clear();
     this.sharedSftp.end();
     this.client.end();
 

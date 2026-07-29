@@ -10,9 +10,12 @@ import {
   resolveSessionBaseTitle
 } from "../utils/sessionTitle";
 import {
+  DOUBLE_START_COALESCE_MS,
   extractAuthRequiredReason,
   isSessionGenerationCurrent,
-  normalizeOpenError
+  normalizeOpenError,
+  resolveCoalescedStart,
+  type RecentSessionStart
 } from "./useSessionLifecycle.helpers";
 import { deleteSessionFromCollections } from "../utils/sessionScopedCollections";
 
@@ -45,8 +48,24 @@ export function useSessionLifecycle() {
   const [connectingIds, setConnectingIds] = useState<Set<string>>(new Set());
 
   const sessionIndexByConnectionRef = useRef<Map<string, number>>(new Map());
-  const connectingSetRef = useRef<Set<string>>(new Set());
-  const inFlightOpenByConnectionRef = useRef<Map<string, Promise<SessionDescriptor | undefined>>>(
+  /**
+   * Handshakes are tracked per session, not per connection: opening a second
+   * tab against a server that is still connecting is a legitimate action, so
+   * only a repeated open of the *same* session may be suppressed. The value is
+   * the owning connection id (undefined for local terminals) purely so the
+   * connection-level `connectingIds` view can be derived for the UI.
+   */
+  const connectingSessionsRef = useRef<Map<string, string | undefined>>(new Map());
+  /**
+   * Newest `startSession` per connection, kept only for
+   * `DOUBLE_START_COALESCE_MS`. Connect affordances are plain buttons with no
+   * in-flight state, so a double-click reaches this hook as two calls and would
+   * otherwise open two tabs — and two SSH channels — for one intent.
+   */
+  const recentStartByConnectionRef = useRef<
+    Map<string, RecentSessionStart<Promise<SessionDescriptor | undefined>>>
+  >(new Map());
+  const inFlightOpenBySessionRef = useRef<Map<string, Promise<SessionDescriptor | undefined>>>(
     new Map()
   );
   const cancelledSessionIdsRef = useRef<Set<string>>(new Set());
@@ -63,15 +82,28 @@ export function useSessionLifecycle() {
   }, [connections]);
 
   const syncConnectingIds = useCallback(() => {
-    setConnectingIds(new Set(connectingSetRef.current));
+    const nextConnectingConnectionIds = new Set<string>();
+    for (const connectionId of connectingSessionsRef.current.values()) {
+      if (connectionId) {
+        nextConnectingConnectionIds.add(connectionId);
+      }
+    }
+    setConnectingIds(nextConnectingConnectionIds);
   }, []);
 
+  const isSessionConnecting = useCallback(
+    (sessionId: string): boolean =>
+      connectingSessionsRef.current.has(sessionId) ||
+      inFlightOpenBySessionRef.current.has(sessionId),
+    []
+  );
+
   const beginConnecting = useCallback(
-    (connectionId: string): boolean => {
-      if (connectingSetRef.current.has(connectionId)) {
+    (sessionId: string, connectionId?: string): boolean => {
+      if (connectingSessionsRef.current.has(sessionId)) {
         return false;
       }
-      connectingSetRef.current.add(connectionId);
+      connectingSessionsRef.current.set(sessionId, connectionId);
       syncConnectingIds();
       return true;
     },
@@ -79,8 +111,8 @@ export function useSessionLifecycle() {
   );
 
   const endConnecting = useCallback(
-    (connectionId: string): void => {
-      if (!connectingSetRef.current.delete(connectionId)) {
+    (sessionId: string): void => {
+      if (!connectingSessionsRef.current.delete(sessionId)) {
         return;
       }
       syncConnectingIds();
@@ -272,12 +304,22 @@ export function useSessionLifecycle() {
 
   const startSession = useCallback(
     async (connectionId: string): Promise<SessionDescriptor | undefined> => {
-      const existingInFlight = inFlightOpenByConnectionRef.current.get(connectionId);
-      if (existingInFlight) {
-        return existingInFlight;
+      // Opening several tabs on one server is a supported workflow, so calls are
+      // de-duplicated by the freshly minted session id rather than by
+      // connection. The one exception is a repeat that lands within a
+      // double-click of the previous one: that is one intent, and letting it
+      // through costs a second tab plus a second SSH channel on the same host.
+      const startedAt = Date.now();
+      const coalesced = resolveCoalescedStart(
+        recentStartByConnectionRef.current.get(connectionId),
+        startedAt
+      );
+      if (coalesced) {
+        return coalesced;
       }
 
-      if (!beginConnecting(connectionId)) {
+      const sessionId = crypto.randomUUID();
+      if (!beginConnecting(sessionId, connectionId)) {
         return undefined;
       }
 
@@ -290,7 +332,6 @@ export function useSessionLifecycle() {
           sessionIndexByConnectionRef.current,
           connectionId
         );
-        const sessionId = crypto.randomUUID();
         const sessionGeneration = nextSessionGeneration(sessionId);
         const baseTitle = resolveSessionBaseTitle(undefined, connection);
 
@@ -330,8 +371,8 @@ export function useSessionLifecycle() {
           setSessionStatus(sessionId, "failed", normalized.reason);
           return undefined;
         } finally {
-          endConnecting(connectionId);
-          inFlightOpenByConnectionRef.current.delete(connectionId);
+          endConnecting(sessionId);
+          inFlightOpenBySessionRef.current.delete(sessionId);
           const hasSession = useWorkspaceStore
             .getState()
             .sessions.some((session) => session.id === sessionId);
@@ -341,7 +382,16 @@ export function useSessionLifecycle() {
         }
       })();
 
-      inFlightOpenByConnectionRef.current.set(connectionId, openPromise);
+      inFlightOpenBySessionRef.current.set(sessionId, openPromise);
+      recentStartByConnectionRef.current.set(connectionId, { at: startedAt, promise: openPromise });
+      // The entry only guards the double-click window; a handshake that takes
+      // longer must not keep the user from opening a second tab deliberately.
+      window.setTimeout(() => {
+        const current = recentStartByConnectionRef.current.get(connectionId);
+        if (current?.promise === openPromise) {
+          recentStartByConnectionRef.current.delete(connectionId);
+        }
+      }, DOUBLE_START_COALESCE_MS);
       return openPromise;
     },
     [
@@ -444,13 +494,6 @@ export function useSessionLifecycle() {
       }
 
       const targetConnectionId = getSessionConnectionId(target);
-      if (targetConnectionId && connectingSetRef.current.has(targetConnectionId)) {
-        return {
-          ok: false,
-          authRequired: false,
-          reason: "连接正在建立，请稍后重试。"
-        };
-      }
       if (!targetConnectionId) {
         return {
           ok: false,
@@ -459,7 +502,17 @@ export function useSessionLifecycle() {
         };
       }
 
-      beginConnecting(targetConnectionId);
+      // Only this session's own handshake blocks a retry; sibling tabs on the
+      // same server are irrelevant.
+      if (isSessionConnecting(sessionId)) {
+        return {
+          ok: false,
+          authRequired: false,
+          reason: "该会话正在建立，请稍后重试。"
+        };
+      }
+
+      beginConnecting(sessionId, targetConnectionId);
       setActiveConnection(targetConnectionId);
       setActiveSession(target.id);
       setSessionStatus(target.id, "connecting", null);
@@ -505,7 +558,7 @@ export function useSessionLifecycle() {
               reason: normalized.reason
             };
           } finally {
-            endConnecting(targetConnectionId);
+            endConnecting(target.id);
             inFlightAuthRetryBySessionRef.current.delete(target.id);
             const hasSession = useWorkspaceStore
               .getState()
@@ -526,6 +579,7 @@ export function useSessionLifecycle() {
       clearSessionTracking,
       endConnecting,
       finalizeRetriedSession,
+      isSessionConnecting,
       nextSessionGeneration,
       setActiveConnection,
       setActiveSession,
@@ -586,13 +640,15 @@ export function useSessionLifecycle() {
       }
       const targetIsLocal = isLocalSession(target);
       const targetConnectionId = getSessionConnectionId(target);
-      if (!targetIsLocal) {
-        if (!targetConnectionId) {
-          return;
-        }
-        if (!beginConnecting(targetConnectionId)) {
-          return;
-        }
+      if (!targetIsLocal && !targetConnectionId) {
+        return;
+      }
+      // Guard only against reconnecting *this* session twice; another tab still
+      // handshaking against the same server must not disable this button.
+      if (!beginConnecting(target.id, targetIsLocal ? undefined : targetConnectionId)) {
+        return;
+      }
+      if (!targetIsLocal && targetConnectionId) {
         setActiveConnection(targetConnectionId);
       }
 
@@ -636,9 +692,7 @@ export function useSessionLifecycle() {
         );
         setSessionStatus(target.id, "failed", normalized.reason);
       } finally {
-        if (targetConnectionId) {
-          endConnecting(targetConnectionId);
-        }
+        endConnecting(target.id);
         const hasSession = useWorkspaceStore
           .getState()
           .sessions.some((session) => session.id === target.id);

@@ -55,6 +55,10 @@ import type {
   NetworkMonitorRuntime
 } from "./container-types";
 import { MonitorBackoff } from "./monitor/monitor-runner";
+import {
+  LEGACY_MONITOR_SUBSCRIBER_ID,
+  MonitorSubscriberRegistry
+} from "./monitor/monitor-subscribers";
 import { logger } from "../logger";
 
 // Hidden monitor SSH re-establishment backs off from the FIRST failure so a
@@ -62,6 +66,17 @@ import { logger } from "../logger";
 const HIDDEN_CONNECT_BACKOFF_BASE_MS = 5_000;
 const HIDDEN_CONNECT_BACKOFF_MAX_MS = 300_000; // cap at 5 minutes
 const HIDDEN_MONITOR_TAGS = ["SystemMonitor", "ProcessMonitor", "NetworkMonitor"] as const;
+
+/**
+ * One in-flight hidden-SSH establish attempt.
+ *
+ * Cancellation is bound to the attempt object instead of the connection id, so
+ * a close that happens while attempt N is dialing can never kill attempt N+1
+ * that a different subscriber started right afterwards (audit #6).
+ */
+interface HiddenConnectAttempt {
+  cancelled: boolean;
+}
 
 // ─── Options ────────────────────────────────────────────────────────────────
 
@@ -92,24 +107,42 @@ export class MonitorService {
   private readonly systemMonitorRuntimes = new Map<string, SystemMonitorRuntime>();
   private readonly systemMonitorConnections = new Map<string, SshConnection>();
   private readonly systemMonitorConnectionPromises = new Map<string, Promise<SshConnection>>();
-  private readonly cancelledSystemMonitorConnections = new Set<string>();
+  private readonly systemMonitorConnectAttempts = new Map<string, HiddenConnectAttempt>();
 
   private readonly processMonitorRuntimes = new Map<string, ProcessMonitorRuntime>();
   private readonly processMonitorPromises = new Map<string, Promise<ProcessMonitorRuntime>>();
   private readonly processMonitorConnections = new Map<string, SshConnection>();
   private readonly processMonitorConnectionPromises = new Map<string, Promise<SshConnection>>();
-  private readonly cancelledProcessMonitorConnections = new Set<string>();
+  private readonly processMonitorConnectAttempts = new Map<string, HiddenConnectAttempt>();
 
   private readonly networkMonitorRuntimes = new Map<string, NetworkMonitorRuntime>();
   private readonly networkMonitorPromises = new Map<string, Promise<NetworkMonitorRuntime>>();
   private readonly networkMonitorConnections = new Map<string, SshConnection>();
   private readonly networkMonitorConnectionPromises = new Map<string, Promise<SshConnection>>();
-  private readonly cancelledNetworkMonitorConnections = new Set<string>();
+  private readonly networkMonitorConnectAttempts = new Map<string, HiddenConnectAttempt>();
 
   private readonly adhocSessionRuntimes = new Map<string, AdhocSessionRuntime>();
   private readonly adhocSessionPromises = new Map<string, Promise<AdhocSessionRuntime>>();
 
+  // ─── Subscribers (audit A5) ──────────────────────────────────────────────
+  // Runtime/hidden connection stay pooled per connection; the *demand* is
+  // reference counted per subscriber (= renderer session id), so closing one
+  // pane no longer kills the monitors of the other tabs on the same host.
+  private readonly systemMonitorSubscribers = new MonitorSubscriberRegistry<WebContents>();
+  private readonly processMonitorSubscribers = new MonitorSubscriberRegistry<WebContents>();
+  private readonly networkMonitorSubscribers = new MonitorSubscriberRegistry<WebContents>();
+  /** Renderers already hooked for reload/destroy purges (see `watchSender`). */
+  private readonly watchedSenders = new WeakSet<WebContents>();
+
+  /** Serializes start/stop per "<kind>:<connectionId>" so a stop can never
+   * interleave with a concurrent start of the same monitor. */
+  private readonly monitorOpChains = new Map<string, Promise<void>>();
+
   readonly monitorStates = new Map<string, MonitorState>();
+  // NOTE: selection state (network interface) and the network tool cache stay
+  // per-connection on purpose — every session of a host shares one hidden SSH
+  // connection and one controller, so a per-session selection is not
+  // representable without one hidden connection per session.
   private readonly networkToolCache = new Map<string, NetworkTool>();
 
   /** Per hidden-connection ("<tag>:<connectionId>") reconnect backoff. */
@@ -164,6 +197,91 @@ export class MonitorService {
     return Boolean(sender && !sender.isDestroyed() && !sender.isCrashed());
   }
 
+  /**
+   * Watch a renderer so its subscriptions die with its page.
+   *
+   * `webContents.reload()` — which main performs by itself on `unresponsive` /
+   * `render-process-gone` — keeps the same `WebContents` object, so the old
+   * page's subscriber ids stay registered while nothing will ever send their
+   * `stop`. They would then keep `remove()` from ever reporting the monitor as
+   * idle, pinning a hidden SSH connection and its ~1Hz probes for the lifetime
+   * of the process. Liveness polling cannot see this: the sender is alive.
+   */
+  private watchSender(sender: WebContents): void {
+    if (this.watchedSenders.has(sender)) {
+      return;
+    }
+    this.watchedSenders.add(sender);
+
+    const purge = (): void => {
+      void this.purgeSender(sender).catch(() => undefined);
+    };
+
+    sender.once("destroyed", purge);
+    sender.on("did-start-navigation", (details) => {
+      // Same-document navigations (hash changes, history API) keep the page —
+      // and its subscriptions — alive.
+      if (details.isMainFrame && !details.isSameDocument) {
+        purge();
+      }
+    });
+  }
+
+  /** Drop every subscription of one renderer and stop what it kept alive. */
+  private async purgeSender(sender: WebContents): Promise<void> {
+    const systemIdle = this.systemMonitorSubscribers.removeSender(sender);
+    const processIdle = this.processMonitorSubscribers.removeSender(sender);
+    const networkIdle = this.networkMonitorSubscribers.removeSender(sender);
+
+    // Each hard stop goes through the per-monitor chain, so a start racing the
+    // reload is serialized against it instead of being torn down half-way.
+    await Promise.all([
+      ...systemIdle.map((connectionId) =>
+        this.runExclusive(`system:${connectionId}`, async () => {
+          if (this.systemMonitorSubscribers.count(connectionId) > 0) return;
+          await this.hardStopSystemMonitor(connectionId);
+        })
+      ),
+      ...processIdle.map((connectionId) =>
+        this.runExclusive(`process:${connectionId}`, async () => {
+          if (this.processMonitorSubscribers.count(connectionId) > 0) return;
+          await this.hardStopProcessMonitor(connectionId);
+        })
+      ),
+      ...networkIdle.map((connectionId) =>
+        this.runExclusive(`network:${connectionId}`, async () => {
+          if (this.networkMonitorSubscribers.count(connectionId) > 0) return;
+          await this.hardStopNetworkMonitor(connectionId);
+        })
+      )
+    ]);
+  }
+
+  /** Live, de-duplicated renderers of a monitor; prunes dead subscribers. */
+  private liveSubscriberSenders(
+    registry: MonitorSubscriberRegistry<WebContents>,
+    connectionId: string
+  ): WebContents[] {
+    return registry.pruneDead(connectionId, (sender) => this.isSenderAlive(sender));
+  }
+
+  /** Run `task` after every previously queued task for the same key. */
+  private runExclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.monitorOpChains.get(key) ?? Promise.resolve();
+    const run = previous.then(task, task);
+    const guard = run.then(
+      () => undefined,
+      () => undefined
+    );
+    this.monitorOpChains.set(key, guard);
+    void guard.then(() => {
+      if (this.monitorOpChains.get(key) === guard) {
+        this.monitorOpChains.delete(key);
+      }
+    });
+    return run;
+  }
+
   private hasVisibleTerminalAlive(connectionId: string): boolean {
     return Array.from(this.activeSessions.values()).some((session) => {
       return (
@@ -178,6 +296,7 @@ export class MonitorService {
   // ─── Session ① System Monitor: dispose ──────────────────────────────────
 
   async disposeSystemMonitorRuntime(connectionId: string): Promise<void> {
+    this.systemMonitorSubscribers.clear(connectionId);
     const runtime = this.systemMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.disposed = true;
@@ -190,6 +309,7 @@ export class MonitorService {
   // ─── Session ② Process Monitor: dispose ─────────────────────────────────
 
   async disposeProcessMonitorRuntime(connectionId: string): Promise<void> {
+    this.processMonitorSubscribers.clear(connectionId);
     const runtime = this.processMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.disposed = true;
@@ -203,6 +323,7 @@ export class MonitorService {
   // ─── Session ③ Network Monitor: dispose ─────────────────────────────────
 
   async disposeNetworkMonitorRuntime(connectionId: string): Promise<void> {
+    this.networkMonitorSubscribers.clear(connectionId);
     const runtime = this.networkMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.disposed = true;
@@ -357,7 +478,13 @@ export class MonitorService {
   // ─── System Monitor connection ──────────────────────────────────────────
 
   private async closeSystemMonitorConnection(connectionId: string): Promise<void> {
-    this.cancelledSystemMonitorConnections.add(connectionId);
+    // Cancel only the attempt that is dialing right now; an attempt started
+    // after this close must not inherit a stale cancel flag (#6).
+    const attempt = this.systemMonitorConnectAttempts.get(connectionId);
+    if (attempt) {
+      attempt.cancelled = true;
+      this.systemMonitorConnectAttempts.delete(connectionId);
+    }
     const existing = this.systemMonitorConnections.get(connectionId);
     this.systemMonitorConnections.delete(connectionId);
     this.systemMonitorConnectionPromises.delete(connectionId);
@@ -376,7 +503,6 @@ export class MonitorService {
   }
 
   private async ensureSystemMonitorConnection(connectionId: string): Promise<SshConnection> {
-    this.cancelledSystemMonitorConnections.delete(connectionId);
     const existing = this.systemMonitorConnections.get(connectionId);
     if (existing) {
       return existing;
@@ -387,10 +513,10 @@ export class MonitorService {
       return pending;
     }
 
+    const attempt: HiddenConnectAttempt = { cancelled: false };
     const promise = (async () => {
       const connection = await this.establishHiddenConnection(connectionId, "SystemMonitor");
-      if (this.cancelledSystemMonitorConnections.has(connectionId)) {
-        this.cancelledSystemMonitorConnections.delete(connectionId);
+      if (attempt.cancelled) {
         try {
           await connection.close();
         } catch {
@@ -411,11 +537,15 @@ export class MonitorService {
     })();
 
     this.systemMonitorConnectionPromises.set(connectionId, promise);
+    this.systemMonitorConnectAttempts.set(connectionId, attempt);
     try {
       return await promise;
     } finally {
       if (this.systemMonitorConnectionPromises.get(connectionId) === promise) {
         this.systemMonitorConnectionPromises.delete(connectionId);
+      }
+      if (this.systemMonitorConnectAttempts.get(connectionId) === attempt) {
+        this.systemMonitorConnectAttempts.delete(connectionId);
       }
     }
   }
@@ -423,7 +553,12 @@ export class MonitorService {
   // ─── Process Monitor connection ─────────────────────────────────────────
 
   private async closeProcessMonitorConnection(connectionId: string): Promise<void> {
-    this.cancelledProcessMonitorConnections.add(connectionId);
+    // See closeSystemMonitorConnection: cancel binds to the in-flight attempt.
+    const attempt = this.processMonitorConnectAttempts.get(connectionId);
+    if (attempt) {
+      attempt.cancelled = true;
+      this.processMonitorConnectAttempts.delete(connectionId);
+    }
     const existing = this.processMonitorConnections.get(connectionId);
     this.processMonitorConnections.delete(connectionId);
     this.processMonitorConnectionPromises.delete(connectionId);
@@ -442,7 +577,6 @@ export class MonitorService {
   }
 
   private async ensureProcessMonitorConnection(connectionId: string): Promise<SshConnection> {
-    this.cancelledProcessMonitorConnections.delete(connectionId);
     const existing = this.processMonitorConnections.get(connectionId);
     if (existing) {
       return existing;
@@ -453,10 +587,10 @@ export class MonitorService {
       return pending;
     }
 
+    const attempt: HiddenConnectAttempt = { cancelled: false };
     const promise = (async () => {
       const connection = await this.establishHiddenConnection(connectionId, "ProcessMonitor");
-      if (this.cancelledProcessMonitorConnections.has(connectionId)) {
-        this.cancelledProcessMonitorConnections.delete(connectionId);
+      if (attempt.cancelled) {
         try {
           await connection.close();
         } catch {
@@ -477,11 +611,15 @@ export class MonitorService {
     })();
 
     this.processMonitorConnectionPromises.set(connectionId, promise);
+    this.processMonitorConnectAttempts.set(connectionId, attempt);
     try {
       return await promise;
     } finally {
       if (this.processMonitorConnectionPromises.get(connectionId) === promise) {
         this.processMonitorConnectionPromises.delete(connectionId);
+      }
+      if (this.processMonitorConnectAttempts.get(connectionId) === attempt) {
+        this.processMonitorConnectAttempts.delete(connectionId);
       }
     }
   }
@@ -489,7 +627,12 @@ export class MonitorService {
   // ─── Network Monitor connection ─────────────────────────────────────────
 
   private async closeNetworkMonitorConnection(connectionId: string): Promise<void> {
-    this.cancelledNetworkMonitorConnections.add(connectionId);
+    // See closeSystemMonitorConnection: cancel binds to the in-flight attempt.
+    const attempt = this.networkMonitorConnectAttempts.get(connectionId);
+    if (attempt) {
+      attempt.cancelled = true;
+      this.networkMonitorConnectAttempts.delete(connectionId);
+    }
     const existing = this.networkMonitorConnections.get(connectionId);
     this.networkMonitorConnections.delete(connectionId);
     this.networkMonitorConnectionPromises.delete(connectionId);
@@ -508,7 +651,6 @@ export class MonitorService {
   }
 
   private async ensureNetworkMonitorConnection(connectionId: string): Promise<SshConnection> {
-    this.cancelledNetworkMonitorConnections.delete(connectionId);
     const existing = this.networkMonitorConnections.get(connectionId);
     if (existing) {
       return existing;
@@ -519,10 +661,10 @@ export class MonitorService {
       return pending;
     }
 
+    const attempt: HiddenConnectAttempt = { cancelled: false };
     const promise = (async () => {
       const connection = await this.establishHiddenConnection(connectionId, "NetworkMonitor");
-      if (this.cancelledNetworkMonitorConnections.has(connectionId)) {
-        this.cancelledNetworkMonitorConnections.delete(connectionId);
+      if (attempt.cancelled) {
         try {
           await connection.close();
         } catch {
@@ -543,11 +685,15 @@ export class MonitorService {
     })();
 
     this.networkMonitorConnectionPromises.set(connectionId, promise);
+    this.networkMonitorConnectAttempts.set(connectionId, attempt);
     try {
       return await promise;
     } finally {
       if (this.networkMonitorConnectionPromises.get(connectionId) === promise) {
         this.networkMonitorConnectionPromises.delete(connectionId);
+      }
+      if (this.networkMonitorConnectAttempts.get(connectionId) === attempt) {
+        this.networkMonitorConnectAttempts.delete(connectionId);
       }
     }
   }
@@ -559,8 +705,6 @@ export class MonitorService {
     if (existing && !existing.disposed) {
       return existing;
     }
-
-    let runtime: SystemMonitorRuntime;
 
     const onProbeExecution = (entry: ProbeExecutionLog) => {
       if (this.debugSenders.size > 0) {
@@ -592,10 +736,14 @@ export class MonitorService {
       getConnection: () => this.ensureSystemMonitorConnection(connectionId),
       closeConnection: () => this.closeSystemMonitorConnection(connectionId),
       isVisibleTerminalAlive: () => this.hasVisibleTerminalAlive(connectionId),
-      isReceiverAlive: () => this.isSenderAlive(runtime.sender),
+      isReceiverAlive: () =>
+        this.liveSubscriberSenders(this.systemMonitorSubscribers, connectionId).length > 0,
       emitSnapshot: (snapshot) => {
-        if (this.isSenderAlive(runtime.sender) && runtime.sender) {
-          this.emitSystemSnapshot(runtime.sender, snapshot);
+        for (const sender of this.liveSubscriberSenders(
+          this.systemMonitorSubscribers,
+          connectionId
+        )) {
+          this.emitSystemSnapshot(sender, snapshot);
         }
       },
       readSelection: () => this.monitorStates.get(connectionId),
@@ -607,7 +755,9 @@ export class MonitorService {
       onProbeExecution
     });
 
-    runtime = {
+    // `sender` is intentionally left unset: receivers are tracked in
+    // systemMonitorSubscribers (one runtime, many subscribers).
+    const runtime: SystemMonitorRuntime = {
       disposed: false,
       controller,
       sender: undefined
@@ -632,7 +782,6 @@ export class MonitorService {
     }
 
     const promise = (async () => {
-      let runtime: ProcessMonitorRuntime;
       const onProbeExecution = (entry: ProcessProbeExecutionLog) => {
         if (this.debugSenders.size > 0) {
           this.emitDebugLog({
@@ -654,10 +803,14 @@ export class MonitorService {
         getConnection: () => this.ensureProcessMonitorConnection(connectionId),
         closeConnection: () => this.closeProcessMonitorConnection(connectionId),
         isVisibleTerminalAlive: () => this.hasVisibleTerminalAlive(connectionId),
-        isReceiverAlive: () => this.isSenderAlive(runtime.sender),
+        isReceiverAlive: () =>
+          this.liveSubscriberSenders(this.processMonitorSubscribers, connectionId).length > 0,
         emitSnapshot: (snapshot) => {
-          if (this.isSenderAlive(runtime.sender) && runtime.sender) {
-            this.emitProcessSnapshot(runtime.sender, snapshot);
+          for (const sender of this.liveSubscriberSenders(
+            this.processMonitorSubscribers,
+            connectionId
+          )) {
+            this.emitProcessSnapshot(sender, snapshot);
           }
         },
         logger,
@@ -669,7 +822,8 @@ export class MonitorService {
         }
       });
 
-      runtime = {
+      // `sender` unused: receivers live in processMonitorSubscribers.
+      const runtime: ProcessMonitorRuntime = {
         controller,
         sender: undefined,
         disposed: false
@@ -711,7 +865,6 @@ export class MonitorService {
     }
 
     const promise = (async () => {
-      let runtime: NetworkMonitorRuntime;
       const onProbeExecution = (entry: NetworkProbeExecutionLog) => {
         if (this.debugSenders.size > 0) {
           this.emitDebugLog({
@@ -733,10 +886,14 @@ export class MonitorService {
         getConnection: () => this.ensureNetworkMonitorConnection(connectionId),
         closeConnection: () => this.closeNetworkMonitorConnection(connectionId),
         isVisibleTerminalAlive: () => this.hasVisibleTerminalAlive(connectionId),
-        isReceiverAlive: () => this.isSenderAlive(runtime.sender),
+        isReceiverAlive: () =>
+          this.liveSubscriberSenders(this.networkMonitorSubscribers, connectionId).length > 0,
         emitSnapshot: (snapshot) => {
-          if (this.isSenderAlive(runtime.sender) && runtime.sender) {
-            this.emitNetworkSnapshot(runtime.sender, snapshot);
+          for (const sender of this.liveSubscriberSenders(
+            this.networkMonitorSubscribers,
+            connectionId
+          )) {
+            this.emitNetworkSnapshot(sender, snapshot);
           }
         },
         readToolCache: () => this.networkToolCache.get(connectionId),
@@ -756,7 +913,8 @@ export class MonitorService {
         }
       });
 
-      runtime = {
+      // `sender` unused: receivers live in networkMonitorSubscribers.
+      const runtime: NetworkMonitorRuntime = {
         controller,
         sender: undefined,
         disposed: false
@@ -852,21 +1010,62 @@ export class MonitorService {
 
   // ─── Public API: System Monitor ─────────────────────────────────────────
 
-  async startSystemMonitor(connectionId: string, sender: WebContents): Promise<{ ok: true }> {
+  /**
+   * @param subscriberId renderer session id; omitted by legacy callers, which
+   * then share the single connection-level subscriber slot.
+   */
+  async startSystemMonitor(
+    connectionId: string,
+    sender: WebContents,
+    subscriberId?: string
+  ): Promise<{ ok: true }> {
     this.assertMonitorEnabled(connectionId);
     this.assertVisibleTerminalAlive(connectionId);
-    const runtime = await this.ensureSystemMonitorRuntime(connectionId);
-    runtime.sender = sender;
-    return runtime.controller.start();
+    const id = subscriberId ?? LEGACY_MONITOR_SUBSCRIBER_ID;
+    return this.runExclusive(`system:${connectionId}`, async () => {
+      // Register before starting so the controller never sees "no receiver".
+      this.watchSender(sender);
+      this.systemMonitorSubscribers.add(connectionId, id, sender);
+      try {
+        const runtime = await this.ensureSystemMonitorRuntime(connectionId);
+        return await runtime.controller.start();
+      } catch (error) {
+        if (this.systemMonitorSubscribers.remove(connectionId, id)) {
+          await this.hardStopSystemMonitor(connectionId);
+        }
+        throw error;
+      }
+    });
   }
 
-  stopSystemMonitor(connectionId: string): { ok: true } {
+  /**
+   * @param subscriberId renderer session id. When omitted the call keeps the
+   * legacy connection-level semantics and drops every subscriber.
+   */
+  async stopSystemMonitor(connectionId: string, subscriberId?: string): Promise<{ ok: true }> {
+    return this.runExclusive(`system:${connectionId}`, async () => {
+      let idle: boolean;
+      if (subscriberId) {
+        idle = this.systemMonitorSubscribers.remove(connectionId, subscriberId);
+      } else {
+        this.systemMonitorSubscribers.clear(connectionId);
+        idle = true;
+      }
+      if (!idle) {
+        return { ok: true } as const;
+      }
+      await this.hardStopSystemMonitor(connectionId);
+      return { ok: true } as const;
+    });
+  }
+
+  /** Really stop the controller and close the hidden SSH connection. */
+  private async hardStopSystemMonitor(connectionId: string): Promise<void> {
     const runtime = this.systemMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.sender = undefined;
-      void runtime.controller.stop();
+      await runtime.controller.stop();
     }
-    return { ok: true };
   }
 
   async selectSystemNetworkInterface(
@@ -923,22 +1122,55 @@ export class MonitorService {
 
   // ─── Public API: Process Monitor ────────────────────────────────────────
 
-  async startProcessMonitor(connectionId: string, sender: WebContents): Promise<{ ok: true }> {
+  /** @param subscriberId renderer session id (see startSystemMonitor). */
+  async startProcessMonitor(
+    connectionId: string,
+    sender: WebContents,
+    subscriberId?: string
+  ): Promise<{ ok: true }> {
     this.assertMonitorEnabled(connectionId);
     this.assertVisibleTerminalAlive(connectionId);
 
-    const runtime = await this.ensureProcessMonitorRuntime(connectionId);
-    runtime.sender = sender;
-    return runtime.controller.start();
+    const id = subscriberId ?? LEGACY_MONITOR_SUBSCRIBER_ID;
+    return this.runExclusive(`process:${connectionId}`, async () => {
+      this.watchSender(sender);
+      this.processMonitorSubscribers.add(connectionId, id, sender);
+      try {
+        const runtime = await this.ensureProcessMonitorRuntime(connectionId);
+        return await runtime.controller.start();
+      } catch (error) {
+        if (this.processMonitorSubscribers.remove(connectionId, id)) {
+          await this.hardStopProcessMonitor(connectionId);
+        }
+        throw error;
+      }
+    });
   }
 
-  stopProcessMonitor(connectionId: string): { ok: true } {
+  /** @param subscriberId renderer session id (see stopSystemMonitor). */
+  async stopProcessMonitor(connectionId: string, subscriberId?: string): Promise<{ ok: true }> {
+    return this.runExclusive(`process:${connectionId}`, async () => {
+      let idle: boolean;
+      if (subscriberId) {
+        idle = this.processMonitorSubscribers.remove(connectionId, subscriberId);
+      } else {
+        this.processMonitorSubscribers.clear(connectionId);
+        idle = true;
+      }
+      if (!idle) {
+        return { ok: true } as const;
+      }
+      await this.hardStopProcessMonitor(connectionId);
+      return { ok: true } as const;
+    });
+  }
+
+  private async hardStopProcessMonitor(connectionId: string): Promise<void> {
     const runtime = this.processMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.sender = undefined;
-      void runtime.controller.stop();
+      await runtime.controller.stop();
     }
-    return { ok: true };
   }
 
   async getProcessDetail(connectionId: string, pid: number): Promise<ProcessDetailSnapshot> {
@@ -1008,22 +1240,55 @@ export class MonitorService {
 
   // ─── Public API: Network Monitor ────────────────────────────────────────
 
-  async startNetworkMonitor(connectionId: string, sender: WebContents): Promise<{ ok: true }> {
+  /** @param subscriberId renderer session id (see startSystemMonitor). */
+  async startNetworkMonitor(
+    connectionId: string,
+    sender: WebContents,
+    subscriberId?: string
+  ): Promise<{ ok: true }> {
     this.assertMonitorEnabled(connectionId);
     this.assertVisibleTerminalAlive(connectionId);
 
-    const runtime = await this.ensureNetworkMonitorRuntime(connectionId);
-    runtime.sender = sender;
-    return runtime.controller.start();
+    const id = subscriberId ?? LEGACY_MONITOR_SUBSCRIBER_ID;
+    return this.runExclusive(`network:${connectionId}`, async () => {
+      this.watchSender(sender);
+      this.networkMonitorSubscribers.add(connectionId, id, sender);
+      try {
+        const runtime = await this.ensureNetworkMonitorRuntime(connectionId);
+        return await runtime.controller.start();
+      } catch (error) {
+        if (this.networkMonitorSubscribers.remove(connectionId, id)) {
+          await this.hardStopNetworkMonitor(connectionId);
+        }
+        throw error;
+      }
+    });
   }
 
-  stopNetworkMonitor(connectionId: string): { ok: true } {
+  /** @param subscriberId renderer session id (see stopSystemMonitor). */
+  async stopNetworkMonitor(connectionId: string, subscriberId?: string): Promise<{ ok: true }> {
+    return this.runExclusive(`network:${connectionId}`, async () => {
+      let idle: boolean;
+      if (subscriberId) {
+        idle = this.networkMonitorSubscribers.remove(connectionId, subscriberId);
+      } else {
+        this.networkMonitorSubscribers.clear(connectionId);
+        idle = true;
+      }
+      if (!idle) {
+        return { ok: true } as const;
+      }
+      await this.hardStopNetworkMonitor(connectionId);
+      return { ok: true } as const;
+    });
+  }
+
+  private async hardStopNetworkMonitor(connectionId: string): Promise<void> {
     const runtime = this.networkMonitorRuntimes.get(connectionId);
     if (runtime) {
       runtime.sender = undefined;
-      void runtime.controller.stop();
+      await runtime.controller.stop();
     }
-    return { ok: true };
   }
 
   async getNetworkConnections(connectionId: string, port: number): Promise<NetworkConnection[]> {

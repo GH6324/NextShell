@@ -65,4 +65,25 @@ describe("claimNextSessionIndex / formatSessionTitle", () => {
     expect(formatSessionTitle("  prod-web  ", 1)).toBe("prod-web");
     expect(formatSessionTitle("   ", 1)).toBe("session");
   });
+
+  test("suffixes every tab after the first so sibling sessions differ", () => {
+    expect(formatSessionTitle("prod-web", 2)).toBe("prod-web (2)");
+    expect(formatSessionTitle("  prod-web  ", 3)).toBe("prod-web (3)");
+    expect(formatSessionTitle("   ", 2)).toBe("session (2)");
+  });
+
+  test("falls back to the bare title for non-positive or unusable indexes", () => {
+    expect(formatSessionTitle("prod-web", 0)).toBe("prod-web");
+    expect(formatSessionTitle("prod-web", -1)).toBe("prod-web");
+    expect(formatSessionTitle("prod-web", Number.NaN)).toBe("prod-web");
+  });
+
+  test("gives each claimed index a distinct title for one connection", () => {
+    const counters = new Map<string, number>();
+    const first = formatSessionTitle("prod-web", claimNextSessionIndex(counters, "c1"));
+    const second = formatSessionTitle("prod-web", claimNextSessionIndex(counters, "c1"));
+    expect(first).toBe("prod-web");
+    expect(second).toBe("prod-web (2)");
+    expect(first).not.toBe(second);
+  });
 });

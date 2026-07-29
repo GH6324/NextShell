@@ -162,11 +162,22 @@ export const install = (terminal: Terminal, ctx: OscRuntimeContext): (() => void
   const registration = terminal.parser.registerOscHandler(52, (data) => {
     const preferences = ctx.getTerminalPreferences();
     const replaying = ctx.isReplaying();
+    // Captured here, synchronously with the parse: the read reply is produced
+    // from an async clipboard promise, and by the time it settles the parser
+    // may be chewing on another session's chunk. Resolving the target then
+    // would send the local clipboard into whichever session is in front —
+    // possibly a shell on a different host.
+    const replySessionId = ctx.getSessionId();
     return handleOsc52Sequence(data, {
       allowWrite: preferences.oscClipboardWrite && !replaying,
       allowRead: preferences.oscClipboardRead === true && !replaying,
       clipboard: resolveClipboard(),
-      writeReply: (reply) => ctx.writeToRemote(reply)
+      writeReply: (reply) => {
+        if (!replySessionId) {
+          return;
+        }
+        ctx.writeToRemoteAs(replySessionId, reply);
+      }
     });
   });
 

@@ -74,7 +74,25 @@ export const buildSourceLine = (family: ShellIntegrationFamily): string => {
   return family === "fish" ? `source ${quotedPath}` : `. ${quotedPath}`;
 };
 
-/** POSIX script that creates the cache dir and writes the requested scripts. */
+/**
+ * Same directory as the final script (so the rename stays on one filesystem and
+ * is therefore atomic) plus the writing shell's PID, which is unique among all
+ * processes alive at that moment — i.e. among exactly the concurrent installers
+ * we are racing against.
+ */
+export const shellIntegrationScriptTempPath = (family: ShellIntegrationFamily): string =>
+  `${shellIntegrationScriptPath(family)}.$$.tmp`;
+
+/**
+ * POSIX script that creates the cache dir and writes the requested scripts.
+ *
+ * The write is staged through a per-process temp file and published with `mv`:
+ * opening the final path with `>` truncates it in place, so a second tab
+ * installing while a first tab's shell is mid-`source` would hand that shell an
+ * empty or half-written file (parse errors, or OSC 133/7 silently never
+ * arriving). `mv` within one directory is a rename(2) — a sourcing shell sees
+ * either the whole old file or the whole new one.
+ */
 export const buildInstallScript = (
   families: readonly ShellIntegrationFamily[],
   readScript: (family: ShellIntegrationFamily) => string = shellIntegrationScriptText
@@ -84,7 +102,16 @@ export const buildInstallScript = (
     // The heredoc delimiter must sit alone on its line, so guarantee a
     // trailing newline after the script body.
     const body = text.endsWith("\n") ? text : `${text}\n`;
-    return `cat > "${shellIntegrationScriptPath(family)}" <<'${HEREDOC_DELIMITER}'\n${body}${HEREDOC_DELIMITER}`;
+    const finalPath = shellIntegrationScriptPath(family);
+    const tempPath = shellIntegrationScriptTempPath(family);
+    // The heredoc body starts after the *whole* command line, so the `&&`/`||`
+    // tail is allowed to sit next to the `<<` redirection. A failed write must
+    // never be published, and must not leave the temp file behind either.
+    const header =
+      `cat > "${tempPath}" <<'${HEREDOC_DELIMITER}' &&` +
+      ` mv -f "${tempPath}" "${finalPath}"` +
+      ` || { rm -f "${tempPath}"; exit 1; }`;
+    return `${header}\n${body}${HEREDOC_DELIMITER}`;
   });
 
   return [`mkdir -p "${SHELL_INTEGRATION_REMOTE_DIR}"`, ...blocks].join("\n");

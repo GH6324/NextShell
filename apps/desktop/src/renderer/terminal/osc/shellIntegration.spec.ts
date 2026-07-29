@@ -376,7 +376,7 @@ describe("ShellCommandTracker", () => {
     expect(harness.appendedMarks).toHaveLength(1);
     expect(harness.pushedHistory).toEqual(["ls"]);
 
-    harness.tracker.handleReplayStart();
+    harness.tracker.handleReplayStart("s1");
     expect(harness.clearedSessions).toEqual(["s1"]);
     expect(harness.markers.every((marker) => marker.isDisposed)).toBe(true);
     expect(harness.decorations.every((decoration) => decoration.isDisposed)).toBe(true);

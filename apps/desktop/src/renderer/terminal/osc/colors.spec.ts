@@ -26,6 +26,7 @@ const createHarness = (options?: { replaying?: boolean; prefs?: AppPreferences["
     isReplaying: () => options?.replaying ?? false,
     getTerminalPreferences: () => options?.prefs ?? createPrefs(),
     writeToRemote: (data: string) => writes.push(data),
+    writeToRemoteAs: (_sessionId: string, data: string) => writes.push(data),
     registerKeyHandler: () => () => undefined,
     onReplayStart: () => () => undefined
   } satisfies OscRuntimeContext;

@@ -324,6 +324,110 @@ const resetStore = (): void => {
 })();
 
 (() => {
+  // Two process manager tabs on the same host: closing one must keep the shared snapshot
+  // so the surviving pane does not blank out until the next poll.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [
+      createSession("pm1", "c1", "connected", undefined, "processManager"),
+      createSession("pm2", "c1", "connected", undefined, "processManager"),
+      createSession("nm1", "c1", "connected", undefined, "networkMonitor"),
+      createSession("nm2", "c1", "connected", undefined, "networkMonitor")
+    ],
+    activeSessionId: "pm1",
+    activeConnectionId: "c1",
+    processSnapshots: {
+      c1: { connectionId: "c1", capturedAt: "2026-01-01T00:00:00.000Z", processes: [] }
+    },
+    networkSnapshots: {
+      c1: {
+        connectionId: "c1",
+        capturedAt: "2026-01-01T00:00:00.000Z",
+        listeners: [],
+        connections: []
+      }
+    }
+  });
+
+  useWorkspaceStore.getState().removeSession("pm1");
+  let state = useWorkspaceStore.getState();
+  assert(
+    state.processSnapshots.c1 !== undefined,
+    "closing one of two process managers on the same connection should keep the snapshot"
+  );
+
+  useWorkspaceStore.getState().removeSession("nm1");
+  state = useWorkspaceStore.getState();
+  assert(
+    state.networkSnapshots.c1 !== undefined,
+    "closing one of two network monitors on the same connection should keep the snapshot"
+  );
+
+  useWorkspaceStore.getState().removeSession("pm2");
+  useWorkspaceStore.getState().removeSession("nm2");
+  state = useWorkspaceStore.getState();
+  assertEqual(
+    state.processSnapshots.c1,
+    undefined,
+    "closing the last process manager should clear the process snapshot"
+  );
+  assertEqual(
+    state.networkSnapshots.c1,
+    undefined,
+    "closing the last network monitor should clear the network snapshot"
+  );
+})();
+
+(() => {
+  // Failure path: removing an unknown session id must not touch monitor state.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [createSession("pm1", "c1", "connected", undefined, "processManager")],
+    activeSessionId: "pm1",
+    activeConnectionId: "c1",
+    processSnapshots: {
+      c1: { connectionId: "c1", capturedAt: "2026-01-01T00:00:00.000Z", processes: [] }
+    },
+    networkRateHistory: {
+      "c1:eth0": [{ inMbps: 1, outMbps: 1, capturedAt: "1" }]
+    }
+  });
+  useWorkspaceStore.getState().removeSession("does-not-exist");
+  const state = useWorkspaceStore.getState();
+  assertEqual(state.sessions.length, 1, "removing an unknown session should keep sessions intact");
+  assert(
+    state.processSnapshots.c1 !== undefined,
+    "removing an unknown session should not clear process snapshots"
+  );
+  assert(
+    state.networkRateHistory["c1:eth0"] !== undefined,
+    "removing an unknown session should not prune network rate history"
+  );
+})();
+
+(() => {
+  // removeSession never prunes the rate history, so the sidebar chart survives tab churn.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [
+      createSession("nm1", "c1", "connected", undefined, "networkMonitor"),
+      createSession("s1", "c1", "connected")
+    ],
+    activeSessionId: "nm1",
+    activeConnectionId: "c1",
+    networkRateHistory: {
+      "c1:eth0": [{ inMbps: 1, outMbps: 1, capturedAt: "1" }]
+    }
+  });
+  useWorkspaceStore.getState().removeSession("nm1");
+  const state = useWorkspaceStore.getState();
+  assert(
+    state.networkRateHistory["c1:eth0"] !== undefined,
+    "closing a monitor tab should keep the connection rate history for remaining tabs"
+  );
+})();
+
+(() => {
   resetStore();
   useWorkspaceStore.getState().setBottomTab("files");
   const state = useWorkspaceStore.getState();

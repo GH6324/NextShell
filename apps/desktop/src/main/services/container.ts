@@ -8,7 +8,11 @@ import type {
   NetworkSnapshot,
   ProcessSnapshot
 } from "../../../../../packages/core/src/index";
-import { SshConnection, type SshConnectOptions } from "../../../../../packages/ssh/src/index";
+import {
+  DEFAULT_MAX_CHANNELS_PER_CONNECTION,
+  SshConnection,
+  type SshConnectOptions
+} from "../../../../../packages/ssh/src/index";
 import { IPCChannel, AUTH_REQUIRED_PREFIX } from "../../../../../packages/shared/src/index";
 import type {
   DebugLogEntry,
@@ -205,8 +209,24 @@ export const createServiceContainer = async (
 
   // ─── Shared State ────────────────────────────────────────────────────────
   const activeSessions = new Map<string, ActiveSession>();
-  const activeConnections = new Map<string, SshConnection>();
-  const connectionPromises = new Map<string, Promise<SshConnection>>();
+
+  // ─── Connection Pool State ───────────────────────────────────────────────
+  // One connection profile is backed by *several* ssh2 clients. Every shell,
+  // exec and SFTP channel consumes one of the server's session slots (OpenSSH
+  // defaults to MaxSessions=10), so a single client cannot back more than a
+  // handful of terminals: past the limit shell()/sftp() fail silently and the
+  // tab stays blank. Clients are filled up to CLIENT_CHANNEL_BUDGET channels,
+  // then another client is dialled.
+  const CLIENT_CHANNEL_BUDGET = DEFAULT_MAX_CHANNELS_PER_CONNECTION;
+  const connectionPool = new Map<string, SshConnection[]>();
+  /** Serializes connect attempts per connection id, auth overrides included. */
+  const connectQueues = new Map<string, Promise<SshConnection>>();
+  /**
+   * Sessions that have begun opening but are not registered in
+   * `activeSessions` yet. Without this, closing the last tab while another one
+   * is still connecting would tear down the client the new tab is about to use.
+   */
+  const connectionRefCounts = new Map<string, number>();
 
   // ─── IPC Helpers ─────────────────────────────────────────────────────────
   const sendSessionStatus = (sender: WebContents, payload: SessionStatusEvent): void => {
@@ -410,46 +430,172 @@ export const createServiceContainer = async (
       pinHostFingerprint(connectionId, observedFingerprint);
     }
     ssh.onClose(() => {
-      activeConnections.delete(connectionId);
-      void remoteEditManager.cleanupByConnectionId(connectionId);
-      logger.info("[SSH] disconnected", { connectionId });
+      evictClient(connectionId, ssh, "closed");
     });
-    activeConnections.set(connectionId, ssh);
-    logger.info("[SSH] connected", { connectionId });
+    // Without this listener a post-handshake client error lands on
+    // `uncaughtException` and the dead client stays in the pool forever.
+    ssh.onError((error) => {
+      logger.warn("[SSH] client error", { connectionId, error: normalizeError(error) });
+      evictClient(connectionId, ssh, "error");
+      void ssh.close().catch(() => undefined);
+    });
+
+    const pooled = connectionPool.get(connectionId);
+    if (pooled) pooled.push(ssh);
+    else connectionPool.set(connectionId, [ssh]);
+    logger.info("[SSH] connected", {
+      connectionId,
+      clients: connectionPool.get(connectionId)?.length ?? 1
+    });
     return ssh;
+  };
+
+  /**
+   * Remove one client from the pool. The identity check matters: a client that
+   * is no longer a pool member (already evicted, or superseded by a reconnect)
+   * must not tear down the live pool entry, and remote-edit sessions belong to
+   * the connection rather than to one client, so they are only cleaned up when
+   * the last client of that connection is gone.
+   */
+  function evictClient(connectionId: string, ssh: SshConnection, reason: string): void {
+    const clients = connectionPool.get(connectionId);
+    const index = clients ? clients.indexOf(ssh) : -1;
+    if (!clients || index < 0) return;
+    clients.splice(index, 1);
+    const isLastClient = clients.length === 0;
+    if (isLastClient) connectionPool.delete(connectionId);
+    logger.info("[SSH] client left the pool", {
+      connectionId,
+      reason,
+      remainingClients: clients.length
+    });
+    if (isLastClient) void remoteEditManager.cleanupByConnectionId(connectionId);
+  }
+
+  /** Live pool members, pruning clients that died without their close handler
+   *  having run yet. */
+  const listPooledClients = (connectionId: string): SshConnection[] => {
+    const clients = connectionPool.get(connectionId);
+    if (!clients) return [];
+    for (let index = clients.length - 1; index >= 0; index -= 1) {
+      if (!clients[index]!.isAlive) clients.splice(index, 1);
+    }
+    if (clients.length === 0) {
+      connectionPool.delete(connectionId);
+      return [];
+    }
+    return clients;
+  };
+
+  /**
+   * First pool member with spare channel budget. First-fit rather than
+   * least-loaded so the shared SFTP channel and remote-edit stay on the
+   * earliest client instead of being duplicated across the pool.
+   */
+  const pickAvailableClient = (connectionId: string): SshConnection | undefined =>
+    listPooledClients(connectionId).find((client) =>
+      client.hasChannelCapacity(CLIENT_CHANNEL_BUDGET)
+    );
+
+  /**
+   * Serialize connect attempts per connection id. The authOverride path used to
+   * skip the dedupe entirely, so concurrent retries dialled several clients and
+   * silently overwrote each other's pool entry, orphaning the losers.
+   */
+  const enqueueConnect = (
+    connectionId: string,
+    authOverride?: SessionAuthOverrideInput
+  ): Promise<SshConnection> => {
+    const run = async (): Promise<SshConnection> => {
+      // Re-check: the attempt ahead of us may have produced a client with
+      // spare budget, so a burst of tabs shares a single handshake.
+      const reusable = pickAvailableClient(connectionId);
+      if (reusable) return reusable;
+      const profile = getConnectionOrThrow(connectionId);
+      return establishConnection(connectionId, profile, authOverride);
+    };
+
+    const previous = connectQueues.get(connectionId);
+    const next = previous ? previous.then(run, run) : run();
+    connectQueues.set(connectionId, next);
+    void next
+      .catch(() => undefined)
+      .finally(() => {
+        if (connectQueues.get(connectionId) === next) connectQueues.delete(connectionId);
+      });
+    return next;
   };
 
   function ensureConnection(
     connectionId: string,
     authOverride?: SessionAuthOverrideInput
   ): Promise<SshConnection> {
-    const existing = activeConnections.get(connectionId);
-    if (existing) return Promise.resolve(existing);
-    if (authOverride) {
-      const profile = getConnectionOrThrow(connectionId);
-      return establishConnection(connectionId, profile, authOverride);
-    }
-    const pending = connectionPromises.get(connectionId);
-    if (pending) return pending;
-    const profile = getConnectionOrThrow(connectionId);
-    const promise = establishConnection(connectionId, profile);
-    connectionPromises.set(connectionId, promise);
-    return promise.finally(() => {
-      connectionPromises.delete(connectionId);
-    });
+    const reusable = pickAvailableClient(connectionId);
+    if (reusable) return Promise.resolve(reusable);
+    return enqueueConnect(connectionId, authOverride);
   }
 
-  const closeConnectionIfIdle = async (connectionId: string): Promise<void> => {
-    const stillUsed = Array.from(activeSessions.values()).some(
+  /**
+   * Terminal variant of `ensureConnection`: it also reserves a channel slot on
+   * the chosen client, synchronously with the pick. Tabs opened in the same
+   * tick would otherwise all measure the same pre-open load and pile onto one
+   * client, which is exactly how MaxSessions gets exhausted.
+   */
+  const acquireTerminalConnection = async (
+    connectionId: string,
+    authOverride?: SessionAuthOverrideInput
+  ): Promise<{ connection: SshConnection; release: () => void }> => {
+    const reusable = pickAvailableClient(connectionId);
+    if (reusable) return { connection: reusable, release: reusable.reserveChannel() };
+    const connection = await enqueueConnect(connectionId, authOverride);
+    return { connection, release: connection.reserveChannel() };
+  };
+
+  /**
+   * Explicit reference held for the whole "session is opening" window, which
+   * starts before the session lands in `activeSessions`.
+   */
+  const retainConnection = (connectionId: string): (() => void) => {
+    connectionRefCounts.set(connectionId, (connectionRefCounts.get(connectionId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (connectionRefCounts.get(connectionId) ?? 1) - 1;
+      if (remaining > 0) connectionRefCounts.set(connectionId, remaining);
+      else connectionRefCounts.delete(connectionId);
+    };
+  };
+
+  const isConnectionRetained = (connectionId: string): boolean =>
+    (connectionRefCounts.get(connectionId) ?? 0) > 0;
+
+  /**
+   * Nothing wants this connection: no handshake in flight *and* no live
+   * session. Both halves matter — a session that finishes opening drops its
+   * ref-count and lands in `activeSessions` in the same breath, so checking
+   * only one of them leaves a window where the connection looks idle while a
+   * terminal is using it.
+   */
+  const isConnectionIdle = (connectionId: string): boolean =>
+    !isConnectionRetained(connectionId) &&
+    !Array.from(activeSessions.values()).some(
       (s) => s.kind === "remote" && s.connectionId === connectionId
     );
-    if (stillUsed) return;
+
+  const closeConnectionIfIdle = async (connectionId: string): Promise<void> => {
+    if (!isConnectionIdle(connectionId)) return;
+    // Monitor teardown races each hidden client's close against a 2s timeout,
+    // so this await is long enough for a whole session open to complete inside
+    // it: re-check the *full* idleness condition afterwards, not just the ref
+    // count, or the tab that just opened gets its shell closed underneath it.
     await monitorSvc.disposeAllMonitorSessions(connectionId);
-    const client = activeConnections.get(connectionId);
-    if (!client) return;
+    if (!isConnectionIdle(connectionId)) return;
+    const clients = connectionPool.get(connectionId);
+    if (!clients || clients.length === 0) return;
+    connectionPool.delete(connectionId);
     await remoteEditManager.cleanupByConnectionId(connectionId);
-    activeConnections.delete(connectionId);
-    await client.close();
+    await Promise.all(clients.map((client) => client.close()));
   };
 
   const hasVisibleTerminalAlive = (connectionId: string): boolean =>
@@ -574,7 +720,8 @@ export const createServiceContainer = async (
     connections,
     activeSessions,
     getConnectionOrThrow,
-    ensureConnection,
+    acquireTerminalConnection,
+    retainConnection,
     closeConnectionIfIdle,
     appendAuditLogIfEnabled,
     sendSessionStatus,
@@ -674,8 +821,10 @@ export const createServiceContainer = async (
     const sessionIds = Array.from(activeSessions.keys());
     await Promise.all(sessionIds.map((id) => sessionSvc.closeSession(id)));
 
-    const sshConnections = Array.from(activeConnections.values());
-    activeConnections.clear();
+    const sshConnections = Array.from(connectionPool.values()).flat();
+    connectionPool.clear();
+    connectQueues.clear();
+    connectionRefCounts.clear();
     await Promise.all(sshConnections.map((c) => c.close()));
 
     connections.close();

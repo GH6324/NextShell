@@ -33,10 +33,22 @@ export interface SessionServiceOptions {
   connections: CachedConnectionRepository;
   activeSessions: Map<string, ActiveSession>;
   getConnectionOrThrow: (id: string) => ConnectionProfile;
-  ensureConnection: (
+  /**
+   * Hands out a pooled SSH client that still has channel budget left, together
+   * with a reservation for the shell this session is about to open. The
+   * reservation must be released once the shell exists (or the open failed).
+   */
+  acquireTerminalConnection: (
     connectionId: string,
     authOverride?: SessionAuthOverrideInput
-  ) => Promise<SshConnection>;
+  ) => Promise<{ connection: SshConnection; release: () => void }>;
+  /**
+   * Marks the connection as in use for the whole "session is opening" window —
+   * `activeSessions` only learns about the session once the shell is up, so
+   * without this a concurrently closing last tab would close the client out
+   * from under it.
+   */
+  retainConnection: (connectionId: string) => () => void;
   closeConnectionIfIdle: (connectionId: string) => Promise<void>;
   appendAuditLogIfEnabled: (payload: {
     action: string;
@@ -60,10 +72,8 @@ export class SessionService {
   private readonly connections: CachedConnectionRepository;
   private readonly activeSessions: Map<string, ActiveSession>;
   private readonly getConnectionOrThrow: (id: string) => ConnectionProfile;
-  private readonly ensureConnection: (
-    connectionId: string,
-    authOverride?: SessionAuthOverrideInput
-  ) => Promise<SshConnection>;
+  private readonly acquireTerminalConnection: SessionServiceOptions["acquireTerminalConnection"];
+  private readonly retainConnection: (connectionId: string) => () => void;
   private readonly closeConnectionIfIdle: (connectionId: string) => Promise<void>;
   private readonly appendAuditLogIfEnabled: SessionServiceOptions["appendAuditLogIfEnabled"];
   private readonly sendSessionStatus: (sender: WebContents, payload: SessionStatusEvent) => void;
@@ -85,7 +95,8 @@ export class SessionService {
     this.connections = options.connections;
     this.activeSessions = options.activeSessions;
     this.getConnectionOrThrow = options.getConnectionOrThrow;
-    this.ensureConnection = options.ensureConnection;
+    this.acquireTerminalConnection = options.acquireTerminalConnection;
+    this.retainConnection = options.retainConnection;
     this.closeConnectionIfIdle = options.closeConnectionIfIdle;
     this.appendAuditLogIfEnabled = options.appendAuditLogIfEnabled;
     this.sendSessionStatus = options.sendSessionStatus;
@@ -133,8 +144,17 @@ export class SessionService {
       status: "connecting"
     });
 
+    // Held for the whole open window: the session only becomes visible in
+    // activeSessions once its shell is up, so until then nothing else can tell
+    // that this connection is still needed — closing another tab meanwhile
+    // used to take the shared client down with it.
+    const releaseConnectionRef = this.retainConnection(connectionId);
+    let releaseChannelSlot: (() => void) | undefined;
+
     try {
-      const connection = await this.ensureConnection(connectionId, authOverride);
+      const lease = await this.acquireTerminalConnection(connectionId, authOverride);
+      const connection = lease.connection;
+      releaseChannelSlot = lease.release;
       // Shell integration ("auto" mode only): probe the login shell so the
       // post-open observer knows which script to inject. Deliberately *not*
       // awaited here — the family is only needed once the observation window
@@ -154,6 +174,8 @@ export class SessionService {
         rows: 40,
         term: "xterm-256color"
       });
+      // The real channel now holds the budget slot the lease was standing in for.
+      releaseChannelSlot();
 
       const now = new Date().toISOString();
       this.connections.save({
@@ -308,6 +330,15 @@ export class SessionService {
         }
       });
       throw new Error(reason);
+    } finally {
+      releaseChannelSlot?.();
+      releaseConnectionRef();
+      // If this open failed, another tab's close may have been skipped because
+      // of the reference we were holding — re-run the idle check so a client
+      // nobody uses any more is not left behind.
+      if (!this.activeSessions.has(descriptor.id)) {
+        void this.closeConnectionIfIdle(connectionId);
+      }
     }
   }
 

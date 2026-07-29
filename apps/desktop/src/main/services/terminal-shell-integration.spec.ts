@@ -1,5 +1,6 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  forgetShellIntegrationInstalls,
   startShellIntegrationObserver,
   type ShellIntegrationChannelLike
 } from "./terminal-shell-integration";
@@ -78,6 +79,11 @@ const flushMicrotasks = async (): Promise<void> => {
 };
 
 describe("startShellIntegrationObserver", () => {
+  beforeEach(() => {
+    // The install guard is module state shared by every session.
+    forgetShellIntegrationInstalls();
+  });
+
   test("installs and injects the source line when the window expires with no OSC", async () => {
     const shell = createFakeShell();
     const scheduler = createManualScheduler();
@@ -356,6 +362,155 @@ describe("startShellIntegrationObserver", () => {
 
     expect(shell.written).toEqual([]);
     expect(log).toHaveBeenCalledTimes(1);
+  });
+
+  test("installs once for two sessions sharing a connection, but injects into both", async () => {
+    // Both tabs leave the observation window within milliseconds of each other.
+    // Two installs would mean one tab rewriting the script file while the other
+    // tab's shell is already sourcing it.
+    const shells = [createFakeShell(), createFakeShell()];
+    const scheduler = createManualScheduler();
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = () => resolve();
+    });
+    const exec = vi.fn(async () => {
+      await gate;
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const connection = { exec };
+
+    for (const shell of shells) {
+      startShellIntegrationObserver({
+        connection,
+        shell,
+        connectionId: "conn-1",
+        family: "bash",
+        isSessionActive: () => true,
+        schedule: scheduler.schedule,
+        scriptText: "# test\n"
+      });
+    }
+
+    scheduler.fireAll();
+    await flushMicrotasks();
+    release();
+    await flushMicrotasks();
+
+    expect(exec).toHaveBeenCalledTimes(1);
+    for (const shell of shells) {
+      expect(shell.written).toEqual([
+        '. "$HOME/.cache/nextshell/nextshell-shell-integration.bash"\r'
+      ]);
+    }
+  });
+
+  test("a session opened after the install skips the install and only injects", async () => {
+    const scheduler = createManualScheduler();
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const connection = { exec };
+
+    const openSession = async (): Promise<FakeShell> => {
+      const shell = createFakeShell();
+      startShellIntegrationObserver({
+        connection,
+        shell,
+        connectionId: "conn-1",
+        family: "zsh",
+        isSessionActive: () => true,
+        schedule: scheduler.schedule,
+        scriptText: "# test\n"
+      });
+      scheduler.fireAll();
+      await flushMicrotasks();
+      return shell;
+    };
+
+    await openSession();
+    const second = await openSession();
+
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(second.written).toEqual([
+      '. "$HOME/.cache/nextshell/nextshell-shell-integration.zsh"\r'
+    ]);
+  });
+
+  test("a failed install is not remembered — the next session retries it", async () => {
+    const scheduler = createManualScheduler();
+    let exitCode = 1;
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode }));
+    const connection = { exec };
+
+    const openSession = async (): Promise<FakeShell> => {
+      const shell = createFakeShell();
+      startShellIntegrationObserver({
+        connection,
+        shell,
+        connectionId: "conn-1",
+        family: "bash",
+        isSessionActive: () => true,
+        schedule: scheduler.schedule,
+        scriptText: "# test\n"
+      });
+      scheduler.fireAll();
+      await flushMicrotasks();
+      return shell;
+    };
+
+    const first = await openSession();
+    expect(first.written).toEqual([]);
+
+    exitCode = 0;
+    const second = await openSession();
+
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(second.written).toEqual([
+      '. "$HOME/.cache/nextshell/nextshell-shell-integration.bash"\r'
+    ]);
+  });
+
+  test("different connections each get their own install", async () => {
+    const scheduler = createManualScheduler();
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+    for (const connectionId of ["conn-1", "conn-2"]) {
+      startShellIntegrationObserver({
+        connection: { exec },
+        shell: createFakeShell(),
+        connectionId,
+        family: "bash",
+        isSessionActive: () => true,
+        schedule: scheduler.schedule,
+        scriptText: "# test\n"
+      });
+    }
+
+    scheduler.fireAll();
+    await flushMicrotasks();
+
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
+  test("falls back to the connection object when no connectionId is given", async () => {
+    const scheduler = createManualScheduler();
+    const exec = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const connection = { exec };
+
+    for (let index = 0; index < 2; index += 1) {
+      startShellIntegrationObserver({
+        connection,
+        shell: createFakeShell(),
+        family: "bash",
+        isSessionActive: () => true,
+        schedule: scheduler.schedule,
+        scriptText: "# test\n"
+      });
+    }
+
+    scheduler.fireAll();
+    await flushMicrotasks();
+
+    expect(exec).toHaveBeenCalledTimes(1);
   });
 
   test("close before the window expires cancels the pending injection", async () => {

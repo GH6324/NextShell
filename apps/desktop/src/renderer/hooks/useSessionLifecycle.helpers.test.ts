@@ -1,8 +1,10 @@
 import { AUTH_REQUIRED_PREFIX } from "@nextshell/shared";
 import {
+  DOUBLE_START_COALESCE_MS,
   extractAuthRequiredReason,
   isSessionGenerationCurrent,
-  normalizeOpenError
+  normalizeOpenError,
+  resolveCoalescedStart
 } from "./useSessionLifecycle.helpers";
 
 const assert = (condition: boolean, message: string): void => {
@@ -68,5 +70,40 @@ const assertEqual = <T>(actual: T, expected: T, message: string): void => {
     isSessionGenerationCurrent(generations, cancelled, "s1", 2),
     false,
     "cancelled session should be stale"
+  );
+})();
+
+// Normal path: a double-click joins the first open instead of opening a
+// second tab (and a second SSH channel) on the same host.
+(() => {
+  const firstOpen = "open-1";
+  assertEqual(
+    resolveCoalescedStart({ at: 1_000, promise: firstOpen }, 1_120),
+    firstOpen,
+    "a repeat click inside the window should join the first open"
+  );
+  assertEqual(
+    resolveCoalescedStart({ at: 1_000, promise: firstOpen }, 1_000),
+    firstOpen,
+    "two calls in the same tick should coalesce"
+  );
+})();
+
+// Failure paths: nothing recorded, the window elapsed, or the clock stepped
+// backwards — each must open its own tab rather than silently reuse a stale
+// handshake.
+(() => {
+  assert(
+    resolveCoalescedStart(undefined, 1_000) === undefined,
+    "a first click must not coalesce"
+  );
+  assert(
+    resolveCoalescedStart({ at: 1_000, promise: "open-1" }, 1_000 + DOUBLE_START_COALESCE_MS) ===
+      undefined,
+    "a deliberate second connect after the window must open its own tab"
+  );
+  assert(
+    resolveCoalescedStart({ at: 5_000, promise: "open-1" }, 1_000) === undefined,
+    "a backwards clock step must not coalesce forever"
   );
 })();

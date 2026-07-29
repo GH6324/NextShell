@@ -268,7 +268,7 @@ const api: NextShellApi = {
     probe: (payload: { host: string }) => invoke(IPCChannel.Ping, payload)
   },
   traceroute: {
-    run: (payload: { host: string }) => invoke(IPCChannel.TracerouteRun, payload),
+    run: (payload: { host: string; runId: string }) => invoke(IPCChannel.TracerouteRun, payload),
     stop: () => invoke(IPCChannel.TracerouteStop, {}),
     onData: (listener: (event: TracerouteEvent) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: TracerouteEvent) => {

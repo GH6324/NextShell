@@ -84,6 +84,21 @@ const MAX_BUFFERED_SESSION_COUNT = 32;
 const TRANSPARENT_TERMINAL_BACKGROUND = "rgba(0, 0, 0, 0)";
 
 /**
+ * Output can reach the renderer before React has committed the session into
+ * `sessionIds` — the main process starts streaming as soon as the channel is
+ * up, while the store update that makes the session "known" here lands a tick
+ * later. Those bytes are parked per session until the session shows up, which
+ * is what keeps the opening banner/prompt from silently disappearing.
+ *
+ * Both bounds exist because a session id may never arrive at all (opened and
+ * closed again before the renderer heard about it): the map holds at most a
+ * handful of sessions and a modest slice of each one's head-of-stream, so a
+ * stream that is never claimed cannot grow without limit.
+ */
+const MAX_PENDING_SESSION_COUNT = 8;
+const MAX_PENDING_SESSION_BYTES = 256 * 1024;
+
+/**
  * Delivery acks are batched per session: instead of one IPC invoke per frame
  * (~60/s at the dispatcher's flush cadence), consumed bytes accumulate and a
  * single cumulative ack is flushed when either the byte threshold is crossed
@@ -244,10 +259,16 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
     const searchTermRef = useRef<string>("");
     const sessionIdRef = useRef<string | undefined>(undefined);
     const bufferBySessionRef = useRef<Map<string, SessionOutputBuffer>>(new Map());
+    const pendingDataBySessionRef = useRef<Map<string, SessionOutputBuffer>>(new Map());
     const lastStatusKeyBySessionRef = useRef<Map<string, string>>(new Map());
     const knownSessionIdsRef = useRef<Set<string>>(new Set());
     const frozenSessionIdRef = useRef<string | undefined>(undefined);
     const oscRuntimeRef = useRef<OscRuntimeHandle | null>(null);
+    /**
+     * Monotonic id of the newest requested replay. A replay repaints only if it
+     * is still the newest one by the time xterm's write queue has drained.
+     */
+    const replayRequestIdRef = useRef(0);
     const terminalQueryReplyStateBySessionRef = useRef<
       Map<string, ReturnType<typeof createTerminalQueryReplyFilterState>>
     >(new Map());
@@ -341,6 +362,37 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       onRetrySessionAuthRef.current = onRetrySessionAuth;
     }, [onRetrySessionAuth]);
 
+    /**
+     * The only path bytes take into xterm. Every write is tagged with the
+     * session that produced it so the OSC runtime can attribute sequences to
+     * the right session even while an older session's replay is still being
+     * parsed — reading a "current session" ref inside an OSC handler would
+     * credit whichever tab happens to be in front by then.
+     */
+    const writeSessionText = useCallback(
+      (
+        targetSessionId: string,
+        text: string,
+        options?: { replay?: boolean; onParsed?: () => void }
+      ) => {
+        const runtime = oscRuntimeRef.current;
+        if (!runtime) {
+          // The runtime and the terminal are created and torn down together, so
+          // a missing runtime means there is nothing to write into; the
+          // completion hook still has to run (it releases the delivery ack).
+          options?.onParsed?.();
+          return;
+        }
+
+        if (options?.replay) {
+          runtime.replaySessionData(targetSessionId, text, options.onParsed);
+          return;
+        }
+        runtime.writeSessionData(targetSessionId, text, options?.onParsed);
+      },
+      []
+    );
+
     const appendSessionOutput = useCallback((targetSessionId: string, text: string) => {
       if (!knownSessionIdsRef.current.has(targetSessionId) || !text) {
         return;
@@ -357,6 +409,55 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       );
     }, []);
 
+    /** Park output for a session this component has not been told about yet. */
+    const bufferPendingSessionData = useCallback((targetSessionId: string, text: string) => {
+      if (!text) {
+        return;
+      }
+
+      const pending = pendingDataBySessionRef.current;
+      const existing = pending.get(targetSessionId) ?? createEmptyBuffer();
+      const next = appendWithLimit(existing, text, MAX_PENDING_SESSION_BYTES);
+      setBoundedSessionMapEntry(pending, targetSessionId, next, MAX_PENDING_SESSION_COUNT);
+    }, []);
+
+    /**
+     * Hand parked output over to sessions that just became known. Runs before
+     * any newly arriving data for those sessions is appended, so the stream
+     * stays in order, and before the session-switch effect, so a session that
+     * becomes known and active in the same commit gets its parked bytes into
+     * the buffer in time for the replay.
+     */
+    const adoptPendingSessionData = useCallback(
+      (knownSessionIds: ReadonlySet<string>) => {
+        const pending = pendingDataBySessionRef.current;
+        if (pending.size === 0) {
+          return;
+        }
+
+        for (const [targetSessionId, buffer] of Array.from(pending.entries())) {
+          if (!knownSessionIds.has(targetSessionId)) {
+            continue;
+          }
+
+          pending.delete(targetSessionId);
+          const text = toReplayChunks(buffer).join("");
+          if (!text) {
+            continue;
+          }
+
+          appendSessionOutput(targetSessionId, text);
+          // Normally false — a session cannot be the foreground one before it
+          // is known — but if it ever is, the replay path will not run and the
+          // bytes have to reach the screen from here.
+          if (targetSessionId === sessionIdRef.current) {
+            writeSessionText(targetSessionId, text);
+          }
+        }
+      },
+      [appendSessionOutput, writeSessionText]
+    );
+
     const writeLocalOutput = useCallback(
       (targetSessionId: string, text: string, options?: { persist?: boolean }) => {
         if (!text) {
@@ -366,10 +467,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
           appendSessionOutput(targetSessionId, text);
         }
         if (sessionIdRef.current === targetSessionId) {
-          terminalRef.current?.write(text);
+          writeSessionText(targetSessionId, text);
         }
       },
-      [appendSessionOutput]
+      [appendSessionOutput, writeSessionText]
     );
 
     const beginLocalAuthPrompt = useCallback(
@@ -464,46 +565,92 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       return true;
     }, []);
 
-    const replaySessionOutput = useCallback((targetSessionId: string) => {
-      const terminal = terminalRef.current;
-      if (!terminal) {
+    /**
+     * Run a screen-replacing operation (reset, replay) once xterm has parsed
+     * everything queued before it, and only if no newer one was requested in
+     * the meantime.
+     *
+     * xterm's `Terminal.reset()` clears the buffers but leaves the write queue
+     * untouched, so resetting the instant a tab switch happens lets the
+     * outgoing session's unparsed backlog paint into the incoming session's
+     * freshly cleared screen. Ordering the reset behind the queue is what makes
+     * it actually discard that backlog; the request id keeps two rapid switches
+     * from stacking the first one's scrollback above the second's.
+     */
+    const runLatestScreenChange = useCallback((apply: () => void) => {
+      const requestId = replayRequestIdRef.current + 1;
+      replayRequestIdRef.current = requestId;
+
+      const guarded = (): void => {
+        if (!terminalRef.current || replayRequestIdRef.current !== requestId) {
+          return;
+        }
+        apply();
+      };
+
+      const runtime = oscRuntimeRef.current;
+      if (!runtime) {
+        guarded();
         return;
       }
-
-      terminal.reset();
-
-      // Opened before the early return: reset() already invalidated every
-      // marker and decoration the OSC runtime was holding, so the replay-start
-      // hooks must run even when the incoming session has nothing buffered.
-      const oscRuntime = oscRuntimeRef.current;
-      oscRuntime?.beginReplay();
-
-      const buffer = bufferBySessionRef.current.get(targetSessionId);
-      if (!buffer) {
-        oscRuntime?.endReplay();
-        return;
-      }
-
-      setBoundedSessionMapEntry(
-        bufferBySessionRef.current,
-        targetSessionId,
-        buffer,
-        MAX_BUFFERED_SESSION_COUNT,
-        [targetSessionId]
-      );
-
-      const replay = toReplayChunks(buffer).join("");
-      if (!replay) {
-        oscRuntime?.endReplay();
-        return;
-      }
-
-      // Buffered output may contain OSC sequences with side effects; the
-      // runtime keeps them silent until this write has been fully parsed.
-      terminal.write(replay, () => {
-        oscRuntime?.endReplay();
-      });
+      runtime.runAfterPendingWrites(guarded);
     }, []);
+
+    /** Blank the screen (no session attached) without stranding OSC state. */
+    const clearTerminalScreen = useCallback(() => {
+      if (!terminalRef.current) {
+        return;
+      }
+      runLatestScreenChange(() => {
+        terminalRef.current?.reset();
+        // No incoming session: markers and decorations the reset just
+        // invalidated still have to be dropped.
+        oscRuntimeRef.current?.notifyReplayStart(undefined);
+      });
+    }, [runLatestScreenChange]);
+
+    const replaySessionOutput = useCallback(
+      (targetSessionId: string) => {
+        if (!terminalRef.current) {
+          return;
+        }
+
+        runLatestScreenChange(() => {
+          terminalRef.current?.reset();
+
+          // Fired before the early returns: reset() already invalidated every
+          // marker and decoration the OSC runtime was holding, so the
+          // replay-start hooks must run even when the incoming session has
+          // nothing buffered.
+          oscRuntimeRef.current?.notifyReplayStart(targetSessionId);
+
+          const buffer = bufferBySessionRef.current.get(targetSessionId);
+          if (!buffer) {
+            return;
+          }
+
+          setBoundedSessionMapEntry(
+            bufferBySessionRef.current,
+            targetSessionId,
+            buffer,
+            MAX_BUFFERED_SESSION_COUNT,
+            [targetSessionId]
+          );
+
+          const replay = toReplayChunks(buffer).join("");
+          if (!replay) {
+            return;
+          }
+
+          // Buffered output may contain OSC sequences with side effects; tagging
+          // the write as a replay for this session keeps them silent and, when
+          // rapid tab switches leave two replays queued at once, keeps each
+          // one's sequences credited to its own session.
+          writeSessionText(targetSessionId, replay, { replay: true });
+        });
+      },
+      [runLatestScreenChange, writeSessionText]
+    );
 
     const findNext = useCallback(() => {
       const nextTerm = searchTermRef.current.trim();
@@ -621,7 +768,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       if (!terminal) {
         return;
       }
-      terminal.reset();
+      // Ordered behind the queue, so output still waiting to be parsed is
+      // cleared too instead of reappearing right after the clear.
+      clearTerminalScreen();
       if (sessionId) {
         setBoundedSessionMapEntry(
           bufferBySessionRef.current,
@@ -632,7 +781,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         );
       }
       setCtxMenu(null);
-    }, []);
+    }, [clearTerminalScreen]);
 
     useImperativeHandle(
       ref,
@@ -676,7 +825,14 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         terminalQuerySuppressionCountBySessionRef.current,
         reconnectPendingSessionIdsRef.current
       ]);
-    }, [flushSessionAck, sessionIds]);
+
+      // Deliberately after the retain pass and deliberately not part of it: the
+      // pending map is keyed by sessions that are unknown *by definition*, so
+      // pruning it against the known set would throw away exactly the bytes it
+      // exists to protect. Entries leave it only by being adopted here or by
+      // the size bound.
+      adoptPendingSessionData(knownSessionIds);
+    }, [adoptPendingSessionData, flushSessionAck, sessionIds]);
 
     useEffect(() => {
       if (!containerRef.current || terminalRef.current) {
@@ -742,12 +898,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       });
 
       oscRuntimeRef.current = installOscRuntime(terminal, {
+        // Fallback only: the runtime prefers the session tagged onto the write
+        // currently in the parser, and consults this for anything happening
+        // outside a parse (prompt jumps, link clicks).
         getSessionId: () => sessionIdRef.current,
-        writeToRemote: (data) => {
-          const sessionId = sessionIdRef.current;
-          if (!sessionId) {
-            return;
-          }
+        writeToRemote: (sessionId, data) => {
           // Tagged as protocol traffic (OSC query replies, clipboard answers)
           // so the main process does not mistake it for user keystrokes.
           void window.nextshell.session
@@ -1032,9 +1187,14 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
     useEffect(() => {
       const offData = window.nextshell.session.onData((event) => {
         if (!knownSessionIdsRef.current.has(event.sessionId)) {
-          // Unknown session: flush immediately (merging any leftover delta) so
-          // the dispatcher can drain the dying stream without waiting on the
+          // "Unknown" covers two cases and they must not be conflated: a stream
+          // that is dying, and one whose session simply has not been committed
+          // into `sessionIds` yet. Dropping the bytes here is what made a
+          // freshly opened session occasionally start blank, so park them for
+          // the session to claim. The ack still goes out immediately so the
+          // dispatcher can drain a dying stream without waiting on the
           // batching timer.
+          bufferPendingSessionData(event.sessionId, event.data);
           accumulateSessionAck(event.sessionId, event.deliveryId, event.byteLength);
           flushSessionAck(event.sessionId);
           return;
@@ -1044,10 +1204,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         // parser consumes them via oscRuntime handlers, both live and on
         // replay from the per-session buffer.
         appendSessionOutput(event.sessionId, event.data);
-        const terminal = terminalRef.current;
-        if (event.sessionId === sessionIdRef.current && terminal) {
-          terminal.write(event.data, () => {
-            accumulateSessionAck(event.sessionId, event.deliveryId, event.byteLength);
+        if (event.sessionId === sessionIdRef.current) {
+          writeSessionText(event.sessionId, event.data, {
+            onParsed: () => {
+              accumulateSessionAck(event.sessionId, event.deliveryId, event.byteLength);
+            }
           });
           return;
         }
@@ -1104,7 +1265,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
 
         appendSessionOutput(event.sessionId, output);
         if (event.sessionId === sessionIdRef.current) {
-          terminalRef.current?.write(output);
+          writeSessionText(event.sessionId, output);
         }
       });
 
@@ -1120,9 +1281,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       accumulateSessionAck,
       appendSessionOutput,
       beginLocalAuthPrompt,
+      bufferPendingSessionData,
       flushAllSessionAcks,
       flushSessionAck,
-      message
+      message,
+      writeSessionText
     ]);
 
     useEffect(() => {
@@ -1143,7 +1306,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         }
 
         if (!currentSessionId) {
-          terminalRef.current?.reset();
+          // Same ordering as a replay: a reset that jumps the write queue would
+          // let the outgoing session keep painting into the empty pane, and it
+          // must also supersede any replay still waiting on the queue.
+          clearTerminalScreen();
         } else {
           if (session?.status === "connecting") {
             const connectingEventKey = `${currentSessionId}:connecting:`;
@@ -1203,6 +1369,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
     }, [
       appendSessionOutput,
       beginLocalAuthPrompt,
+      clearTerminalScreen,
       connection,
       flushSessionAck,
       replaySessionOutput,
@@ -1236,11 +1403,18 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         if (output) {
           appendSessionOutput(currentSessionId, output);
           if (currentSessionId === sessionIdRef.current) {
-            terminalRef.current?.write(output);
+            writeSessionText(currentSessionId, output);
           }
         }
       }
-    }, [appendSessionOutput, beginLocalAuthPrompt, session?.id, session?.reason, session?.status]);
+    }, [
+      appendSessionOutput,
+      beginLocalAuthPrompt,
+      session?.id,
+      session?.reason,
+      session?.status,
+      writeSessionText
+    ]);
 
     const hasSelection = ctxMenu ? !!terminalRef.current?.getSelection() : false;
     const hasSession = !!sessionIdRef.current;

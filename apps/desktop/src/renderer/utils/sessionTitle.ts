@@ -50,7 +50,21 @@ export const resolveSessionBaseTitle = (
 export const isOscTitleEligibleStatus = (status: SessionStatus): boolean =>
   status === "connected" || status === "connecting";
 
-export const formatSessionTitle = (baseTitle: string, _index: number): string => {
+/**
+ * The first tab for a connection keeps the bare title; every additional tab on
+ * the same connection is suffixed with its claimed index so multiple sessions
+ * against one server stay tellable apart.
+ */
+export const formatSessionTitle = (baseTitle: string, index: number): string => {
   const normalizedBaseTitle = baseTitle.trim() || "session";
-  return normalizedBaseTitle;
+  if (!Number.isFinite(index)) {
+    return normalizedBaseTitle;
+  }
+
+  const normalizedIndex = Math.floor(index);
+  if (normalizedIndex <= 1) {
+    return normalizedBaseTitle;
+  }
+
+  return `${normalizedBaseTitle} (${normalizedIndex})`;
 };

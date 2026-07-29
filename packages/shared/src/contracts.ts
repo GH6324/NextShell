@@ -224,12 +224,23 @@ export const monitorSystemInfoSnapshotSchema = z.object({
   connectionId: z.string().uuid()
 });
 
+/**
+ * Opaque per-consumer key for monitor start/stop (renderer session id).
+ *
+ * The main process reference counts subscribers so one pane closing cannot tear
+ * down the monitor of another tab on the same host. Optional for backwards
+ * compatibility: without it, start/stop keep the old connection-level semantics.
+ */
+const monitorSubscriberIdSchema = z.string().trim().min(1).max(128).optional();
+
 export const monitorSystemStartSchema = z.object({
-  connectionId: z.string().uuid()
+  connectionId: z.string().uuid(),
+  sessionId: monitorSubscriberIdSchema
 });
 
 export const monitorSystemStopSchema = z.object({
-  connectionId: z.string().uuid()
+  connectionId: z.string().uuid(),
+  sessionId: monitorSubscriberIdSchema
 });
 
 export const monitorSystemSelectInterfaceSchema = z.object({
@@ -238,11 +249,13 @@ export const monitorSystemSelectInterfaceSchema = z.object({
 });
 
 export const monitorProcessStartSchema = z.object({
-  connectionId: z.string().uuid()
+  connectionId: z.string().uuid(),
+  sessionId: monitorSubscriberIdSchema
 });
 
 export const monitorProcessStopSchema = z.object({
-  connectionId: z.string().uuid()
+  connectionId: z.string().uuid(),
+  sessionId: monitorSubscriberIdSchema
 });
 
 export const monitorProcessDetailSchema = z.object({
@@ -257,11 +270,13 @@ export const monitorProcessKillSchema = z.object({
 });
 
 export const monitorNetworkStartSchema = z.object({
-  connectionId: z.string().uuid()
+  connectionId: z.string().uuid(),
+  sessionId: monitorSubscriberIdSchema
 });
 
 export const monitorNetworkStopSchema = z.object({
-  connectionId: z.string().uuid()
+  connectionId: z.string().uuid(),
+  sessionId: monitorSubscriberIdSchema
 });
 
 export const monitorNetworkConnectionsSchema = z.object({
@@ -1155,14 +1170,22 @@ export type PingResult = { ok: true; avgMs: number } | { ok: false; error: strin
 // ─── Traceroute ──────────────────────────────────────────────────────────
 
 export const tracerouteRunSchema = z.object({
-  host: z.string().trim().min(1).max(253)
+  host: z.string().trim().min(1).max(253),
+  /** Caller-generated id so emitted events can be attributed back to this exact run. */
+  runId: z.string().trim().min(1).max(64)
 });
 export type TracerouteRunInput = z.infer<typeof tracerouteRunSchema>;
 
+/** Every event carries the run it belongs to so concurrent panes never consume each other's hops. */
+interface TracerouteEventScope {
+  host: string;
+  runId: string;
+}
+
 export type TracerouteEvent =
-  | { type: "data"; line: string }
-  | { type: "done"; exitCode: number | null }
-  | { type: "error"; message: string };
+  | (TracerouteEventScope & { type: "data"; line: string })
+  | (TracerouteEventScope & { type: "done"; exitCode: number | null })
+  | (TracerouteEventScope & { type: "error"; message: string });
 
 // ─── Cloud Sync: Workspace Management ────────────────────────────────────
 
