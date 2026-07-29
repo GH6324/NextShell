@@ -99,7 +99,8 @@ import {
   recycleBinListSchema,
   recycleBinRestoreSchema,
   recycleBinPurgeSchema,
-  recycleBinClearSchema
+  recycleBinClearSchema,
+  rendererErrorReportSchema
 } from "../../../../../packages/shared/src/index";
 import type { ServiceContainer } from "../services/container-types";
 
@@ -870,6 +871,12 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     schema: null,
     label: "调试日志关闭",
     dispatch: (services, _input, event) => services.preferences.disableDebugLog(event.sender)
+  }),
+  define({
+    channel: IPCChannel.DebugRendererError,
+    schema: rendererErrorReportSchema,
+    label: "渲染进程错误上报",
+    dispatch: (services, input) => services.preferences.reportRendererError(input)
   }),
 
   // ─── Resource Operations ──────────────────────────────────────────────────

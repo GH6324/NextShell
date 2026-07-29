@@ -101,6 +101,7 @@ export const IPCChannel = {
   DebugLogEnable: "nextshell:debug:log:enable",
   DebugLogDisable: "nextshell:debug:log:disable",
   DebugLogEvent: "nextshell:debug:log:event",
+  DebugRendererError: "nextshell:debug:renderer-error",
   Ping: "nextshell:ping",
   TracerouteRun: "nextshell:traceroute:run",
   TracerouteStop: "nextshell:traceroute:stop",

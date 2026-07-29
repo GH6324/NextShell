@@ -1140,6 +1140,21 @@ export interface ConnectionRevealPasswordResult {
 export const updateCheckSchema = z.object({});
 export type UpdateCheckInput = z.infer<typeof updateCheckSchema>;
 
+/**
+ * Renderer-side error report forwarded into the main-process electron-log
+ * file. Renderer console output is invisible in packaged builds, so without
+ * this a frozen/broken UI leaves no trace next to the main-process logs. The
+ * length caps bound a single report; the renderer additionally caps how many
+ * reports it sends per lifetime.
+ */
+export const rendererErrorReportSchema = z.object({
+  source: z.enum(["window-error", "unhandled-rejection", "react-error-boundary"]),
+  message: z.string().min(1).max(2000),
+  stack: z.string().max(8000).optional(),
+  componentStack: z.string().max(8000).optional()
+});
+export type RendererErrorReportInput = z.infer<typeof rendererErrorReportSchema>;
+
 export interface DebugLogEntry {
   id: string;
   timestamp: number;

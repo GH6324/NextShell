@@ -129,6 +129,7 @@ import type {
   CloudSyncTestConnectionInput,
   CloudSyncSyncNowInput,
   CloudSyncResolveConflictInput,
+  RendererErrorReportInput,
   ResourceCopyConnectionInput,
   RecycleBinRestoreInput,
   RecycleBinPurgeInput
@@ -342,6 +343,8 @@ export interface NextShellApi {
   debug: {
     enableLog: () => Promise<{ ok: true }>;
     disableLog: () => Promise<{ ok: true }>;
+    /** Renderer crash/global-error report, appended to the main-process log file. */
+    reportRendererError: (payload: RendererErrorReportInput) => Promise<{ ok: true }>;
     /** Main-process batches are unpacked by preload; callers still receive entries in order. */
     onLogEvent: (listener: (entry: DebugLogEntry) => void) => SessionEventUnsubscribe;
   };
@@ -455,6 +458,7 @@ export interface IpcInvokeMethods {
   [IPCChannel.TracerouteStop]: NextShellApi["traceroute"]["stop"];
   [IPCChannel.DebugLogEnable]: NextShellApi["debug"]["enableLog"];
   [IPCChannel.DebugLogDisable]: NextShellApi["debug"]["disableLog"];
+  [IPCChannel.DebugRendererError]: NextShellApi["debug"]["reportRendererError"];
   [IPCChannel.ResourceCopyConnection]: NextShellApi["resourceOps"]["copyConnection"];
   [IPCChannel.RecycleBinList]: NextShellApi["recycleBin"]["list"];
   [IPCChannel.RecycleBinRestore]: NextShellApi["recycleBin"]["restore"];

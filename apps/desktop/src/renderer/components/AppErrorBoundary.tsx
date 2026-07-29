@@ -1,4 +1,5 @@
 import React from "react";
+import { reportRendererError } from "../utils/rendererErrorReport";
 
 interface AppErrorBoundaryProps {
   children: React.ReactNode;
@@ -84,6 +85,7 @@ export class AppErrorBoundary extends React.Component<
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     try {
       console.error("[nextshell:render-error]", error, errorInfo.componentStack);
+      reportRendererError("react-error-boundary", error, errorInfo.componentStack ?? undefined);
     } catch {
       // Logging must never throw inside the boundary.
     }

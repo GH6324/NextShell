@@ -8,16 +8,21 @@ import "remixicon/fonts/remixicon.css";
 import type { WindowAppearance } from "@nextshell/core";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
+import { reportRendererError } from "./utils/rendererErrorReport";
 import { usePreferencesStore } from "./store/usePreferencesStore";
 import "./styles/index.css";
 
 // Last-resort visibility for errors that escape React (event handlers,
 // async callbacks, unhandled promise rejections). Log-only: no rethrow.
+// Also forwarded to the main-process log file — the renderer console is
+// invisible in packaged builds, so without this a broken UI leaves no trace.
 window.addEventListener("error", (event) => {
   console.error("[nextshell:global-error]", event.error ?? event.message);
+  reportRendererError("window-error", event.error ?? event.message);
 });
 window.addEventListener("unhandledrejection", (event) => {
   console.error("[nextshell:global-error] unhandled rejection:", event.reason);
+  reportRendererError("unhandled-rejection", event.reason);
 });
 
 // Expose current OS platform as a CSS data attribute so layout can adapt

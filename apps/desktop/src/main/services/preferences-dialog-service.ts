@@ -7,6 +7,7 @@ import type {
   DialogOpenDirectoryInput,
   DialogOpenFilesInput,
   DialogOpenPathInput,
+  RendererErrorReportInput,
   SettingsUpdateInput
 } from "@nextshell/shared";
 import { IPCChannel } from "@nextshell/shared";
@@ -176,6 +177,19 @@ export class PreferencesDialogService {
 
   disableDebugLog(sender: WebContents): { ok: true } {
     this.debugSenders.delete(sender);
+    return { ok: true };
+  }
+
+  reportRendererError(input: RendererErrorReportInput): { ok: true } {
+    // Renderer console output never reaches the log file (and is invisible in
+    // packaged builds); landing these here leaves a trace next to the
+    // main-process logs when the UI breaks or freezes.
+    logger.error("[RendererError]", {
+      source: input.source,
+      message: input.message,
+      stack: input.stack,
+      componentStack: input.componentStack
+    });
     return { ok: true };
   }
 

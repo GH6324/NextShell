@@ -34,3 +34,6 @@ AGENTS.md
 
 /memo/
 .worktrees/
+
+# Playwright MCP output (renderer repro screenshots/logs)
+.playwright-mcp/
