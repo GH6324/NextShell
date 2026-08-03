@@ -143,7 +143,16 @@ describe("OscTapRegistry", () => {
     registry.disposeAll();
 
     expect(registry.list()).toEqual([]);
-    expect(registry.feed("one", "plain")).toMatchObject({ cwd: null, history: [] });
+    registry.feed("one", "plain");
+    expect(registry.get("one")).toMatchObject({ cwd: null, history: [] });
+  });
+
+  test("getSummary reads cwd and last command without cloning history", () => {
+    const registry = new OscTapRegistry();
+    registry.feed("a", `${oscBel("7;file://host/srv")}${oscBel("133;C;uptime")}`);
+
+    expect(registry.getSummary("a")).toEqual({ cwd: "/srv", lastCommand: "uptime" });
+    expect(registry.getSummary("missing")).toBeUndefined();
   });
 });
 
@@ -153,5 +162,46 @@ describe("parseOsc7Cwd", () => {
     expect(parseOsc7Cwd("file://host/path%00injected")).toBeNull();
     expect(parseOsc7Cwd("https://host/path")).toBeNull();
     expect(parseOsc7Cwd("not a url")).toBeNull();
+  });
+});
+
+describe("session retention budget", () => {
+  test("older entries release their output once the session budget is exceeded", () => {
+    const tap = new OscTap("session-budget", {
+      maxOutputBytes: 1024,
+      maxSessionOutputBytes: 2048
+    });
+
+    for (const name of ["first", "second", "third", "fourth"]) {
+      tap.feed(oscBel(`133;C;${name}`));
+      tap.feed("x".repeat(1024));
+      tap.feed(oscBel("133;D;0"));
+    }
+
+    const history = tap.getSnapshot().history;
+    // Every command survives with its exit code; only the bytes are released.
+    expect(history.map((entry) => entry.command)).toEqual([
+      "first",
+      "second",
+      "third",
+      "fourth"
+    ]);
+    expect(history.map((entry) => entry.output.length)).toEqual([0, 0, 1024, 1024]);
+    expect(history.map((entry) => entry.truncated)).toEqual([true, true, false, false]);
+    // The reported byte count still reflects what the command actually produced.
+    expect(history.map((entry) => entry.outputBytes)).toEqual([1024, 1024, 1024, 1024]);
+  });
+
+  test("the newest command always keeps its output, even alone over budget", () => {
+    const tap = new OscTap("session-newest", {
+      maxOutputBytes: 4096,
+      maxSessionOutputBytes: 16
+    });
+
+    tap.feed(oscBel("133;C;only"));
+    tap.feed("y".repeat(4096));
+    tap.feed(oscBel("133;D;0"));
+
+    expect(tap.getSnapshot().history[0]?.output).toHaveLength(4096);
   });
 });

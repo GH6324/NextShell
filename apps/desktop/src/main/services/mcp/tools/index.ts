@@ -12,9 +12,9 @@ import type { AgentToolContext } from "./shared";
 export type AgentToolRegistrar = (server: McpServer, ctx: AgentToolContext) => void;
 
 /**
- * Tier 0 (read-only) registrars. Later phases append their own registrar here:
- * exec/session_send_keys (Tier 1/3), SFTP writes and transfers (Tier 2),
- * ask_user/notify_user (Tier 4).
+ * Every tool the endpoint exposes, in registration order. Later phases append
+ * their own registrar here: SFTP writes and transfers (Tier 2), session_read
+ * (Tier 0, needs ScreenMirror), session_send_keys and friends (Tier 3).
  */
 export const AGENT_TOOL_REGISTRARS: readonly AgentToolRegistrar[] = [
   registerHostTools,

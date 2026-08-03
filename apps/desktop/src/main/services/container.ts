@@ -866,17 +866,23 @@ export const createServiceContainer = async (
     listConnections: () => connections.list({}),
     isConnectionOnline: (connectionId) => listPooledClients(connectionId).length > 0,
     listSessions: () =>
-      Array.from(activeSessions.values()).map<AgentSessionInfo>((session) => ({
-        id: session.descriptor.id,
-        // Local shells have no connection and are therefore invisible to agents.
-        connectionId: session.kind === "remote" ? session.connectionId : null,
-        title: session.descriptor.title,
-        status: session.descriptor.status,
-        type: session.descriptor.type,
-        createdAt: session.descriptor.createdAt,
-        cwd: oscTaps.get(session.descriptor.id)?.cwd ?? null,
-        lastCommand: oscTaps.get(session.descriptor.id)?.lastCommand ?? null
-      })),
+      Array.from(activeSessions.values()).map<AgentSessionInfo>((session) => {
+        // getSummary, not get: this runs for every session on every gateway
+        // call that touches session state, and a full snapshot clones the whole
+        // command history just to read two fields off it.
+        const tap = oscTaps.getSummary(session.descriptor.id);
+        return {
+          id: session.descriptor.id,
+          // Local shells have no connection and are therefore invisible to agents.
+          connectionId: session.kind === "remote" ? session.connectionId : null,
+          title: session.descriptor.title,
+          status: session.descriptor.status,
+          type: session.descriptor.type,
+          createdAt: session.descriptor.createdAt,
+          cwd: tap?.cwd ?? null,
+          lastCommand: tap?.lastCommand ?? null
+        };
+      }),
     getMonitorSnapshot: async (connectionId) => latestMonitorSnapshots.get(connectionId) ?? null,
     listRemoteFiles: (connectionId, remotePath) =>
       sftpSvc.listRemoteFiles(connectionId, remotePath),

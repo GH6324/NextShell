@@ -34,6 +34,16 @@
 
 **Phase 1 未做**（有意）：`session_read`（依赖 Phase 3 ScreenMirror）；`session_send_keys` / `session_open` 等 PTY 接管（Phase 4）；`notify_user` 只做了系统通知，未接入应用内消息中心。
 
+**Phase 1 复审修正**（复审后单独提交，535 单测 + 34 契约测试全绿）。复审找出并修掉的五处真实缺陷：
+
+| # | 缺陷 | 影响 | 修法 |
+| --- | --- | --- | --- |
+| 1 | 客户端审批被拒后不记忆，且 `execute` 把限流排在审批之后 | 被拒客户端每调一次工具就弹一次「新客户端接入」，可无限刷屏，反而把用户训练成闭眼点「允许」 | `deniedClients` 按 MCP 会话记住拒绝；限流提到审批之前——**任何会弹窗的路径都必须先花掉调用预算** |
+| 2 | exec 的风险确认弹窗在 `execute` 之外，完全不受限流约束 | 同上，`rm -rf /` 刷 1000 次就是 1000 个模态框 | `execute` 改收 options 对象并新增 `preflight` 钩子（限流 → 审批 → 单主机并发 → preflight → 超时），exec 的确认搬进 preflight。Phase 2 的传输确认复用同一条通道 |
+| 3 | OscTap 每会话保留上限 = 100 条 × 512KB ≈ **51MB**，主进程常驻 | 多开几个繁忙会话即撑爆主进程内存 | 新增每会话总保留预算 `OSC_TAP_MAX_SESSION_OUTPUT_BYTES`（2MB），超限时从最旧条目起释放输出正文、保留命令与退出码并标 `truncated`；最新一条永不释放 |
+| 4 | `listSessions` 每会话调两次 `oscTaps.get()`，每次都克隆整段历史；而它在单次 gateway 调用里会被调多次 | 纯浪费，且随历史增长恶化 | 新增 `OscTap.getSummary()` / `OscTapRegistry.getSummary()`，只取 cwd 与 lastCommand；`OscTapRegistry.feed` 不再返回快照 |
+| 5 | `session_list` 工具描述仍写着「cwd 在主进程会话跟踪落地前恒为 null」 | Agent 读到这句会主动忽略 cwd —— 直接废掉用例 C 的核心能力，也让 1.2 的 cwd 继承形同虚设 | 改为如实描述：cwd 来自 OSC 7、后台标签同样可信、仅在无 shell 集成时为 null，并点明可把 sessionId 直接当 exec 的 target |
+
 ---
 
 ## 一、结论（TL;DR）

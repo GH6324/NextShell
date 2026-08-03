@@ -11,9 +11,8 @@ import {
 } from "./shared";
 
 /**
- * `session_read` (ScreenMirror) and `session_history` (OscTap) join this module
- * once the main process gains session awareness; until then `cwd` and
- * `lastCommand` are reported as null rather than guessed.
+ * `session_list` and `session_history` are served from OscTap, the main-process
+ * OSC scanner. `session_read` (ScreenMirror) joins them in Phase 3.
  */
 export const registerSessionTools = (server: McpServer, ctx: AgentToolContext): void => {
   server.registerTool(
@@ -21,7 +20,7 @@ export const registerSessionTools = (server: McpServer, ctx: AgentToolContext): 
     {
       title: "列出会话",
       description:
-        "List the live terminal sessions on authorized hosts. Sessions on hosts the agent cannot access are omitted. cwd and lastCommand stay null until main-process session tracking ships.",
+        "List the live terminal sessions on authorized hosts. Sessions on hosts the agent cannot access are omitted. cwd is the directory the shell last reported via OSC 7 and is trustworthy even for background tabs; it is null only when the session never reported one (no shell integration). Pass a session id as exec's target to inherit that cwd.",
       inputSchema: {
         target: z.string().optional().describe(targetInputDescription)
       },

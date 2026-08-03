@@ -4,6 +4,15 @@ const BEL = "\u0007";
 export const OSC_TAP_MAX_OUTPUT_BYTES = 512 * 1024;
 export const OSC_TAP_MAX_PENDING_BYTES = 64 * 1024;
 export const OSC_TAP_MAX_HISTORY_ENTRIES = 100;
+/**
+ * Ceiling on the retained output of a whole session, not just one command.
+ * Without it the per-command limit multiplies by the entry count (512 KB × 100
+ * ≈ 51 MB per session), which the main process holds resident for as long as
+ * the tab is open. Older entries give up their output text first — the command
+ * line and exit code stay, because those are what an agent asks for after the
+ * fact; the bytes are only interesting for the last few commands.
+ */
+export const OSC_TAP_MAX_SESSION_OUTPUT_BYTES = 2 * 1024 * 1024;
 
 export interface OscTapCommandHistoryEntry {
   command: string | null;
@@ -34,7 +43,14 @@ export interface OscTapOptions {
   maxOutputBytes?: number;
   maxPendingBytes?: number;
   maxHistoryEntries?: number;
+  maxSessionOutputBytes?: number;
   now?: () => number;
+}
+
+/** The parts of a snapshot that cost nothing to read. */
+export interface OscTapSummary {
+  cwd: string | null;
+  lastCommand: string | null;
 }
 
 interface ActiveCommand {
@@ -118,6 +134,7 @@ export class OscTap {
   private readonly maxOutputBytes: number;
   private readonly maxPendingBytes: number;
   private readonly maxHistoryEntries: number;
+  private readonly maxSessionOutputBytes: number;
   private readonly now: () => number;
 
   private parserState: ParserState = "text";
@@ -127,6 +144,7 @@ export class OscTap {
   private lastCommand: string | null = null;
   private activeCommand: ActiveCommand | null = null;
   private history: OscTapCommandHistoryEntry[] = [];
+  private historyOutputBytes = 0;
   private disposed = false;
 
   constructor(sessionId: string, options: OscTapOptions = {}) {
@@ -136,6 +154,10 @@ export class OscTap {
     this.maxHistoryEntries = positiveInteger(
       options.maxHistoryEntries,
       OSC_TAP_MAX_HISTORY_ENTRIES
+    );
+    this.maxSessionOutputBytes = positiveInteger(
+      options.maxSessionOutputBytes,
+      OSC_TAP_MAX_SESSION_OUTPUT_BYTES
     );
     this.now = options.now ?? Date.now;
   }
@@ -226,6 +248,11 @@ export class OscTap {
     }
   }
 
+  /** Cheap accessor for the hot path (`session_list`): no history cloning. */
+  getSummary(): OscTapSummary {
+    return { cwd: this.cwd, lastCommand: this.lastCommand };
+  }
+
   getSnapshot(): OscTapSnapshot {
     const active = this.activeCommand;
     return {
@@ -251,6 +278,7 @@ export class OscTap {
     this.oscPayloadBytes = 0;
     this.activeCommand = null;
     this.history = [];
+    this.historyOutputBytes = 0;
     this.cwd = null;
     this.lastCommand = null;
   }
@@ -342,10 +370,35 @@ export class OscTap {
       truncated: active.truncated
     };
     this.history.push(entry);
+    this.historyOutputBytes += active.retainedOutputBytes;
     if (this.history.length > this.maxHistoryEntries) {
-      this.history.splice(0, this.history.length - this.maxHistoryEntries);
+      for (const dropped of this.history.splice(0, this.history.length - this.maxHistoryEntries)) {
+        this.historyOutputBytes -= Buffer.byteLength(dropped.output, "utf8");
+      }
     }
+    this.evictOldestOutput();
     this.activeCommand = null;
+  }
+
+  /**
+   * Releases the output text of the oldest entries until the session is back
+   * under its retention budget. The entry itself survives with an empty output
+   * and `truncated: true`, so a caller can still see the command ran and that
+   * its bytes are gone rather than believing it produced nothing.
+   */
+  private evictOldestOutput(): void {
+    for (let index = 0; index < this.history.length - 1; index += 1) {
+      if (this.historyOutputBytes <= this.maxSessionOutputBytes) {
+        return;
+      }
+      const entry = this.history[index];
+      if (!entry || entry.output.length === 0) {
+        continue;
+      }
+      this.historyOutputBytes -= Buffer.byteLength(entry.output, "utf8");
+      entry.output = "";
+      entry.truncated = true;
+    }
   }
 
   private appendOutput(value: string): void {
@@ -385,18 +438,22 @@ export class OscTapRegistry {
     this.options = options;
   }
 
-  feed(sessionId: string, chunk: string): OscTapSnapshot {
+  feed(sessionId: string, chunk: string): void {
     let tap = this.taps.get(sessionId);
     if (!tap) {
       tap = new OscTap(sessionId, this.options);
       this.taps.set(sessionId, tap);
     }
     tap.feed(chunk);
-    return tap.getSnapshot();
   }
 
   get(sessionId: string): OscTapSnapshot | undefined {
     return this.taps.get(sessionId)?.getSnapshot();
+  }
+
+  /** Use instead of {@link get} when only cwd / last command are needed. */
+  getSummary(sessionId: string): OscTapSummary | undefined {
+    return this.taps.get(sessionId)?.getSummary();
   }
 
   list(): OscTapSnapshot[] {

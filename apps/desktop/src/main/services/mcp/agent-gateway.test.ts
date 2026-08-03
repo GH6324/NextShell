@@ -763,3 +763,74 @@ describe("auditing", () => {
     expect(JSON.stringify(audits.at(-1)?.metadata)).not.toContain("hunter2");
   });
 });
+
+describe("prompt-flooding guards", () => {
+  test("a denied client is remembered for its MCP session instead of re-prompting", async () => {
+    const prompts: string[] = [];
+    const { gateway } = createHarness({
+      promptUser: async (request) => {
+        prompts.push(request.title);
+        return { id: "00000000-0000-4000-8000-000000000000", canceled: true };
+      }
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      const result = await gateway.listHosts(CLIENT, {});
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe("forbidden");
+    }
+
+    expect(prompts).toEqual(["新的 Agent 客户端请求接入"]);
+  });
+
+  test("the approval prompt is only reachable while the client has call budget", async () => {
+    const prompts: string[] = [];
+    const { gateway } = createHarness(
+      {
+        promptUser: async (request) => {
+          prompts.push(request.title);
+          // Never approved and never denied: the client stays pending, which is
+          // exactly the state a rate limit has to survive.
+          return { id: "00000000-0000-4000-8000-000000000000", canceled: true };
+        }
+      },
+      { callsPerMinute: 2 }
+    );
+
+    const first = await gateway.listHosts(CLIENT, {});
+    const second = await gateway.listHosts(CLIENT, {});
+    const third = await gateway.listHosts(CLIENT, {});
+
+    expect(first.ok).toBe(false);
+    expect(second.ok).toBe(false);
+    expect(third.ok).toBe(false);
+    if (!third.ok) expect(third.error.code).toBe("rate_limited");
+    expect(prompts).toHaveLength(1);
+  });
+
+  test("exec confirmation costs a call-budget slot", async () => {
+    const prompts: string[] = [];
+    const { gateway } = createHarness(
+      {
+        promptUser: async (request) => {
+          prompts.push(request.title);
+          return {
+            id: "00000000-0000-4000-8000-000000000000",
+            canceled: false,
+            ...(request.title === "新的 Agent 客户端请求接入" ? { value: "approved" } : {})
+          };
+        }
+      },
+      { callsPerMinute: 1 }
+    );
+
+    const first = await gateway.execCommand(CLIENT, { target: "prod-hk", command: "rm -rf /" });
+    const second = await gateway.execCommand(CLIENT, { target: "prod-hk", command: "rm -rf /" });
+
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.error.code).toBe("forbidden");
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error.code).toBe("rate_limited");
+    expect(prompts).toEqual(["新的 Agent 客户端请求接入", "Agent 请求执行危险命令"]);
+  });
+});

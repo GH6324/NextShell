@@ -112,7 +112,7 @@ export interface AgentSessionInfo {
   status: SessionStatus;
   type: SessionType;
   createdAt: string;
-  /** Requires the Phase 1 OscTap; `null` until then. */
+  /** Tracked by OscTap from OSC 7; `null` when the shell never reported one. */
   cwd: string | null;
   lastCommand: string | null;
 }
@@ -490,6 +490,12 @@ export class AgentGateway {
   private readonly hostInflight = new Map<string, number>();
   private readonly rememberedApprovals = new Map<string, Set<string>>();
   private readonly approvedClients = new Set<string>();
+  /**
+   * Clients the user turned away. Without this a denied client re-prompts on
+   * every single tool call, which floods the user with modal dialogs and trains
+   * them to click "allow" — the exact failure mode the gate exists to prevent.
+   */
+  private readonly deniedClients = new Set<string>();
   private readonly pendingClientApprovals = new Map<string, Promise<boolean>>();
   private activitySequence = 0;
 
@@ -522,6 +528,9 @@ export class AgentGateway {
   pruneClientSessions(activeSessionIds: ReadonlySet<string>): void {
     for (const id of this.approvedClients) {
       if (!activeSessionIds.has(id)) this.approvedClients.delete(id);
+    }
+    for (const id of this.deniedClients) {
+      if (!activeSessionIds.has(id)) this.deniedClients.delete(id);
     }
     for (const id of this.rememberedApprovals.keys()) {
       if (!activeSessionIds.has(id)) this.rememberedApprovals.delete(id);
@@ -684,6 +693,7 @@ export class AgentGateway {
 
   private ensureClientApproved(client: AgentClientIdentity): Promise<boolean> {
     if (this.approvedClients.has(client.id)) return Promise.resolve(true);
+    if (this.deniedClients.has(client.id)) return Promise.resolve(false);
     const pending = this.pendingClientApprovals.get(client.id);
     if (pending) return pending;
     const approval = this.deps
@@ -696,6 +706,7 @@ export class AgentGateway {
       .then((response) => {
         const approved = !response.canceled && response.value === "approved";
         if (approved) this.approvedClients.add(client.id);
+        else this.deniedClients.add(client.id);
         return approved;
       })
       .catch(() => false)
@@ -705,7 +716,17 @@ export class AgentGateway {
   }
 
   /**
-   * Rate limit → per-host concurrency → timeout → error sanitization → audit.
+   * Rate limit → client approval → per-host concurrency → preflight → timeout →
+   * error sanitization → audit.
+   *
+   * Rate limiting deliberately runs *first*, ahead of anything that can open a
+   * dialog: every user-facing prompt this call may raise (client approval,
+   * command confirmation) has to be paid for out of the client's call budget,
+   * otherwise a misbehaving client can bury the user under modal dialogs for
+   * free. `preflight` runs after the budget and the approval gate and is
+   * deliberately outside the call timeout — a prompt waits on a human and
+   * carries its own timeout.
+   *
    * The task is handed an `AbortSignal` that fires on timeout: without it a
    * timed-out call would only stop the caller waiting while the underlying
    * SSH/SFTP work kept consuming memory in the background.
@@ -715,12 +736,24 @@ export class AgentGateway {
     tool: string,
     params: Record<string, unknown>,
     task: (signal: AbortSignal) => Promise<T>,
-    connectionId?: string,
-    requestedTimeoutMs?: number
+    options: {
+      connectionId?: string;
+      requestedTimeoutMs?: number;
+      preflight?: () => Promise<void>;
+    } = {}
   ): Promise<AgentToolResult<T>> {
+    const { connectionId, requestedTimeoutMs, preflight } = options;
     const activityId = `${client.id}:${++this.activitySequence}`;
     const commandSummary = typeof params.command === "string" ? redactText(params.command) : undefined;
     this.emitActivity(client, activityId, tool, "running", connectionId, commandSummary);
+
+    const rateError = this.checkRateLimit(client.rateKey);
+    if (rateError) {
+      this.audit(client, tool, params, { code: rateError.code, connectionId, level: "warn" });
+      this.emitActivity(client, activityId, tool, "failed", connectionId, rateError.code);
+      return { ok: false, error: rateError };
+    }
+
     if (!(await this.ensureClientApproved(client))) {
       const error: AgentToolError = {
         code: "forbidden",
@@ -736,12 +769,6 @@ export class AgentGateway {
         commandSummary ? `${commandSummary} → ${error.code}` : error.code
       );
       return { ok: false, error };
-    }
-    const rateError = this.checkRateLimit(client.rateKey);
-    if (rateError) {
-      this.audit(client, tool, params, { code: rateError.code, connectionId, level: "warn" });
-      this.emitActivity(client, activityId, tool, "failed", connectionId, rateError.code);
-      return { ok: false, error: rateError };
     }
 
     if (connectionId) {
@@ -761,6 +788,9 @@ export class AgentGateway {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     try {
+      if (preflight) {
+        await preflight();
+      }
       const timeoutMs = Math.min(
         requestedTimeoutMs ?? this.callTimeoutMs(),
         this.limits.maxCallTimeoutMs
@@ -917,7 +947,7 @@ export class AgentGateway {
           monitor
         };
       },
-      connection.id
+      { connectionId: connection.id }
     );
   }
 
@@ -945,7 +975,7 @@ export class AgentGateway {
         const capped = sessions.slice(0, this.limits.maxListItems);
         return { sessions: capped, truncated: capped.length < sessions.length };
       },
-      connectionId
+      { connectionId }
     );
   }
 
@@ -986,7 +1016,7 @@ export class AgentGateway {
           truncated: snapshot.entries.length > entries.length
         };
       },
-      session.connectionId ?? undefined
+      { connectionId: session.connectionId ?? undefined }
     );
   }
 
@@ -1035,7 +1065,7 @@ export class AgentGateway {
           truncated: capped.length < entries.length
         };
       },
-      connectionId
+      { connectionId }
     );
   }
 
@@ -1065,7 +1095,7 @@ export class AgentGateway {
       "file_stat",
       params,
       () => this.deps.statRemoteFile(connectionId, normalized.data),
-      connectionId
+      { connectionId }
     );
   }
 
@@ -1139,7 +1169,7 @@ export class AgentGateway {
           truncated
         };
       },
-      connectionId
+      { connectionId }
     );
   }
 
@@ -1167,7 +1197,7 @@ export class AgentGateway {
         }
         return snapshot;
       },
-      connectionId
+      { connectionId }
     );
   }
 
@@ -1234,13 +1264,6 @@ export class AgentGateway {
         message: "command must not be empty"
       });
     }
-    if (!(await this.ensureClientApproved(client))) {
-      return this.failed(client, "exec", params, {
-        code: "forbidden",
-        message: "The user did not approve this MCP client"
-      });
-    }
-
     const risk = classifyCommandRisk(command);
     const requiresWriteAccess = risk.level !== "readonly" || risk.hasSudo;
     const resolved = this.resolveTarget(input.target, requiresWriteAccess ? "write" : "read");
@@ -1252,13 +1275,7 @@ export class AgentGateway {
     if (input.cwd !== undefined) {
       const normalized = normalizeRemotePath(input.cwd);
       if (!normalized.ok) {
-        return this.failed(
-          client,
-          "exec",
-          params,
-          normalized.error,
-          resolved.data.connection.id
-        );
+        return this.failed(client, "exec", params, normalized.error, resolved.data.connection.id);
       }
       requestedCwd = normalized.data;
     } else if (resolved.data.sessionId) {
@@ -1277,14 +1294,20 @@ export class AgentGateway {
     }
 
     const approvalKey = `${connection.id}\0${command}`;
-    const remembered = this.rememberedApprovals.get(client.id)?.has(approvalKey) ?? false;
     const preferences = this.deps.getPreferences().agent;
-    const needsConfirmation =
-      !remembered &&
-      (risk.level === "dangerous" ||
-        risk.hasSudo ||
-        (risk.level === "unknown" && preferences.confirmUnknownCommands));
-    if (needsConfirmation) {
+    /**
+     * Raised inside `execute`'s preflight, not here: the dialog is only reached
+     * after the client has paid a call-budget slot and passed the approval gate,
+     * so a runaway client cannot spend the user's attention for free.
+     */
+    const confirmCommand = async (): Promise<void> => {
+      const remembered = this.rememberedApprovals.get(client.id)?.has(approvalKey) ?? false;
+      const needsConfirmation =
+        !remembered &&
+        (risk.level === "dangerous" ||
+          risk.hasSudo ||
+          (risk.level === "unknown" && preferences.confirmUnknownCommands));
+      if (!needsConfirmation) return;
       const response = await this.deps.promptUser({
         kind: "confirm",
         title: risk.level === "dangerous" ? "Agent 请求执行危险命令" : "Agent 请求执行命令",
@@ -1293,17 +1316,17 @@ export class AgentGateway {
         allowRemember: true
       });
       if (response.canceled || response.value !== "approved") {
-        return this.failed(client, "exec", params, {
+        throw new AgentToolFailure({
           code: "forbidden",
           message: "The user denied the command"
-        }, connection.id);
+        });
       }
       if (response.rememberForSession) {
         const approvals = this.rememberedApprovals.get(client.id) ?? new Set<string>();
         approvals.add(approvalKey);
         this.rememberedApprovals.set(client.id, approvals);
       }
-    }
+    };
 
     const requestedTimeoutMs =
       input.timeoutSec === undefined
@@ -1367,8 +1390,7 @@ export class AgentGateway {
           await this.deps.closeConnectionIfIdle(connection.id).catch(() => undefined);
         }
       },
-      connection.id,
-      requestedTimeoutMs
+      { connectionId: connection.id, requestedTimeoutMs, preflight: confirmCommand }
     );
   }
 
