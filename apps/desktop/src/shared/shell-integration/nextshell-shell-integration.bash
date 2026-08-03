@@ -9,10 +9,20 @@
 # parseable syntax subset (a bash/zsh array literal is a *parse* error in
 # dash, which would take the whole script down before any branch runs).
 #
-# Idempotent: the NEXTSHELL_INTEGRATED sentinel makes re-sourcing a no-op and
-# every hook is appended without clobbering existing user configuration.
+# Idempotent: the sentinel makes re-sourcing a no-op and every hook is appended
+# without clobbering existing user configuration. The sentinel also checks that
+# the functions really exist in THIS shell: NEXTSHELL_INTEGRATED can leak into a
+# child shell through the environment (`set -a` in a profile, or an already
+# exported variable) where the functions were never defined.
+#
+# Orphan-shell safety: PROMPT_COMMAND / PS0 are strings, so a nested shell
+# (`ssh-agent bash`, `env bash`, …) can inherit them via the environment while
+# shell functions never cross that boundary. Every injected string therefore
+# guards its own function calls — a shell that has the strings but not the
+# functions must stay silent (losing the OSC marks is fine; printing
+# "command not found" on every prompt is not).
 
-[ -n "${NEXTSHELL_INTEGRATED:-}" ] && return 0
+[ -n "${NEXTSHELL_INTEGRATED:-}" ] && command -v __nextshell_prompt_start >/dev/null 2>&1 && return 0
 NEXTSHELL_INTEGRATED=1
 
 # Cache the hostname once at source time; it cannot change mid-session and
@@ -68,11 +78,13 @@ __nextshell_preexec() {
   printf '\007'
 }
 
-# Runs FIRST in PROMPT_COMMAND so `$?` is still the user's command status, and
-# returns that same status so later PROMPT_COMMAND entries (starship, powerline,
-# …) still observe the exit code they expect.
+# Runs FIRST in PROMPT_COMMAND. The user's exit code is captured into
+# __nextshell_status by the leading injected entry (a bare `$?` here would see
+# the status of the orphan-shell guard line instead), and is returned so later
+# PROMPT_COMMAND entries (starship, powerline, …) still observe the exit code
+# they expect.
 __nextshell_prompt_start() {
-  local __nextshell_exit_code=$?
+  local __nextshell_exit_code=${__nextshell_status:-$?}
   if [ -n "${__nextshell_prompt_seen:-}" ]; then
     printf '\033]133;D;%s\007' "$__nextshell_exit_code"
   fi
@@ -87,7 +99,7 @@ __nextshell_prompt_start() {
 # rather than once at source time. `\[ \]` keeps bash from counting the
 # invisible bytes towards the line width.
 __nextshell_prompt_end() {
-  local __nextshell_exit_code=$?
+  local __nextshell_exit_code=${__nextshell_status:-$?}
   case "${PS1:-}" in
     *'133;B'*) ;;
     *) PS1="${PS1:-}\[\033]133;B\007\]" ;;
@@ -110,7 +122,9 @@ __nextshell_install_prompt_hooks() {
           *__nextshell_prompt_start*) return 0 ;;
         esac
       done
-      PROMPT_COMMAND=(__nextshell_prompt_start "${PROMPT_COMMAND[@]}" __nextshell_prompt_end)
+      # Arrays cannot be exported, so the array form never leaks into a child
+      # shell and needs no orphan guard — only the status-capture entry.
+      PROMPT_COMMAND=('__nextshell_status=$?' __nextshell_prompt_start "${PROMPT_COMMAND[@]}" __nextshell_prompt_end)
       return 0
       ;;
   esac
@@ -124,7 +138,14 @@ __nextshell_install_prompt_hooks() {
   # `history -a; ;__nextshell_prompt_end`, an empty command between two `;` —
   # a syntax error that kills the whole prompt on every cycle. A trailing `;`
   # before a newline is valid, and so is an empty line.
-  PROMPT_COMMAND="__nextshell_prompt_start
+  #
+  # The first line captures the user's exit code before anything can clobber
+  # `$?`. The second line is the orphan-shell guard: a child shell that
+  # inherited this exported string without the functions installs silent stubs
+  # that still hand the real exit code to the user's own entries below.
+  PROMPT_COMMAND="__nextshell_status=\$?
+command -v __nextshell_prompt_start >/dev/null 2>&1 || { __nextshell_prompt_start() { return \"\${__nextshell_status:-0}\"; }; __nextshell_prompt_end() { return \"\${__nextshell_status:-0}\"; }; }
+__nextshell_prompt_start
 ${PROMPT_COMMAND:-}
 __nextshell_prompt_end"
 }
@@ -135,11 +156,12 @@ unset -f __nextshell_install_prompt_hooks
 # PS0 is printed right after a command is read and before it runs, which is
 # exactly the C mark (output start). bash >= 4.4 only. Appended, never
 # overwritten. Command substitution is left literal here so bash evaluates it
-# for each future command rather than while sourcing this file.
+# for each future command rather than while sourcing this file. The `command -v`
+# guard keeps an orphan child shell (exported PS0, no functions) silent.
 if [ "${BASH_VERSINFO[0]:-0}" -gt 4 ] ||
   { [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 4 ]; }; then
   case "${PS0:-}" in
     *__nextshell_preexec*) ;;
-    *) PS0="${PS0:-}"'$(__nextshell_preexec)' ;;
+    *) PS0="${PS0:-}"'$(command -v __nextshell_preexec >/dev/null 2>&1 && __nextshell_preexec)' ;;
   esac
 fi

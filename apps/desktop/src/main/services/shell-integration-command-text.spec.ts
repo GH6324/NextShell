@@ -41,8 +41,11 @@ describe("shell integration command text", () => {
     );
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("user_prompt_hook");
-    expect(result.stdout).toContain("PS0:user-ps0$(__nextshell_preexec)");
-    expect(result.stdout.match(/__nextshell_prompt_start/g)).toHaveLength(1);
+    expect(result.stdout).toContain(
+      "PS0:user-ps0$(command -v __nextshell_preexec >/dev/null 2>&1 && __nextshell_preexec)"
+    );
+    // The status-capture entry appears once → the hooks were spliced once.
+    expect(result.stdout.match(/__nextshell_status=\$\?/g)).toHaveLength(1);
     expect(result.stdout.endsWith(`\u001B]133;C;${sanitizeOscCommand(commandText)}\u0007`)).toBe(true);
   });
 
@@ -64,6 +67,44 @@ describe("shell integration command text", () => {
     expect(result.stdout.endsWith(`\u001B]133;C;${sanitizeOscCommand(commandText)}\u0007`)).toBe(true);
   });
 
+  test("a child bash inheriting the exported hook strings stays silent", () => {
+    // `ssh-agent bash` (or any nested shell) inherits *exported* PROMPT_COMMAND
+    // and PS0 strings from the environment, but shell functions never cross
+    // that boundary. Before the embedded guards, every prompt in such a child
+    // printed `__nextshell_prompt_start: command not found`. Losing the OSC
+    // marks there is acceptable; noise and a clobbered `$?` are not.
+    const integrated = runShell("bash", [
+      "--noprofile",
+      "--norc",
+      "-c",
+      'PROMPT_COMMAND="user_hook"; . "$1"; printf "%s\\036%s" "$PROMPT_COMMAND" "$PS0"',
+      "--",
+      scriptFile("bash")
+    ]);
+    expect(integrated.status, integrated.stderr).toBe(0);
+    const [promptCommand = "", ps0 = ""] = integrated.stdout.split("\u001e");
+
+    const orphan = runShell(
+      "bash",
+      [
+        "--noprofile",
+        "--norc",
+        "-c",
+        // One simulated prompt cycle after a failing command: the user's own
+        // hook (and the shell afterwards) must still observe exit code 7.
+        [
+          'user_hook() { printf "user_hook=%s;" "$?"; }',
+          '(exit 7); eval "$PROMPT_COMMAND"; printf "after=%s;" "$?"',
+          'printf "ps0=[%s]" "$(eval "printf %s \\"${PS0}\\"")"'
+        ].join("\n")
+      ],
+      { PROMPT_COMMAND: promptCommand, PS0: ps0 }
+    );
+    expect(orphan.status, orphan.stderr).toBe(0);
+    expect(orphan.stderr).toBe("");
+    expect(orphan.stdout).toBe("user_hook=7;after=7;ps0=[]");
+  });
+
   test("dash sources its fallback twice without inventing command marks", () => {
     const result = runShell("dash", [
       "-c",
@@ -72,7 +113,9 @@ describe("shell integration command text", () => {
       scriptFile("sh")
     ]);
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toBe("user> $(__nextshell_emit_cwd)");
+    expect(result.stdout).toBe(
+      "user> $(command -v __nextshell_emit_cwd >/dev/null 2>&1 && __nextshell_emit_cwd)"
+    );
     expect(result.stdout).not.toContain("133;");
   });
 

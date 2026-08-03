@@ -139,8 +139,9 @@ describe.skipIf(!canRunPosixShell)("generated install command", () => {
       `PS1='$ '; ${sourceLine}; ${sourceLine}; printf '%s' "$PS1" | tr -dc 'a-z_' `
     );
 
-    // A second source must not append the cwd hook to PS1 again.
-    expect(output.match(/__nextshell_emit_cwd/g)).toHaveLength(1);
+    // A second source must not append the cwd hook to PS1 again. One appended
+    // hook mentions the function twice: the orphan-shell guard plus the call.
+    expect(output.match(/__nextshell_emit_cwd/g)).toHaveLength(2);
   });
 });
 

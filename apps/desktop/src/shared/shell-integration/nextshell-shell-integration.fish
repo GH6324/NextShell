@@ -8,10 +8,13 @@
 # omitted: fish paints its prompt inside the fish_prompt function, so a generic
 # append-to-PROMPT hook does not exist; NextShell treats B as optional.
 # Idempotent:
-# the NEXTSHELL_INTEGRATED sentinel guards the whole body, and fish's
-# --on-event handlers never touch user functions.
+# the sentinel guards the whole body, and fish's --on-event handlers never
+# touch user functions. The sentinel also requires the handler to actually
+# exist: NEXTSHELL_INTEGRATED may arrive exported from a parent shell of a
+# different family, and skipping on the variable alone would silently disable
+# the integration here.
 
-if not set -q NEXTSHELL_INTEGRATED
+if not set -q NEXTSHELL_INTEGRATED; or not functions -q __nextshell_on_prompt
     set -g NEXTSHELL_INTEGRATED 1
 
     # Cache the hostname once at source time; it cannot change mid-session.

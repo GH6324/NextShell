@@ -5,10 +5,14 @@
 # Modeled after WezTerm's shell-integration.sh and iTerm2's it2_* hooks.
 #
 # Emits OSC 7 (cwd report) and OSC 133 A/B/C/D (prompt/command marks).
-# Idempotent: the NEXTSHELL_INTEGRATED sentinel makes re-sourcing a no-op and
-# every hook is registered without clobbering existing user configuration.
+# Idempotent: the sentinel makes re-sourcing a no-op and every hook is
+# registered without clobbering existing user configuration. The sentinel also
+# checks that the functions really exist in THIS shell: NEXTSHELL_INTEGRATED
+# can leak into a child shell through the environment (`setopt allexport` in a
+# profile) where the functions were never defined — a bare variable check would
+# then permanently disable the integration for that child.
 
-[ -n "${NEXTSHELL_INTEGRATED:-}" ] && return 0
+[ -n "${NEXTSHELL_INTEGRATED:-}" ] && command -v __nextshell_precmd >/dev/null 2>&1 && return 0
 NEXTSHELL_INTEGRATED=1
 
 # Cache the hostname once at source time; it cannot change mid-session and
