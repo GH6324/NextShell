@@ -958,7 +958,8 @@ const WorkspaceLayoutComponent = ({
                         {session.type === "editor" ? (
                           <EditorTabDirtyDot sessionId={session.id} />
                         ) : null}
-                        {isTerminal && session.status === "disconnected" ? (
+                        {isTerminal &&
+                        (session.status === "disconnected" || session.status === "failed") ? (
                           <button
                             type="button"
                             className="tab-action tab-reconnect"

@@ -10,6 +10,7 @@ interface BasicTabProps {
   revealedLoginPassword?: string;
   revealingLoginPassword: boolean;
   onRevealConnectionPassword: () => void;
+  onRequestCreateSshKey: () => void;
 }
 
 export const BasicTab = ({
@@ -19,7 +20,8 @@ export const BasicTab = ({
   sshKeys,
   revealedLoginPassword,
   revealingLoginPassword,
-  onRevealConnectionPassword
+  onRevealConnectionPassword,
+  onRequestCreateSshKey
 }: BasicTabProps) => {
   return (
     <>
@@ -69,7 +71,15 @@ export const BasicTab = ({
 
       {authType === "privateKey" ? (
         <Form.Item
-          label="SSH 密钥"
+          label={
+            <span className="mgr-key-label">
+              <span>SSH 密钥</span>
+              <button type="button" className="mgr-import-file-btn" onClick={onRequestCreateSshKey}>
+                <i className="ri-add-line" aria-hidden="true" />
+                新建密钥
+              </button>
+            </span>
+          }
           name="sshKeyId"
           rules={[{ required: true, message: "请选择一个 SSH 密钥" }]}
         >
@@ -79,7 +89,7 @@ export const BasicTab = ({
             options={sshKeys.map((key) => ({ label: key.name, value: key.id }))}
             notFoundContent={
               <div style={{ textAlign: "center", padding: "8px 0", color: "var(--t3)" }}>
-                暂无密钥，请先在「密钥」标签页中添加
+                暂无密钥，点击上方「新建密钥」即可创建并绑定
               </div>
             }
           />

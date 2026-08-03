@@ -33,6 +33,7 @@ interface ConnectionFormPanelProps {
   revealedLoginPassword?: string;
   revealingLoginPassword: boolean;
   onRevealConnectionPassword: () => void;
+  onRequestCreateSshKey: () => void;
   onSave: (values: ConnectionFormValues) => Promise<void>;
   onSaveAndConnect: () => void;
   onDelete: () => void;
@@ -59,6 +60,7 @@ export const ConnectionFormPanel = ({
   revealedLoginPassword,
   revealingLoginPassword,
   onRevealConnectionPassword,
+  onRequestCreateSshKey,
   onSave,
   onSaveAndConnect,
   onDelete,
@@ -263,6 +265,7 @@ export const ConnectionFormPanel = ({
               revealedLoginPassword={revealedLoginPassword}
               revealingLoginPassword={revealingLoginPassword}
               onRevealConnectionPassword={onRevealConnectionPassword}
+              onRequestCreateSshKey={onRequestCreateSshKey}
             />
           </div>
 

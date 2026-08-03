@@ -28,7 +28,12 @@ const assertEqual = <T>(actual: T, expected: T, message: string): void => {
     false,
     "connected + enter should not reconnect"
   );
-  assertEqual(shouldReconnectOnInput("failed", "\r"), false, "failed + enter should not reconnect");
+  assertEqual(shouldReconnectOnInput("failed", "\r"), true, "failed + enter should reconnect");
+  assertEqual(
+    shouldReconnectOnInput("failed", "a"),
+    false,
+    "failed + normal text should not reconnect"
+  );
   assertEqual(
     shouldReconnectOnInput(undefined, "\r"),
     false,

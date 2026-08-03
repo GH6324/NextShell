@@ -32,6 +32,7 @@ import { RecycleBinSection } from "./settings-center";
 import { ConnectionSidebar } from "./ConnectionManagerModal/components/ConnectionSidebar";
 import { ConnectionFormPanel } from "./ConnectionManagerModal/components/ConnectionFormPanel";
 import { ConnectionBatchAuthModal } from "./ConnectionManagerModal/components/ConnectionBatchAuthModal";
+import { InlineSshKeyCreateModal } from "./ConnectionManagerModal/components/InlineSshKeyCreateModal";
 import { ImportManagerPanel } from "./ConnectionManagerModal/components/ImportManagerPanel";
 import { DEFAULT_VALUES, FIELD_TAB_MAP, MANAGER_TABS } from "./ConnectionManagerModal/constants";
 import { useConnectionExportActions } from "./ConnectionManagerModal/hooks/useConnectionExportActions";
@@ -161,6 +162,7 @@ export const ConnectionManagerModal = ({
   const [emptyFolders, setEmptyFolders] = useState<string[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>("name");
   const [formTab, setFormTab] = useState<FormTab>("basic");
+  const [inlineKeyCreateOpen, setInlineKeyCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connectingFromForm, setConnectingFromForm] = useState(false);
   const [draggingConnection, setDraggingConnection] = useState<ConnectionProfile | null>(null);
@@ -1247,6 +1249,7 @@ export const ConnectionManagerModal = ({
                 revealedLoginPassword={revealedLoginPassword}
                 revealingLoginPassword={revealingLoginPassword}
                 onRevealConnectionPassword={() => void handleRevealConnectionPassword()}
+                onRequestCreateSshKey={() => setInlineKeyCreateOpen(true)}
                 onSave={async (values) => {
                   await saveConnection(values);
                 }}
@@ -1327,6 +1330,16 @@ export const ConnectionManagerModal = ({
         sshKeys={sshKeys}
         onClose={() => setBatchAuthTarget(null)}
         onUpdated={onConnectionsImported}
+      />
+
+      <InlineSshKeyCreateModal
+        open={inlineKeyCreateOpen}
+        workspaceId={effectiveWorkspaceId}
+        onClose={() => setInlineKeyCreateOpen(false)}
+        onCreated={async (key) => {
+          await onReloadSshKeys();
+          form.setFieldValue("sshKeyId", key.id);
+        }}
       />
     </>
   );

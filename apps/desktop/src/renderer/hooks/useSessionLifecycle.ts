@@ -632,7 +632,9 @@ export function useSessionLifecycle() {
       if (!target) {
         return;
       }
-      if (target.status !== "disconnected") {
+      // `failed` stays retryable: a reconnect that errors out lands in
+      // `failed`, and stranding the user there means "one reconnect chance".
+      if (target.status !== "disconnected" && target.status !== "failed") {
         return;
       }
       if (inFlightAuthRetryBySessionRef.current.has(sessionId)) {

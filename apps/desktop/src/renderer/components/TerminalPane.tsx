@@ -182,7 +182,7 @@ const statusMessage = (
     }
 
     if (status === "failed") {
-      return `本地终端启动失败：${formatErrorMessage(reason, "未知原因")}`;
+      return `本地终端启动失败：${formatErrorMessage(reason, "未知原因")}。按回车键重试。`;
     }
 
     return undefined;
@@ -204,7 +204,7 @@ const statusMessage = (
 
   if (status === "failed") {
     const displayReason = stripAuthFailurePrefix(reason);
-    return `SSH 会话连接失败：${formatErrorMessage(displayReason, "未知原因")}`;
+    return `SSH 会话连接失败：${formatErrorMessage(displayReason, "未知原因")}。按回车键尝试重连。`;
   }
 
   return undefined;

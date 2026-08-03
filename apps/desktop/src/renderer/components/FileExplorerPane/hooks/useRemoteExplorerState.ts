@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App as AntdApp } from "antd";
 import type { ConnectionProfile, RemoteFileEntry } from "@nextshell/core";
-import { FILE_EXPLORER_FOLLOW_CWD_DEBOUNCE_MS } from "../../FileExplorerPane.follow";
+import {
+  FILE_EXPLORER_FOLLOW_CWD_DEBOUNCE_MS,
+  shouldSuppressFollowNavigation
+} from "../../FileExplorerPane.follow";
 import { formatErrorMessage } from "../../../utils/errorMessage";
 import { resolveInitialRemotePath } from "../../../utils/remoteHomePath";
+import { readLastSftpPath, writeLastSftpPath } from "../../../utils/sftpLastPath";
 import { createRemoteExplorerRequestGate } from "../requestGate";
 import { normalizeRemotePath } from "../shared";
 import type { DirTreeNode } from "../types";
@@ -48,6 +52,11 @@ export const useRemoteExplorerState = ({
   const followCwdLastRef = useRef<string | null>(null);
   const followCwdDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const navigateRef = useRef<(path: string) => void>(() => {});
+  // 已完成初始定位的连接：同一连接因切标签/临时断开再回来时原地恢复,不重置。
+  const initializedConnectionIdRef = useRef<string | undefined>(undefined);
+  // 最近一次用户手动导航的时间戳,用于压制终端跟随的抢占。
+  const manualNavAtRef = useRef<number | undefined>(undefined);
+  const followNavigatingRef = useRef(false);
 
   const selectedEntries = useMemo(() => {
     const selected = new Set(selectedPaths);
@@ -70,6 +79,12 @@ export const useRemoteExplorerState = ({
 
   const navigate = useCallback(
     (path: string) => {
+      // 终端跟随触发的导航不算「用户手动浏览」,其余全部算。
+      if (followNavigatingRef.current) {
+        followNavigatingRef.current = false;
+      } else {
+        manualNavAtRef.current = Date.now();
+      }
       const normalizedPath = normalizeRemotePath(path);
       if (pathNameRef.current === normalizedPath) {
         skipHistoryRef.current = false;
@@ -96,6 +111,7 @@ export const useRemoteExplorerState = ({
     if (historyIndex <= 0) return;
     const prev = pathHistory[historyIndex - 1];
     if (!prev) return;
+    manualNavAtRef.current = Date.now();
     skipHistoryRef.current = true;
     fileRequestGate.invalidate();
     pathNameRef.current = prev;
@@ -107,6 +123,7 @@ export const useRemoteExplorerState = ({
     if (historyIndex >= pathHistory.length - 1) return;
     const next = pathHistory[historyIndex + 1];
     if (!next) return;
+    manualNavAtRef.current = Date.now();
     skipHistoryRef.current = true;
     fileRequestGate.invalidate();
     pathNameRef.current = next;
@@ -217,36 +234,61 @@ export const useRemoteExplorerState = ({
     skipHistoryRef.current = false;
 
     if (!connectionId || !connected) {
+      // 暂停而非重置：切到别的标签/窗口或临时断开时保留当前路径、
+      // 历史和目录树,回来时原地恢复,不再重新解析 home、重建整棵树。
       setInitialPathReady(false);
-      pathNameRef.current = "/";
-      setPathName("/");
-      setPathHistory([]);
-      setHistoryIndex(-1);
-      setFiles([]);
-      void initTree();
+      return;
+    }
+
+    if (initializedConnectionIdRef.current === connectionId) {
+      // 同一连接恢复：直接在当前路径继续,列表由 loadFiles 效应刷新。
+      setInitialPathReady(true);
       return;
     }
 
     setInitialPathReady(false);
     pathNameRef.current = "/";
     setPathName("/");
+    setPathHistory([]);
+    setHistoryIndex(-1);
     setFiles([]);
     void initTree();
 
     void (async () => {
-      const initialPath = normalizeRemotePath(
-        await resolveInitialRemotePath(() => window.nextshell.session.getHomeDir({ connectionId }))
-      );
+      // 优先回到该连接上次浏览的目录；目录已不存在（list 失败）则回退 home。
+      let initialPath: string | undefined;
+      const stored = readLastSftpPath(connectionId);
+      if (stored) {
+        try {
+          await window.nextshell.sftp.list({ connectionId, path: stored });
+          initialPath = stored;
+        } catch {
+          initialPath = undefined;
+        }
+      }
+      if (initialPath === undefined) {
+        initialPath = await resolveInitialRemotePath(() =>
+          window.nextshell.session.getHomeDir({ connectionId })
+        );
+      }
+      const normalized = normalizeRemotePath(initialPath);
       if (initialPathRequestIdRef.current !== requestId) {
         return;
       }
-      pathNameRef.current = initialPath;
-      setPathName(initialPath);
-      setPathHistory([initialPath]);
+      initializedConnectionIdRef.current = connectionId;
+      pathNameRef.current = normalized;
+      setPathName(normalized);
+      setPathHistory([normalized]);
       setHistoryIndex(0);
       setInitialPathReady(true);
     })();
   }, [connectionId, connected, fileRequestGate, initTree]);
+
+  // 记录每个连接的落脚点,供下次打开时恢复。
+  useEffect(() => {
+    if (!connectionId || !initialPathReady) return;
+    writeLastSftpPath(connectionId, pathName);
+  }, [connectionId, initialPathReady, pathName]);
 
   useEffect(() => {
     connectionIdRef.current = connectionId;
@@ -260,9 +302,11 @@ export const useRemoteExplorerState = ({
     setPathInput(pathName);
   }, [pathName]);
 
+  // 只在切换到另一个连接时关掉跟随；同一连接的临时断开/切标签保留
+  // 用户的选择,免得每次都要重新打开。
   useEffect(() => {
-    if (!connectionId || !connected) setFollowCwd(false);
-  }, [connectionId, connected]);
+    setFollowCwd(false);
+  }, [connectionId]);
 
   const followCwdTrackingEnabled = Boolean(
     active && followCwd && connectionId && connected && followSessionId
@@ -296,13 +340,23 @@ export const useRemoteExplorerState = ({
       return;
     }
 
+    // 用户刚手动导航过,这次终端 cd 不抢占面板；下次 cd 再正常跟随。
+    if (shouldSuppressFollowNavigation(manualNavAtRef.current, Date.now())) {
+      return;
+    }
+
     followCwdLastRef.current = normalized;
     if (followCwdDebounceRef.current) {
       clearTimeout(followCwdDebounceRef.current);
     }
     followCwdDebounceRef.current = setTimeout(() => {
       followCwdDebounceRef.current = undefined;
+      // 防抖等待期间用户又动了面板,同样让位。
+      if (shouldSuppressFollowNavigation(manualNavAtRef.current, Date.now())) {
+        return;
+      }
       if (pathNameRef.current !== normalized) {
+        followNavigatingRef.current = true;
         navigateRef.current(normalized);
       }
     }, FILE_EXPLORER_FOLLOW_CWD_DEBOUNCE_MS);
@@ -424,6 +478,8 @@ export const useRemoteExplorerState = ({
     const nextFollowCwd = !followCwd;
     if (nextFollowCwd) {
       followCwdLastRef.current = null;
+      // 用户主动开启跟随,立即生效,不受手动浏览压制期影响。
+      manualNavAtRef.current = undefined;
     }
     setFollowCwd(nextFollowCwd);
     message.info({
