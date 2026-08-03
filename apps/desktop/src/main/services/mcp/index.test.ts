@@ -58,6 +58,7 @@ const baseDeps = (
   },
   readRemoteFile: async () => ({ bytes: Buffer.alloc(0), truncated: false }),
   listSavedCommands: () => [],
+  readSessionScreen: async () => null,
   getSessionHistory: () => null,
   execCommand: async () => ({
     stdout: "",

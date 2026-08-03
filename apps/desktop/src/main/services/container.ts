@@ -62,6 +62,7 @@ import { forgetShellIntegrationInstalls } from "./terminal-shell-integration";
 import { createAgentMcpService, type AgentRemoteFileStat, type AgentSessionInfo } from "./mcp";
 import { AgentPromptBroker } from "./mcp/confirm";
 import { OscTapRegistry } from "./mcp/osc-tap";
+import { ScreenMirrorRegistry } from "./mcp/screen-mirror";
 import { AgentTransferTracker } from "./mcp/transfers";
 
 const cloudSyncWorkspacePasswordRef = (workspaceId: string): string =>
@@ -243,6 +244,7 @@ export const createServiceContainer = async (
   // ─── Shared State ────────────────────────────────────────────────────────
   const activeSessions = new Map<string, ActiveSession>();
   const oscTaps = new OscTapRegistry();
+  const screenMirrors = new ScreenMirrorRegistry();
 
   /**
    * Last system-monitor snapshot per connection. MonitorService only pushes;
@@ -793,14 +795,25 @@ export const createServiceContainer = async (
     clearMonitorSuspension: (id) => monitorSvc.clearMonitorSuspension(id),
     warmupSftp: (id, conn) => sftpSvc.warmupSftp(id, conn),
     persistAuthOverride: (id, override) => connectionSvc.persistSuccessfulAuthOverride(id, override),
+    // Both agent-facing layers hang off this one tap, and both are gated on the
+    // host being agent-visible: an unauthorized host costs nothing at all. They
+    // stay separate parsers on purpose — OscTap owns command boundaries and the
+    // raw bytes each command produced, which a terminal grid cannot reconstruct,
+    // while the mirror owns the rendered frame, which raw bytes cannot express.
     tapAgentSessionData: (sessionId, connectionId, data) => {
       if ((connections.getById(connectionId)?.agentAccess ?? "off") === "off") {
         oscTaps.dispose(sessionId);
+        screenMirrors.dispose(sessionId);
         return;
       }
       oscTaps.feed(sessionId, data);
+      screenMirrors.write(sessionId, data);
     },
-    disposeAgentSessionData: (sessionId) => oscTaps.dispose(sessionId)
+    disposeAgentSessionData: (sessionId) => {
+      oscTaps.dispose(sessionId);
+      screenMirrors.dispose(sessionId);
+    },
+    onSessionResized: (sessionId, cols, rows) => screenMirrors.resize(sessionId, cols, rows)
   });
 
   // Cloud Sync Manager
@@ -943,6 +956,8 @@ export const createServiceContainer = async (
     // Deliberately no listCommandHistory: shell history has no connection id,
     // so it cannot be scoped to the hosts the user granted.
     listSavedCommands: (query) => connections.listSavedCommands(query),
+    readSessionScreen: async (sessionId, options) =>
+      (await screenMirrors.get(sessionId)?.read(options)) ?? null,
     getSessionHistory: (sessionId) => {
       const snapshot = oscTaps.get(sessionId);
       if (!snapshot) return null;
@@ -1083,6 +1098,7 @@ export const createServiceContainer = async (
     });
     agentPromptBroker.dispose();
     oscTaps.disposeAll();
+    screenMirrors.disposeAll();
 
     const allMonitorIds = monitorSvc.getAllConnectionIds();
     await Promise.all(allMonitorIds.map((id) => monitorSvc.disposeAllMonitorSessions(id)));

@@ -24,6 +24,7 @@ import {
   type LocalPathIntent,
   type LocalPathPolicyContext
 } from "./local-path-policy";
+import type { ScreenReadOptions, ScreenReadResult } from "./screen-mirror";
 import type { AgentTransferSnapshot } from "./transfers";
 import {
   ConnectionTargetAmbiguousError,
@@ -222,6 +223,10 @@ export interface AgentSessionHistoryPayload {
   truncated: boolean;
 }
 
+export interface AgentSessionScreenPayload extends ScreenReadResult {
+  sessionId: string;
+}
+
 export interface AgentExecPayload {
   connectionId: string;
   command: string;
@@ -285,6 +290,11 @@ export interface AgentGatewayDeps {
     integrationAvailable: boolean;
     entries: AgentSessionHistoryEntry[];
   } | null;
+  /** `null` when the session is not mirrored (ScreenMirror capacity or a host the agent cannot reach). */
+  readSessionScreen: (
+    sessionId: string,
+    options: ScreenReadOptions
+  ) => Promise<ScreenReadResult | null>;
   execCommand: (
     connectionId: string,
     command: string,
@@ -1085,6 +1095,52 @@ export class AgentGateway {
           entries,
           truncated: snapshot.entries.length > entries.length
         };
+      },
+      { connectionId: session.connectionId ?? undefined }
+    );
+  }
+
+  /**
+   * The rendered screen, not the raw byte log. Reading a `top` or `vim` session
+   * from raw bytes gives cursor-addressing sequences; only the emulator mirror
+   * collapses those into the frame a human sees.
+   */
+  async readSessionScreen(
+    client: AgentClientIdentity,
+    input: { target: string; mode?: "screen" | "scrollback"; lines?: number; stripAnsi?: boolean }
+  ): Promise<AgentToolResult<AgentSessionScreenPayload>> {
+    const params = {
+      target: input.target,
+      mode: input.mode ?? "screen",
+      lines: input.lines,
+      stripAnsi: input.stripAnsi
+    };
+    const session = this.authorizedSessions().find((candidate) => candidate.id === input.target);
+    if (!session) {
+      return this.failed(client, "session_read", params, {
+        code: "not_found",
+        message: "No active authorized session matches that id; call session_list first"
+      });
+    }
+
+    return this.execute(
+      client,
+      "session_read",
+      params,
+      async () => {
+        const screen = await this.deps.readSessionScreen(session.id, {
+          ...(input.mode ? { mode: input.mode } : {}),
+          ...(input.lines === undefined ? {} : { lines: input.lines }),
+          ...(input.stripAnsi === undefined ? {} : { stripAnsi: input.stripAnsi })
+        });
+        if (!screen) {
+          throw new AgentToolFailure({
+            code: "unavailable",
+            message:
+              "This session is not being mirrored yet; it has produced no output since NextShell started tracking it, or the screen-mirror capacity is exhausted"
+          });
+        }
+        return { sessionId: session.id, ...screen, content: redactText(screen.content) };
       },
       { connectionId: session.connectionId ?? undefined }
     );

@@ -11,8 +11,10 @@ import {
 } from "./shared";
 
 /**
- * `session_list` and `session_history` are served from OscTap, the main-process
- * OSC scanner. `session_read` (ScreenMirror) joins them in Phase 3.
+ * `session_list` and `session_history` are served from OscTap (the main-process
+ * OSC scanner); `session_read` from ScreenMirror (the headless emulator). The
+ * split is deliberate: OscTap owns command semantics and raw output, the mirror
+ * owns "what is on screen right now".
  */
 export const registerSessionTools = (server: McpServer, ctx: AgentToolContext): void => {
   server.registerTool(
@@ -67,5 +69,46 @@ export const registerSessionTools = (server: McpServer, ctx: AgentToolContext): 
       annotations: READ_ONLY_ANNOTATIONS
     },
     async (args) => toCallToolResult(await ctx.gateway.sessionHistory(ctx.client, args))
+  );
+
+  server.registerTool(
+    "session_read",
+    {
+      title: "读取会话屏幕",
+      description:
+        "Read the rendered screen of a live authorized session, including background tabs. This is a real terminal emulation, so a full-screen program (top, htop, vim, an interactive installer) comes back as the frame a human would see rather than a pile of cursor-addressing escapes. Use `screen` for the current viewport and `scrollback` to include what scrolled off; for command output with exit codes prefer session_history.",
+      inputSchema: {
+        target: z.string().min(1).describe("Live session id returned by session_list"),
+        mode: z
+          .enum(["screen", "scrollback"])
+          .optional()
+          .describe("`screen` (default) is the visible viewport; `scrollback` includes history"),
+        lines: z
+          .number()
+          .int()
+          .min(1)
+          .max(2000)
+          .optional()
+          .describe("Lines to return, counted back from the bottom"),
+        stripAnsi: z
+          .boolean()
+          .optional()
+          .describe("Defaults to true; pass false to keep colour and style sequences")
+      },
+      outputSchema: outputShape(
+        z.object({
+          sessionId: z.string(),
+          mode: z.enum(["screen", "scrollback"]),
+          content: z.string(),
+          lines: z.number(),
+          cols: z.number(),
+          rows: z.number(),
+          scrollbackLines: z.number(),
+          truncated: z.boolean()
+        })
+      ),
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async (args) => toCallToolResult(await ctx.gateway.readSessionScreen(ctx.client, args))
   );
 };

@@ -107,6 +107,7 @@ const deps: AgentGatewayDeps = {
       updatedAt: TIMESTAMP
     }
   ],
+  readSessionScreen: async () => null,
   writeRemoteFile: async () => undefined,
   makeRemoteDirectory: async () => undefined,
   renameRemotePath: async () => undefined,
@@ -198,6 +199,7 @@ describe("tool registration", () => {
       "notify_user",
       "session_history",
       "session_list",
+      "session_read",
       "transfer_cancel",
       "transfer_download",
       "transfer_status",
@@ -214,6 +216,7 @@ describe("tool registration", () => {
         "monitor_snapshot",
         "session_history",
         "session_list",
+        "session_read",
         "transfer_status"
       ].includes(tool.name)
     );

@@ -65,6 +65,18 @@ export const STATIC_TOOLS: ToolDescriptor[] = [
     annotations: { readOnlyHint: true }
   },
   {
+    name: "session_read",
+    title: "读取会话屏幕",
+    description:
+      "读取活动会话渲染后的屏幕（含后台标签）。全屏程序（top / vim / 交互式安装器）返回人眼所见的那一帧，而非一堆光标定位转义序列。",
+    inputSchema: targetSchema({
+      mode: { type: "string", enum: ["screen", "scrollback"] },
+      lines: { type: "integer", minimum: 1, maximum: 2000 },
+      stripAnsi: { type: "boolean" }
+    }),
+    annotations: { readOnlyHint: true }
+  },
+  {
     name: "file_list",
     title: "列出远端目录",
     inputSchema: targetSchema({ path: { type: "string" } }),

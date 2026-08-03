@@ -207,6 +207,7 @@ const createHarness = (overrides: Partial<AgentGatewayDeps> = {}, limits = {}): 
     statRemoteFile: async () => fileStat(),
     readRemoteFile: async () => ({ bytes: Buffer.from("127.0.0.1 x"), truncated: false }),
     listSavedCommands: () => [],
+    readSessionScreen: async () => null,
     getSessionHistory: () => null,
     execCommand: async (_connectionId, _command) => ({
       stdout: "",

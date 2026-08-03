@@ -1,6 +1,6 @@
 # NextShell Agent 接入（MCP）—— 调研报告与实施方案
 
-> 状态：**Phase 0 / 1 / 2 已落地** / Phase 3–5 待实施
+> 状态：**Phase 0 / 1 / 2 / 3 已落地** / Phase 4–5 待实施
 > 日期：2026-08-03
 > 范围：`apps/desktop`(main / preload / renderer)、`packages/{shared,core,terminal,ssh,storage}`、`apps/mcp-ssh-proxy` 与 `packages/runtime`(已删除)、新增 `apps/mcp-bridge` 与独立插件仓库
 
@@ -59,6 +59,18 @@
 | 2.4 队列徽标 | agent 徽标 | `SftpTransferStatusEvent.origin` + `TransferTask.origin` + 队列紫色 `Agent` 标签；agent 任务标记为不可重试（重试走渲染进程自己的传输入口，重放不了 agent 的任务） |
 | 设置项 | 允许根 | 新增「写操作与命令确认」「本地路径策略」两张设置卡，接上此前无处可设的 `confirmWrites` / `confirmUnknownCommands` / `execTimeoutSec` / `allowedLocalRoots` |
 | — | 未提及 | 早退路径（参数非法 / 目标不存在 / 本地路径被拒）现在也计入限流额度——否则它们是一条不计费的探测通道 |
+
+**Phase 3 已完成**（typecheck 0 error / lint 0 error / 596 单测 + 34 契约测试全绿，另实跑 `bun run build` 确认打包）。落地内容与本文档的偏差：
+
+| 项 | 计划 | 实际 |
+| --- | --- | --- |
+| 3.1 headless 镜像 | 复用 Phase 1 抽头 | `screen-mirror.ts`：`@xterm/headless` + `SerializeAddon`，`allowProposedApi: true` 无条件打开；挂在 `tapAgentSessionData` 的同一个抽头上，与 OscTap 同样按 `agentAccess` 门控 |
+| — | 未提及 | `Terminal.write` 是排队异步的，所以 `write()` 把每次写入**串成 promise 链**，`read()` 先 await 整条链——只等最后一次写入仍可能读到更早的帧 |
+| — | 未提及 | 新增 `SessionService.onSessionResized` 钩子，把用户终端的 resize 同步给镜像；尺寸不一致会导致回报的帧与用户看到的换行不同 |
+| 3.2 `session_read` | screen / scrollback + stripAnsi | 已实现。`stripAnsi` **默认 true**（转义序列对读者是噪声不是信号）；`lines` 先裁掉屏幕下方的空白填充行再从底部取，否则「给我最后 3 行」会返回 1 行内容加 2 行空白 |
+| 3.3 与 OscTap 合流 | OSC 处理器注册到 headless 实例上，避免扫两遍 | **有意不做**。省下的是 OscTap 那点状态机开销（可忽略），代价是丢掉 `session_history` 的能力：`registerOscHandler` 只给 OSC 载荷，拿不到 C 与 D 之间的原始输出字节，而终端网格也无法还原它。两层职责因此保持分离——OscTap 管命令语义与原始输出，镜像管渲染后的那一帧 |
+| 3.4 负载复核 | 定 scrollback 上限与降级阈值 | 实测每实例 **0.79 MB heap / 3.12 MB RSS**（140×40、scrollback 打满 1000 行带色内容），与附录 A.2 预测吻合。据此定：scrollback 1000、**同时最多镜像 16 个会话**（超出按最近写入时间淘汰最旧的），最坏约 50 MB 常驻 |
+| 打包 | 不要 external | 已实跑 `bun run build` 复核：产物内含 `BufferService` 等内部符号、无 `@xterm/headless` 的外部 require——确实被打进 bundle |
 
 ---
 

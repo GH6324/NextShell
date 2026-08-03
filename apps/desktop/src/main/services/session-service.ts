@@ -63,6 +63,8 @@ export interface SessionServiceOptions {
   ) => Promise<string | undefined>;
   tapAgentSessionData: (sessionId: string, connectionId: string, data: string) => void;
   disposeAgentSessionData: (sessionId: string) => void;
+  /** Keeps the agent-facing screen mirror the same size as the user's terminal. */
+  onSessionResized: (sessionId: string, cols: number, rows: number) => void;
 }
 
 export class SessionService {
@@ -89,6 +91,7 @@ export class SessionService {
   ) => Promise<string | undefined>;
   private readonly tapAgentSessionData: SessionServiceOptions["tapAgentSessionData"];
   private readonly disposeAgentSessionData: SessionServiceOptions["disposeAgentSessionData"];
+  private readonly onSessionResized: SessionServiceOptions["onSessionResized"];
 
   constructor(options: SessionServiceOptions) {
     this.connections = options.connections;
@@ -106,6 +109,7 @@ export class SessionService {
     this.persistAuthOverride = options.persistAuthOverride;
     this.tapAgentSessionData = options.tapAgentSessionData;
     this.disposeAgentSessionData = options.disposeAgentSessionData;
+    this.onSessionResized = options.onSessionResized;
   }
 
   // ─── Public API ──────────────────────────────────────────────────────────
@@ -472,6 +476,10 @@ export class SessionService {
       // Session may have already disconnected; silently ignore resize requests
       return { ok: true };
     }
+
+    // The agent-facing mirror has to track the same geometry, or the frame it
+    // reports back wraps differently from the one the user is looking at.
+    this.onSessionResized(sessionId, cols, rows);
 
     if (active.kind === "local") {
       active.pty.resize(cols, rows);
