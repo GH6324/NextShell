@@ -843,6 +843,11 @@ export const terminalNotificationActionEventSchema = z.object({
 
 export const sftpTransferStatusEventSchema = z.object({
   taskId: z.string().uuid().optional(),
+  /**
+   * 谁发起的。缺省视作 "user"——只有 Agent 发起的传输才会被主进程打上 "agent"，
+   * 传输队列据此显示徽标，让人一眼看出这条不是自己点的。
+   */
+  origin: z.enum(["user", "agent"]).optional(),
   direction: z.enum(["upload", "download"]),
   connectionId: z.string().uuid(),
   remotePath: z.string().min(1),

@@ -1,3 +1,5 @@
+import { basename } from "node:path";
+
 import type {
   AgentAccessLevel,
   AppPreferences,
@@ -17,6 +19,12 @@ import type {
 import { redactAuditMetadata } from "@nextshell/storage";
 import { classifyCommandRisk, type CommandRiskAssessment } from "@nextshell/terminal";
 
+import {
+  evaluateLocalPath,
+  type LocalPathIntent,
+  type LocalPathPolicyContext
+} from "./local-path-policy";
+import type { AgentTransferSnapshot } from "./transfers";
 import {
   ConnectionTargetAmbiguousError,
   ConnectionTargetNotFoundError,
@@ -225,6 +233,25 @@ export interface AgentExecPayload {
   risk: CommandRiskAssessment;
 }
 
+export interface AgentWritePayload {
+  path: string;
+  bytes: number;
+}
+
+export interface AgentMutationPayload {
+  path: string;
+}
+
+export interface AgentRenamePayload {
+  from: string;
+  to: string;
+}
+
+export interface AgentLocalFileStat {
+  type: "file" | "directory" | "other";
+  size: number;
+}
+
 // ─── Dependencies ───────────────────────────────────────────────────────────
 
 export interface AgentAuditEntry {
@@ -269,6 +296,36 @@ export interface AgentGatewayDeps {
     executedAt: string;
     cwd?: string;
   }>;
+  // ── Tier 2: remote mutation ──
+  writeRemoteFile: (connectionId: string, remotePath: string, content: Buffer) => Promise<void>;
+  makeRemoteDirectory: (connectionId: string, remotePath: string) => Promise<void>;
+  renameRemotePath: (connectionId: string, fromPath: string, toPath: string) => Promise<void>;
+  deleteRemotePath: (
+    connectionId: string,
+    remotePath: string,
+    type: "file" | "directory" | "link"
+  ) => Promise<void>;
+  // ── Tier 2: transfers ──
+  /** `null` when the path does not exist. Never throws. */
+  statLocalPath: (localPath: string) => AgentLocalFileStat | null;
+  /** Local-path policy context; read per call so preference edits take effect live. */
+  localPathContext: () => Omit<LocalPathPolicyContext, "realpath">;
+  startUpload: (input: {
+    clientId: string;
+    connectionId: string;
+    localPath: string;
+    remotePath: string;
+    packed: boolean;
+  }) => AgentTransferSnapshot;
+  startDownload: (input: {
+    clientId: string;
+    connectionId: string;
+    remotePath: string;
+    localPath: string;
+  }) => AgentTransferSnapshot;
+  getTransfer: (taskId: string, clientId: string) => AgentTransferSnapshot | undefined;
+  cancelTransfer: (taskId: string) => boolean;
+  runningTransferCount: (clientId: string) => number;
   retainConnection: (connectionId: string) => () => void;
   closeConnectionIfIdle: (connectionId: string) => Promise<void>;
   promptUser: (request: Omit<AgentPromptRequest, "id">) => Promise<AgentPromptResponse>;
@@ -289,6 +346,10 @@ export interface AgentGatewayLimits {
   maxCallTimeoutMs: number;
   maxListItems: number;
   maxFileBytes: number;
+  /** Inline `file_write` payload ceiling; anything larger belongs in a transfer. */
+  maxWriteBytes: number;
+  /** Concurrent transfers one client may have in flight. */
+  maxConcurrentTransfers: number;
 }
 
 export const DEFAULT_AGENT_GATEWAY_LIMITS: AgentGatewayLimits = {
@@ -296,7 +357,9 @@ export const DEFAULT_AGENT_GATEWAY_LIMITS: AgentGatewayLimits = {
   perHostConcurrency: 4,
   maxCallTimeoutMs: 120_000,
   maxListItems: 500,
-  maxFileBytes: 256 * 1024
+  maxFileBytes: 256 * 1024,
+  maxWriteBytes: 1024 * 1024,
+  maxConcurrentTransfers: 4
 };
 
 export interface AgentGatewayOptions {
@@ -843,6 +906,12 @@ export class AgentGateway {
     }
   }
 
+  /**
+   * Rejection before the work starts — a bad argument, an unauthorized target,
+   * a local path the policy refuses. It still charges the call budget: these
+   * paths answer questions ("does this host exist", "is this directory
+   * off limits"), so leaving them free would make them an unmetered probe.
+   */
   private failed<T>(
     client: AgentClientIdentity,
     tool: string,
@@ -850,8 +919,9 @@ export class AgentGateway {
     error: AgentToolError,
     connectionId?: string
   ): AgentToolResult<T> {
-    this.audit(client, tool, params, { code: error.code, connectionId, level: "warn" });
-    return { ok: false, error };
+    const reported = this.checkRateLimit(client.rateKey) ?? error;
+    this.audit(client, tool, params, { code: reported.code, connectionId, level: "warn" });
+    return { ok: false, error: reported };
   }
 
   // ─── Host views ───────────────────────────────────────────────────────────
@@ -1392,6 +1462,514 @@ export class AgentGateway {
       },
       { connectionId: connection.id, requestedTimeoutMs, preflight: confirmCommand }
     );
+  }
+
+  // ─── Tier 2: remote mutation ──────────────────────────────────────────────
+
+  /**
+   * Shared confirmation for every host-mutating tool. Gated by
+   * `preferences.agent.confirmWrites` — turning it off is the documented
+   * "brave mode" and is the user's call, not the agent's.
+   */
+  private confirmWrite(
+    client: AgentClientIdentity,
+    connection: ConnectionProfile,
+    title: string,
+    details: string
+  ): () => Promise<void> {
+    const approvalKey = `${connection.id}\0${title}\0${details}`;
+    return async () => {
+      if (!this.deps.getPreferences().agent.confirmWrites) return;
+      if (this.rememberedApprovals.get(client.id)?.has(approvalKey)) return;
+      const response = await this.deps.promptUser({
+        kind: "confirm",
+        title,
+        message: `${client.name ?? "未知客户端"} 请求修改 ${connection.name}：`,
+        details,
+        allowRemember: true
+      });
+      if (response.canceled || response.value !== "approved") {
+        throw new AgentToolFailure({
+          code: "forbidden",
+          message: "The user denied this write operation"
+        });
+      }
+      if (response.rememberForSession) {
+        const approvals = this.rememberedApprovals.get(client.id) ?? new Set<string>();
+        approvals.add(approvalKey);
+        this.rememberedApprovals.set(client.id, approvals);
+      }
+    };
+  }
+
+  /** Resolves the target for a write and normalizes one remote path in one step. */
+  private prepareWrite(
+    client: AgentClientIdentity,
+    tool: string,
+    params: Record<string, unknown>,
+    target: string,
+    remotePath: string
+  ):
+    | { ok: true; connection: ConnectionProfile; path: string }
+    | { ok: false; failure: AgentToolResult<never> } {
+    const resolved = this.resolveTarget(target, "write");
+    if (!resolved.ok) {
+      return { ok: false, failure: this.failed(client, tool, params, resolved.error) };
+    }
+    const normalized = normalizeRemotePath(remotePath);
+    if (!normalized.ok) {
+      return {
+        ok: false,
+        failure: this.failed(
+          client,
+          tool,
+          params,
+          normalized.error,
+          resolved.data.connection.id
+        )
+      };
+    }
+    return { ok: true, connection: resolved.data.connection, path: normalized.data };
+  }
+
+  async writeFile(
+    client: AgentClientIdentity,
+    input: { target: string; path: string; content: string; encoding?: "utf-8" | "base64" }
+  ): Promise<AgentToolResult<AgentWritePayload>> {
+    const params = { target: input.target, path: input.path, encoding: input.encoding ?? "utf-8" };
+    const prepared = this.prepareWrite(client, "file_write", params, input.target, input.path);
+    if (!prepared.ok) return prepared.failure;
+
+    let content: Buffer;
+    try {
+      content = Buffer.from(input.content, input.encoding === "base64" ? "base64" : "utf8");
+    } catch {
+      return this.failed(client, "file_write", params, {
+        code: "invalid_argument",
+        message: "content is not valid for the requested encoding"
+      });
+    }
+    if (content.byteLength > this.limits.maxWriteBytes) {
+      return this.failed(
+        client,
+        "file_write",
+        params,
+        {
+          code: "too_large",
+          message: `Inline writes are limited to ${this.limits.maxWriteBytes} bytes; use transfer_upload for anything larger`
+        },
+        prepared.connection.id
+      );
+    }
+
+    const { connection, path: remotePath } = prepared;
+    return this.execute(
+      client,
+      "file_write",
+      params,
+      async () => {
+        await this.deps.writeRemoteFile(connection.id, remotePath, content);
+        return { path: remotePath, bytes: content.byteLength };
+      },
+      {
+        connectionId: connection.id,
+        preflight: this.confirmWrite(
+          client,
+          connection,
+          "Agent 请求写入远端文件",
+          `写入 ${remotePath}\n大小：${content.byteLength} 字节`
+        )
+      }
+    );
+  }
+
+  async makeDirectory(
+    client: AgentClientIdentity,
+    input: { target: string; path: string }
+  ): Promise<AgentToolResult<AgentMutationPayload>> {
+    const params = { target: input.target, path: input.path };
+    const prepared = this.prepareWrite(client, "file_mkdir", params, input.target, input.path);
+    if (!prepared.ok) return prepared.failure;
+
+    const { connection, path: remotePath } = prepared;
+    return this.execute(
+      client,
+      "file_mkdir",
+      params,
+      async () => {
+        await this.deps.makeRemoteDirectory(connection.id, remotePath);
+        return { path: remotePath };
+      },
+      {
+        connectionId: connection.id,
+        preflight: this.confirmWrite(
+          client,
+          connection,
+          "Agent 请求创建远端目录",
+          `创建目录 ${remotePath}（含缺失的父级）`
+        )
+      }
+    );
+  }
+
+  async renamePath(
+    client: AgentClientIdentity,
+    input: { target: string; from: string; to: string }
+  ): Promise<AgentToolResult<AgentRenamePayload>> {
+    const params = { target: input.target, from: input.from, to: input.to };
+    const prepared = this.prepareWrite(client, "file_rename", params, input.target, input.from);
+    if (!prepared.ok) return prepared.failure;
+    const destination = normalizeRemotePath(input.to);
+    if (!destination.ok) {
+      return this.failed(
+        client,
+        "file_rename",
+        params,
+        destination.error,
+        prepared.connection.id
+      );
+    }
+
+    const { connection, path: fromPath } = prepared;
+    const toPath = destination.data;
+    return this.execute(
+      client,
+      "file_rename",
+      params,
+      async () => {
+        await this.deps.renameRemotePath(connection.id, fromPath, toPath);
+        return { from: fromPath, to: toPath };
+      },
+      {
+        connectionId: connection.id,
+        preflight: this.confirmWrite(
+          client,
+          connection,
+          "Agent 请求重命名远端路径",
+          `${fromPath}\n→ ${toPath}`
+        )
+      }
+    );
+  }
+
+  /**
+   * Unlike the other writes, deletion always asks. `confirmWrites` is a
+   * convenience switch for the operations a mistake can be undone from; an
+   * `rm -rf` over SFTP is not one of them.
+   */
+  async deletePath(
+    client: AgentClientIdentity,
+    input: { target: string; path: string; type: "file" | "directory" | "link" }
+  ): Promise<AgentToolResult<AgentMutationPayload>> {
+    const params = { target: input.target, path: input.path, type: input.type };
+    const prepared = this.prepareWrite(client, "file_delete", params, input.target, input.path);
+    if (!prepared.ok) return prepared.failure;
+
+    const { connection, path: remotePath } = prepared;
+    if (remotePath === "/") {
+      return this.failed(
+        client,
+        "file_delete",
+        params,
+        { code: "forbidden", message: "Refusing to delete the filesystem root" },
+        connection.id
+      );
+    }
+
+    return this.execute(
+      client,
+      "file_delete",
+      params,
+      async () => {
+        await this.deps.deleteRemotePath(connection.id, remotePath, input.type);
+        return { path: remotePath };
+      },
+      {
+        connectionId: connection.id,
+        preflight: async () => {
+          const response = await this.deps.promptUser({
+            kind: "confirm",
+            title: "Agent 请求删除远端路径",
+            message: `${client.name ?? "未知客户端"} 请求在 ${connection.name} 上删除：`,
+            details:
+              input.type === "directory"
+                ? `${remotePath}\n\n这是一个目录，其中的全部内容都会被递归删除，且不可恢复。`
+                : `${remotePath}\n\n删除后不可恢复。`
+          });
+          if (response.canceled || response.value !== "approved") {
+            throw new AgentToolFailure({
+              code: "forbidden",
+              message: "The user denied the deletion"
+            });
+          }
+        }
+      }
+    );
+  }
+
+  // ─── Tier 2: transfers ────────────────────────────────────────────────────
+
+  /**
+   * The single choke point for agent-supplied paths on this machine. Denials
+   * are reported to the agent with the human-readable reason on purpose: the
+   * agent needs to understand it hit a policy wall rather than a missing file,
+   * and the reason names only the rule, never the contents.
+   */
+  private checkLocalPath(
+    localPath: string,
+    intent: LocalPathIntent
+  ): { ok: true; resolved: string } | { ok: false; error: AgentToolError } {
+    const decision = evaluateLocalPath(localPath, intent, this.deps.localPathContext());
+    if (!decision.allowed) {
+      return { ok: false, error: { code: "forbidden", message: decision.reason } };
+    }
+    return { ok: true, resolved: decision.resolved };
+  }
+
+  private transferBudgetError(client: AgentClientIdentity): AgentToolError | null {
+    if (this.deps.runningTransferCount(client.id) < this.limits.maxConcurrentTransfers) {
+      return null;
+    }
+    return {
+      code: "busy",
+      message: `At most ${this.limits.maxConcurrentTransfers} transfers may run at once; poll transfer_status and retry`
+    };
+  }
+
+  async uploadTransfer(
+    client: AgentClientIdentity,
+    input: { target: string; localPath: string; remotePath: string }
+  ): Promise<AgentToolResult<AgentTransferSnapshot>> {
+    const params = {
+      target: input.target,
+      localPath: input.localPath,
+      remotePath: input.remotePath
+    };
+    const prepared = this.prepareWrite(
+      client,
+      "transfer_upload",
+      params,
+      input.target,
+      input.remotePath
+    );
+    if (!prepared.ok) return prepared.failure;
+    const { connection, path: remotePath } = prepared;
+
+    const local = this.checkLocalPath(input.localPath, "read");
+    if (!local.ok) {
+      return this.failed(client, "transfer_upload", params, local.error, connection.id);
+    }
+    const stat = this.deps.statLocalPath(local.resolved);
+    if (!stat) {
+      return this.failed(
+        client,
+        "transfer_upload",
+        params,
+        { code: "not_found", message: "The local path does not exist" },
+        connection.id
+      );
+    }
+    if (stat.type === "other") {
+      return this.failed(
+        client,
+        "transfer_upload",
+        params,
+        {
+          code: "invalid_argument",
+          message: "The local path is neither a regular file nor a directory"
+        },
+        connection.id
+      );
+    }
+    const budgetError = this.transferBudgetError(client);
+    if (budgetError) {
+      return this.failed(client, "transfer_upload", params, budgetError, connection.id);
+    }
+
+    const packed = stat.type === "directory";
+    return this.execute(
+      client,
+      "transfer_upload",
+      { ...params, resolvedLocalPath: local.resolved, packed },
+      async () => {
+        // A single file addressed at an existing remote directory lands *in* it,
+        // the way `scp` behaves. Resolved here rather than made the agent's
+        // problem: `remotePath: "/opt/app"` is what an agent naturally writes,
+        // and the alternative is an opaque SFTP failure. A packed upload always
+        // takes a directory, so it needs no adjustment.
+        let destination = remotePath;
+        if (!packed) {
+          const remoteStat = await this.deps
+            .statRemoteFile(connection.id, remotePath)
+            .catch(() => null);
+          if (remoteStat?.type === "directory") {
+            destination = `${remotePath === "/" ? "" : remotePath}/${basename(local.resolved)}`;
+          }
+        }
+        return this.deps.startUpload({
+          clientId: client.id,
+          connectionId: connection.id,
+          localPath: local.resolved,
+          remotePath: destination,
+          packed
+        });
+      },
+      {
+        connectionId: connection.id,
+        preflight: this.confirmTransfer(client, {
+          title: "Agent 请求上传本机文件",
+          connectionName: connection.name,
+          // The full local path is the last human check against exfiltration,
+          // so it is shown verbatim and never elided.
+          details: [
+            `本机路径：${local.resolved}`,
+            packed ? "类型：目录（将打包为 tar.gz 后在远端解包）" : `大小：${stat.size} 字节`,
+            `目标主机：${connection.name}`,
+            `远端路径：${remotePath}`
+          ].join("\n"),
+          approvalKey: `upload\0${local.resolved}\0${connection.id}\0${remotePath}`
+        })
+      }
+    );
+  }
+
+  async downloadTransfer(
+    client: AgentClientIdentity,
+    input: { target: string; remotePath: string; localPath: string }
+  ): Promise<AgentToolResult<AgentTransferSnapshot>> {
+    const params = {
+      target: input.target,
+      remotePath: input.remotePath,
+      localPath: input.localPath
+    };
+    // Reading the host is a read; the risk lives on this side of the wire.
+    const resolved = this.resolveTarget(input.target, "read");
+    if (!resolved.ok) {
+      return this.failed(client, "transfer_download", params, resolved.error);
+    }
+    const connection = resolved.data.connection;
+    const normalized = normalizeRemotePath(input.remotePath);
+    if (!normalized.ok) {
+      return this.failed(client, "transfer_download", params, normalized.error, connection.id);
+    }
+
+    const local = this.checkLocalPath(input.localPath, "write");
+    if (!local.ok) {
+      return this.failed(client, "transfer_download", params, local.error, connection.id);
+    }
+    if (this.deps.statLocalPath(local.resolved)?.type === "directory") {
+      return this.failed(
+        client,
+        "transfer_download",
+        params,
+        {
+          code: "invalid_argument",
+          message: "localPath must be the destination file path, not an existing directory"
+        },
+        connection.id
+      );
+    }
+    const budgetError = this.transferBudgetError(client);
+    if (budgetError) {
+      return this.failed(client, "transfer_download", params, budgetError, connection.id);
+    }
+
+    const remotePath = normalized.data;
+    return this.execute(
+      client,
+      "transfer_download",
+      { ...params, resolvedLocalPath: local.resolved },
+      async () =>
+        this.deps.startDownload({
+          clientId: client.id,
+          connectionId: connection.id,
+          remotePath,
+          localPath: local.resolved
+        }),
+      {
+        connectionId: connection.id,
+        preflight: this.confirmTransfer(client, {
+          title: "Agent 请求下载到本机",
+          connectionName: connection.name,
+          details: [
+            `来源主机：${connection.name}`,
+            `远端路径：${remotePath}`,
+            `写入本机路径：${local.resolved}`,
+            "若该文件已存在，将被覆盖。"
+          ].join("\n"),
+          approvalKey: `download\0${connection.id}\0${remotePath}\0${local.resolved}`
+        })
+      }
+    );
+  }
+
+  /**
+   * Transfers always ask, regardless of `confirmWrites`: the local path is the
+   * one thing no remote-side authorization can vouch for, and §7.3 makes the
+   * dialog (with the full path) the last line of defence.
+   */
+  private confirmTransfer(
+    client: AgentClientIdentity,
+    input: { title: string; connectionName: string; details: string; approvalKey: string }
+  ): () => Promise<void> {
+    return async () => {
+      if (this.rememberedApprovals.get(client.id)?.has(input.approvalKey)) return;
+      const response = await this.deps.promptUser({
+        kind: "confirm",
+        title: input.title,
+        message: `${client.name ?? "未知客户端"} 请求传输文件：`,
+        details: input.details,
+        allowRemember: true
+      });
+      if (response.canceled || response.value !== "approved") {
+        throw new AgentToolFailure({
+          code: "forbidden",
+          message: "The user denied the transfer"
+        });
+      }
+      if (response.rememberForSession) {
+        const approvals = this.rememberedApprovals.get(client.id) ?? new Set<string>();
+        approvals.add(input.approvalKey);
+        this.rememberedApprovals.set(client.id, approvals);
+      }
+    };
+  }
+
+  async transferStatus(
+    client: AgentClientIdentity,
+    input: { taskId: string }
+  ): Promise<AgentToolResult<AgentTransferSnapshot>> {
+    const params = { taskId: input.taskId };
+    return this.execute(client, "transfer_status", params, async () => {
+      const snapshot = this.deps.getTransfer(input.taskId, client.id);
+      if (!snapshot) {
+        throw new AgentToolFailure({
+          code: "not_found",
+          message: "No transfer with that id belongs to this client"
+        });
+      }
+      return snapshot;
+    });
+  }
+
+  async cancelTransfer(
+    client: AgentClientIdentity,
+    input: { taskId: string }
+  ): Promise<AgentToolResult<{ taskId: string; cancelRequested: boolean }>> {
+    const params = { taskId: input.taskId };
+    return this.execute(client, "transfer_cancel", params, async () => {
+      const snapshot = this.deps.getTransfer(input.taskId, client.id);
+      if (!snapshot) {
+        throw new AgentToolFailure({
+          code: "not_found",
+          message: "No transfer with that id belongs to this client"
+        });
+      }
+      return {
+        taskId: input.taskId,
+        cancelRequested: this.deps.cancelTransfer(input.taskId)
+      };
+    });
   }
 
   async askUser(

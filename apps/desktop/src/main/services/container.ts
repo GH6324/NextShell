@@ -62,6 +62,7 @@ import { forgetShellIntegrationInstalls } from "./terminal-shell-integration";
 import { createAgentMcpService, type AgentRemoteFileStat, type AgentSessionInfo } from "./mcp";
 import { AgentPromptBroker } from "./mcp/confirm";
 import { OscTapRegistry } from "./mcp/osc-tap";
+import { AgentTransferTracker } from "./mcp/transfers";
 
 const cloudSyncWorkspacePasswordRef = (workspaceId: string): string =>
   `secret://cloud-sync-ws-${workspaceId}`;
@@ -205,6 +206,11 @@ export const createServiceContainer = async (
       target.webContents.send(IPCChannel.AgentPromptRequest, request);
     }
   });
+  /**
+   * Declared here because `sendTransferStatus` consults it on every progress
+   * event to tell agent-owned tasks apart from user-owned ones.
+   */
+  const agentTransfers = new AgentTransferTracker();
 
   // Audit purge
   const purgeExpiredAuditLogs = (allowWhenDisabled = false): void => {
@@ -268,10 +274,24 @@ export const createServiceContainer = async (
     if (!sender.isDestroyed()) sender.send(IPCChannel.SessionStatus, payload);
   };
 
+  /**
+   * User-initiated transfers report back to the window that started them.
+   * Agent-initiated ones have no sender, so they fan out to every window
+   * instead — otherwise the transfer the agent kicked off would be invisible in
+   * the GUI queue, which is the only place the user can watch or cancel it.
+   */
   const sendTransferStatus = (
     sender: WebContents | undefined,
     payload: SftpTransferStatusEvent
   ): void => {
+    if (payload.taskId && agentTransfers.get(payload.taskId)) {
+      agentTransfers.applyProgress(payload);
+      broadcastToAllWindows(IPCChannel.SftpTransferStatus, {
+        ...payload,
+        origin: "agent" as const
+      });
+      return;
+    }
     if (!sender || sender.isDestroyed()) return;
     sender.send(IPCChannel.SftpTransferStatus, payload);
   };
@@ -941,6 +961,80 @@ export const createServiceContainer = async (
     },
     execCommand: (connectionId, command, options) =>
       commandSvc.execCommand(connectionId, command, { ...options, audit: false }),
+    writeRemoteFile: async (connectionId, remotePath, content) => {
+      const connection = await ensureConnection(connectionId);
+      await connection.writeFileContent(remotePath, content);
+    },
+    makeRemoteDirectory: async (connectionId, remotePath) => {
+      await sftpSvc.createRemoteDirectory(connectionId, remotePath);
+    },
+    renameRemotePath: async (connectionId, fromPath, toPath) => {
+      await sftpSvc.renameRemoteFile(connectionId, fromPath, toPath);
+    },
+    deleteRemotePath: async (connectionId, remotePath, type) => {
+      await sftpSvc.deleteRemoteFile(connectionId, remotePath, type);
+    },
+    statLocalPath: (localPath) => {
+      try {
+        // lstat, not stat: a symlink must be reported as what it is so the
+        // path policy decides, rather than being silently followed here.
+        const stats = fs.lstatSync(localPath);
+        return {
+          type: stats.isDirectory() ? "directory" : stats.isFile() ? "file" : "other",
+          size: stats.size
+        };
+      } catch {
+        return null;
+      }
+    },
+    localPathContext: () => ({
+      homeDir: app.getPath("home"),
+      appDataDir: options.userDataDir,
+      allowedRoots: prefsSvc.getAppPreferences().agent.allowedLocalRoots
+    }),
+    startUpload: ({ clientId, connectionId, localPath, remotePath, packed }) =>
+      agentTransfers.start({
+        clientId,
+        connectionId,
+        direction: "upload",
+        localPath,
+        remotePath,
+        packed,
+        // A directory goes over as one tar.gz and is unpacked remotely, which
+        // is the whole reason routing an agent through NextShell beats letting
+        // it drive scp itself.
+        run: (taskId) => {
+          const release = retainConnection(connectionId);
+          const done = packed
+            ? sftpSvc.uploadRemotePacked(connectionId, [localPath], remotePath, undefined, undefined, taskId)
+            : sftpSvc.uploadRemoteFile(connectionId, localPath, remotePath, undefined, taskId);
+          return done.finally(() => {
+            release();
+            void closeConnectionIfIdle(connectionId).catch(() => undefined);
+          });
+        }
+      }),
+    startDownload: ({ clientId, connectionId, remotePath, localPath }) =>
+      agentTransfers.start({
+        clientId,
+        connectionId,
+        direction: "download",
+        localPath,
+        remotePath,
+        packed: false,
+        run: (taskId) => {
+          const release = retainConnection(connectionId);
+          return sftpSvc
+            .downloadRemoteFile(connectionId, remotePath, localPath, undefined, taskId)
+            .finally(() => {
+              release();
+              void closeConnectionIfIdle(connectionId).catch(() => undefined);
+            });
+        }
+      }),
+    getTransfer: (taskId, clientId) => agentTransfers.getForClient(taskId, clientId),
+    cancelTransfer: (taskId) => sftpSvc.cancelTransfer(taskId).cancelled,
+    runningTransferCount: (clientId) => agentTransfers.runningCountForClient(clientId),
     retainConnection,
     closeConnectionIfIdle,
     promptUser: (request) => agentPromptBroker.request(request),

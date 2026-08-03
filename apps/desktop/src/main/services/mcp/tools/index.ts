@@ -6,6 +6,7 @@ import { registerFileTools } from "./file";
 import { registerHostTools } from "./host";
 import { registerMonitorTools } from "./monitor";
 import { registerSessionTools } from "./session";
+import { registerTransferTools } from "./transfer";
 import { registerInteractionTools } from "./interact";
 import type { AgentToolContext } from "./shared";
 
@@ -13,8 +14,8 @@ export type AgentToolRegistrar = (server: McpServer, ctx: AgentToolContext) => v
 
 /**
  * Every tool the endpoint exposes, in registration order. Later phases append
- * their own registrar here: SFTP writes and transfers (Tier 2), session_read
- * (Tier 0, needs ScreenMirror), session_send_keys and friends (Tier 3).
+ * their own registrar here: session_read (Tier 0, needs ScreenMirror) and
+ * session_send_keys and friends (Tier 3).
  */
 export const AGENT_TOOL_REGISTRARS: readonly AgentToolRegistrar[] = [
   registerHostTools,
@@ -23,6 +24,7 @@ export const AGENT_TOOL_REGISTRARS: readonly AgentToolRegistrar[] = [
   registerMonitorTools,
   registerCommandTools,
   registerExecTools,
+  registerTransferTools,
   registerInteractionTools
 ];
 
@@ -40,5 +42,6 @@ export {
   registerHostTools,
   registerMonitorTools,
   registerSessionTools,
+  registerTransferTools,
   registerInteractionTools
 };

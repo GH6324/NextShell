@@ -110,6 +110,76 @@ export const STATIC_TOOLS: ToolDescriptor[] = [
     }
   },
   {
+    name: "file_write",
+    title: "写入远端文件",
+    description: "写入一个小文件（1MB 以内），已存在则覆盖。大文件或整个目录请用 transfer_upload。",
+    inputSchema: targetSchema({
+      path: { type: "string" },
+      content: { type: "string" },
+      encoding: { type: "string", enum: ["utf-8", "base64"] }
+    })
+  },
+  {
+    name: "file_mkdir",
+    title: "创建远端目录",
+    inputSchema: targetSchema({ path: { type: "string" } }),
+    annotations: { idempotentHint: true }
+  },
+  {
+    name: "file_rename",
+    title: "重命名远端路径",
+    inputSchema: targetSchema({ from: { type: "string" }, to: { type: "string" } })
+  },
+  {
+    name: "file_delete",
+    title: "删除远端路径",
+    description: "删除远端路径。目录会被递归删除且不可恢复，始终需要用户在 NextShell 内确认。",
+    inputSchema: targetSchema({
+      path: { type: "string" },
+      type: { type: "string", enum: ["file", "directory", "link"] }
+    }),
+    annotations: { destructiveHint: true }
+  },
+  {
+    name: "transfer_upload",
+    title: "上传到远端",
+    description:
+      "把本机文件或目录传到主机（目录自动打包为 tar.gz 并在远端解包）。立即返回 taskId，用 transfer_status 轮询。",
+    inputSchema: targetSchema({
+      localPath: { type: "string" },
+      remotePath: { type: "string" }
+    })
+  },
+  {
+    name: "transfer_download",
+    title: "下载到本机",
+    description: "把远端文件下载到本机。立即返回 taskId，用 transfer_status 轮询。",
+    inputSchema: targetSchema({
+      remotePath: { type: "string" },
+      localPath: { type: "string" }
+    })
+  },
+  {
+    name: "transfer_status",
+    title: "查询传输进度",
+    inputSchema: {
+      type: "object",
+      properties: { taskId: { type: "string" } },
+      required: ["taskId"]
+    },
+    annotations: { readOnlyHint: true }
+  },
+  {
+    name: "transfer_cancel",
+    title: "取消传输",
+    inputSchema: {
+      type: "object",
+      properties: { taskId: { type: "string" } },
+      required: ["taskId"]
+    },
+    annotations: { idempotentHint: true }
+  },
+  {
     name: "ask_user",
     title: "询问用户",
     description: "在 NextShell 内弹出确认、选择或文本问询。",

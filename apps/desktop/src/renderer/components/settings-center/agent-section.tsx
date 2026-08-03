@@ -124,6 +124,22 @@ export const AgentSection = () => {
     }
   };
 
+  const handleAddAllowedRoot = async (): Promise<void> => {
+    try {
+      const result = await window.nextshell.dialog.openDirectory({
+        title: "选择 Agent 可访问的本地根目录"
+      });
+      if (result.canceled || !result.filePath) return;
+      if (agentPrefs.allowedLocalRoots.includes(result.filePath)) {
+        message.info("该目录已在允许列表中");
+        return;
+      }
+      save({ agent: { allowedLocalRoots: [...agentPrefs.allowedLocalRoots, result.filePath] } });
+    } catch (error) {
+      message.error(`选择目录失败：${formatErrorMessage(error, "请稍后重试")}`);
+    }
+  };
+
   const handleCopyClientConfig = async (): Promise<void> => {
     setCopyingConfig(true);
     try {
@@ -328,6 +344,104 @@ export const AgentSection = () => {
             Cursor 一键安装与自动写入 Claude Desktop 配置文件将在后续版本支持，当前请手动粘贴上方配置。
           </div>
         )}
+      </SettingsCard>
+
+      <SettingsCard
+        title="写操作与命令确认"
+        description="Agent 执行写操作或不在只读白名单里的命令时，是否在应用内弹窗确认"
+      >
+        <SettingsSwitchRow
+          label="写操作需要确认"
+          hint="文件写入 / 创建目录 / 重命名。关闭后这些操作不再弹窗；删除与文件传输始终确认，不受此项影响"
+          checked={agentPrefs.confirmWrites}
+          disabled={prefsLoading}
+          onChange={(v) => save({ agent: { confirmWrites: v } })}
+        />
+        <SettingsSwitchRow
+          label="未知命令需要确认"
+          hint="命令不在只读白名单也不在危险黑名单时弹窗。危险命令与 sudo 始终确认，不受此项影响"
+          checked={agentPrefs.confirmUnknownCommands}
+          disabled={prefsLoading}
+          onChange={(v) => save({ agent: { confirmUnknownCommands: v } })}
+        />
+        <SettingsRow label="命令超时（秒）" hint="Agent 发起的单条命令最长执行时间，上限 120 秒">
+          <InputNumber
+            style={{ width: "100%" }}
+            min={1}
+            max={3600}
+            precision={0}
+            value={agentPrefs.execTimeoutSec}
+            disabled={prefsLoading}
+            onChange={(v) => {
+              if (typeof v === "number" && Number.isInteger(v)) {
+                save({ agent: { execTimeoutSec: v } });
+              }
+            }}
+          />
+        </SettingsRow>
+      </SettingsCard>
+
+      <SettingsCard
+        title="本地路径策略"
+        description="限制 Agent 在本机可读写的范围。文件传输是本机文件外泄与被篡改的唯一通道，这里是它的闸门"
+      >
+        <SettingsRow
+          label="允许的本地根目录"
+          hint="留空表示不限制目录（拒绝清单仍然生效）。设置后，Agent 的上传与下载只能落在这些目录内"
+        >
+          <div className="flex flex-col gap-2">
+            {agentPrefs.allowedLocalRoots.length > 0 ? (
+              <Space size={[4, 4]} wrap>
+                {agentPrefs.allowedLocalRoots.map((root) => (
+                  <Tag
+                    key={root}
+                    closable
+                    onClose={() =>
+                      save({
+                        agent: {
+                          allowedLocalRoots: agentPrefs.allowedLocalRoots.filter(
+                            (item) => item !== root
+                          )
+                        }
+                      })
+                    }
+                  >
+                    {root}
+                  </Tag>
+                ))}
+              </Space>
+            ) : (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                未限制目录
+              </Typography.Text>
+            )}
+            <Space>
+              <Button
+                size="small"
+                disabled={prefsLoading}
+                onClick={() => void handleAddAllowedRoot()}
+              >
+                添加目录…
+              </Button>
+              {agentPrefs.allowedLocalRoots.length > 0 && (
+                <Button
+                  size="small"
+                  type="text"
+                  danger
+                  disabled={prefsLoading}
+                  onClick={() => save({ agent: { allowedLocalRoots: [] } })}
+                >
+                  清空
+                </Button>
+              )}
+            </Space>
+          </div>
+        </SettingsRow>
+        <div className="stg-note">
+          无论是否设置允许根，以下始终拒绝：~/.ssh、~/.aws、~/.gnupg、~/.kube
+          等凭据目录，浏览器配置目录，NextShell 自身的数据目录，以及 .env / id_* / *.pem / *.key
+          等凭据文件模式。下载还会额外拒绝写入 ~/.zshrc、~/.bashrc、自启动目录与系统目录。
+        </div>
       </SettingsCard>
 
       <SettingsCard title="安全说明">

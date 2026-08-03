@@ -107,6 +107,49 @@ const deps: AgentGatewayDeps = {
       updatedAt: TIMESTAMP
     }
   ],
+  writeRemoteFile: async () => undefined,
+  makeRemoteDirectory: async () => undefined,
+  renameRemotePath: async () => undefined,
+  deleteRemotePath: async () => undefined,
+  statLocalPath: () => null,
+  localPathContext: () => ({
+    homeDir: "/home/tester",
+    appDataDir: "/home/tester/.nextshell",
+    allowedRoots: []
+  }),
+  startUpload: (input) => ({
+    taskId: "task-stub",
+    direction: "upload" as const,
+    connectionId: input.connectionId,
+    localPath: input.localPath,
+    remotePath: input.remotePath,
+    packed: input.packed,
+    state: "running" as const,
+    progress: 0,
+    transferredBytes: 0,
+    totalBytes: null,
+    startedAt: TIMESTAMP,
+    finishedAt: null,
+    error: null
+  }),
+  startDownload: (input) => ({
+    taskId: "task-stub",
+    direction: "download" as const,
+    connectionId: input.connectionId,
+    localPath: input.localPath,
+    remotePath: input.remotePath,
+    packed: false,
+    state: "running" as const,
+    progress: 0,
+    transferredBytes: 0,
+    totalBytes: null,
+    startedAt: TIMESTAMP,
+    finishedAt: null,
+    error: null
+  }),
+  getTransfer: () => undefined,
+  cancelTransfer: () => false,
+  runningTransferCount: () => 0,
   appendAuditLog: () => undefined,
   getPreferences: () => DEFAULT_APP_PREFERENCES
 };
@@ -134,23 +177,31 @@ const structured = (result: unknown): { ok: boolean; data?: any; error?: any } =
   (result as { structuredContent: { ok: boolean; data?: unknown; error?: unknown } })
     .structuredContent as { ok: boolean; data?: any; error?: any };
 
-describe("phase 1 tool registration", () => {
-  test("exposes read, exec and interaction tools with honest annotations", async () => {
+describe("tool registration", () => {
+  test("exposes read, exec, write, transfer and interaction tools with honest annotations", async () => {
     const listed = await client.listTools();
 
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
       "ask_user",
       "command_search",
       "exec",
+      "file_delete",
       "file_list",
+      "file_mkdir",
       "file_read",
+      "file_rename",
       "file_stat",
+      "file_write",
       "host_describe",
       "host_list",
       "monitor_snapshot",
       "notify_user",
       "session_history",
-      "session_list"
+      "session_list",
+      "transfer_cancel",
+      "transfer_download",
+      "transfer_status",
+      "transfer_upload"
     ]);
     const readOnly = listed.tools.filter((tool) =>
       [
@@ -162,17 +213,28 @@ describe("phase 1 tool registration", () => {
         "host_list",
         "monitor_snapshot",
         "session_history",
-        "session_list"
+        "session_list",
+        "transfer_status"
       ].includes(tool.name)
     );
     for (const tool of readOnly) {
       expect(tool.annotations?.readOnlyHint).toBe(true);
       expect(tool.annotations?.destructiveHint).toBe(false);
     }
-    expect(listed.tools.find((tool) => tool.name === "exec")?.annotations).toMatchObject({
-      readOnlyHint: false,
-      destructiveHint: true
-    });
+    // Only the two tools that actually destroy data claim destructiveHint;
+    // a client that escalates on that flag must not be crying wolf for mkdir.
+    expect(
+      listed.tools
+        .filter((tool) => tool.annotations?.destructiveHint === true)
+        .map((tool) => tool.name)
+        .sort()
+    ).toEqual(["exec", "file_delete"]);
+    for (const name of ["file_write", "file_mkdir", "file_rename", "transfer_upload"]) {
+      expect(listed.tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: false
+      });
+    }
   });
 });
 

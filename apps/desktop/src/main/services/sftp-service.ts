@@ -6,6 +6,7 @@ import type { WebContents } from "electron";
 import type { ConnectionProfile, RemoteFileEntry } from "../../../../../packages/core/src/index";
 import {
   SshConnection,
+  TransferCancelledError,
   isTransferCancelledError,
   type RemotePathType,
   type SftpProgressListener,
@@ -432,6 +433,20 @@ export class SftpService {
       }
     };
 
+    // Registered for the whole packed pipeline, not just the byte transfer: the
+    // queue shows a Cancel button as soon as the task appears, and a button
+    // that silently does nothing while a multi-gigabyte directory is packing is
+    // worse than no button at all.
+    const controller = taskId ? new AbortController() : undefined;
+    if (taskId && controller) {
+      this.activeTransfers.set(taskId, controller);
+    }
+    const throwIfCancelled = (): void => {
+      if (controller?.signal.aborted) {
+        throw new TransferCancelledError();
+      }
+    };
+
     this.sendTransferStatus(sender, {
       taskId,
       direction: "upload",
@@ -458,6 +473,7 @@ export class SftpService {
         message: "tar 环境检查通过"
       });
 
+      throwIfCancelled();
       await createLocalTarGzArchive(resolvedLocalPaths, localArchivePath);
       localArchiveCreated = true;
       this.sendTransferStatus(sender, {
@@ -471,7 +487,11 @@ export class SftpService {
         message: "本地打包完成"
       });
 
-      await connection.upload(localArchivePath, remoteArchivePath);
+      throwIfCancelled();
+      // No byte-level listener on purpose: this pipeline reports coarse phase
+      // milestones (5/20/45/75/90), and a 0-99 byte percentage for one phase
+      // would make the bar jump backwards.
+      await connection.upload(localArchivePath, remoteArchivePath, undefined, controller?.signal);
       this.sendTransferStatus(sender, {
         taskId,
         direction: "upload",
@@ -483,6 +503,7 @@ export class SftpService {
         message: "压缩包上传完成"
       });
 
+      throwIfCancelled();
       const extractResult = await connection.exec(
         buildRemoteTarExtractCommand(remoteArchivePath, normalizedRemoteDir)
       );
@@ -530,18 +551,23 @@ export class SftpService {
       });
       return { ok: true };
     } catch (error) {
+      const cancelled = isTransferCancelledError(error);
       this.sendTransferStatus(sender, {
         taskId,
         direction: "upload",
         connectionId,
         localPath: localDisplayPath,
         remotePath: remoteDisplayPath,
-        status: "failed",
+        status: cancelled ? "cancelled" : "failed",
         progress: 100,
-        error: normalizeError(error)
+        message: cancelled ? "已取消" : undefined,
+        error: cancelled ? undefined : normalizeError(error)
       });
       throw error;
     } finally {
+      if (taskId) {
+        this.activeTransfers.delete(taskId);
+      }
       await cleanupRemoteArchive();
       if (localArchiveCreated || fs.existsSync(localArchivePath)) {
         try {

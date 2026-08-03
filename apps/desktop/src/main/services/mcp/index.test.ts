@@ -7,6 +7,29 @@ import { DEFAULT_APP_PREFERENCES } from "@nextshell/core";
 import type { AppPreferences } from "@nextshell/core";
 
 import { createAgentMcpService, type AgentMcpService, type AgentMcpServiceDeps } from "./index";
+import type { AgentTransferSnapshot } from "./transfers";
+
+const TIMESTAMP = "2026-08-03T00:00:00.000Z";
+
+/** Minimal Tier 2 transfer stub; the tracker itself is covered in transfers.test.ts. */
+const stubTransfer = (
+  direction: "upload" | "download",
+  input: { connectionId: string; localPath: string; remotePath: string }
+): AgentTransferSnapshot => ({
+  taskId: "task-stub",
+  direction,
+  connectionId: input.connectionId,
+  localPath: input.localPath,
+  remotePath: input.remotePath,
+  packed: false,
+  state: "running",
+  progress: 0,
+  transferredBytes: 0,
+  totalBytes: null,
+  startedAt: TIMESTAMP,
+  finishedAt: null,
+  error: null
+});
 
 const tempDirs: string[] = [];
 let service: AgentMcpService | null = null;
@@ -42,6 +65,21 @@ const baseDeps = (
     exitCode: 0,
     executedAt: new Date().toISOString()
   }),
+  writeRemoteFile: async () => undefined,
+  makeRemoteDirectory: async () => undefined,
+  renameRemotePath: async () => undefined,
+  deleteRemotePath: async () => undefined,
+  statLocalPath: () => null,
+  localPathContext: () => ({
+    homeDir: "/home/tester",
+    appDataDir: "/home/tester/.nextshell",
+    allowedRoots: []
+  }),
+  startUpload: (input) => stubTransfer("upload", input),
+  startDownload: (input) => stubTransfer("download", input),
+  getTransfer: () => undefined,
+  cancelTransfer: () => false,
+  runningTransferCount: () => 0,
   retainConnection: () => () => undefined,
   closeConnectionIfIdle: async () => undefined,
   promptUser: async () => ({ id: randomUUID(), canceled: true }),

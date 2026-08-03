@@ -1,6 +1,6 @@
 # NextShell Agent 接入（MCP）—— 调研报告与实施方案
 
-> 状态：**Phase 0 已落地（已提交 138c655）** / **Phase 1 已落地（本次提交）** / Phase 2–5 待实施
+> 状态：**Phase 0 / 1 / 2 已落地** / Phase 3–5 待实施
 > 日期：2026-08-03
 > 范围：`apps/desktop`(main / preload / renderer)、`packages/{shared,core,terminal,ssh,storage}`、`apps/mcp-ssh-proxy` 与 `packages/runtime`(已删除)、新增 `apps/mcp-bridge` 与独立插件仓库
 
@@ -43,6 +43,22 @@
 | 3 | OscTap 每会话保留上限 = 100 条 × 512KB ≈ **51MB**，主进程常驻 | 多开几个繁忙会话即撑爆主进程内存 | 新增每会话总保留预算 `OSC_TAP_MAX_SESSION_OUTPUT_BYTES`（2MB），超限时从最旧条目起释放输出正文、保留命令与退出码并标 `truncated`；最新一条永不释放 |
 | 4 | `listSessions` 每会话调两次 `oscTaps.get()`，每次都克隆整段历史；而它在单次 gateway 调用里会被调多次 | 纯浪费，且随历史增长恶化 | 新增 `OscTap.getSummary()` / `OscTapRegistry.getSummary()`，只取 cwd 与 lastCommand；`OscTapRegistry.feed` 不再返回快照 |
 | 5 | `session_list` 工具描述仍写着「cwd 在主进程会话跟踪落地前恒为 null」 | Agent 读到这句会主动忽略 cwd —— 直接废掉用例 C 的核心能力，也让 1.2 的 cwd 继承形同虚设 | 改为如实描述：cwd 来自 OSC 7、后台标签同样可信、仅在无 shell 集成时为 null，并点明可把 sessionId 直接当 exec 的 target |
+
+**Phase 2 已完成**（typecheck 0 error / lint 0 error / 584 单测 + 34 契约测试全绿）。落地内容与本文档的偏差：
+
+| 项 | 计划 | 实际 |
+| --- | --- | --- |
+| 2.1 本地路径策略 | 拒绝清单 + 允许根 | `local-path-policy.ts`：拒绝清单（凭据目录 / 浏览器 profile / NextShell 数据目录 / `.env`·`id_*`·`*.pem` 等文件名模式）+ 允许根 + **读写分权**——下载额外拒绝写入 `~/.zshrc`·`~/.bashrc`·LaunchAgents·autostart·系统目录（覆盖它们等于本机 RCE）。路径先过符号链接解析再判定，`ln -s ~/.ssh /tmp/x` 无效 |
+| — | 未提及 | **macOS firmlink 坑**（实现时踩到）：`realpath("/Users/x/.ssh")` 返回 `/System/Volumes/Data/Users/x/.ssh`，既让所有 `~/…` 规则静默失配，又让家目录里的普通文件误命中 `/System` 写入拒绝。解法是剥离 data-volume 前缀，并且候选路径与规则基准都取「字面 + 解析」两种形态互相比对 |
+| 2.2 SFTP 写工具 | service 层补 stat/chmod/readFile/writeFile | `file_write`（1MB 上限，超出引导用 transfer_upload）/ `file_mkdir` / `file_rename` / `file_delete`。`writeFileContent` 已在 `packages/ssh`，直接经 gateway deps 暴露，未新增 service 方法；`chmod` 未做（无用例） |
+| 写确认 | `confirmWrites` 门控 | 写 / 建目录 / 重命名受 `confirmWrites` 门控；**删除与传输始终确认**——前者不可逆，后者的本地路径是远端授权无法背书的东西（§7.3） |
+| 2.3 异步传输 | 返回 taskId 轮询 | `AgentTransferTracker` 记录「谁发起的」，`transfer_status` / `transfer_cancel` 按 MCP 会话隔离；传输 detached 启动，不受调用超时约束；单客户端并发上限 4 |
+| 进度扇出 | 改 `container.ts:237` | `sendTransferStatus` 先查 tracker：命中即 `applyProgress` 并带 `origin: "agent"` 广播到所有窗口；未命中走原来的 sender 定向发送。SftpService 完全没动 |
+| — | 未提及 | `uploadRemotePacked` 原本**没有注册 AbortController**，即传输队列对目录上传的「取消」按钮是个空按钮。已补上（打包 / 上传 / 解包三个阶段都检查），user 侧同样受益 |
+| 上传目标解析 | 未明确 | `remotePath` 指向已存在的远端目录时自动追加本地文件名（对齐 `scp` 语义）——用例 B 写的就是 `remotePath: "/opt/app/"` |
+| 2.4 队列徽标 | agent 徽标 | `SftpTransferStatusEvent.origin` + `TransferTask.origin` + 队列紫色 `Agent` 标签；agent 任务标记为不可重试（重试走渲染进程自己的传输入口，重放不了 agent 的任务） |
+| 设置项 | 允许根 | 新增「写操作与命令确认」「本地路径策略」两张设置卡，接上此前无处可设的 `confirmWrites` / `confirmUnknownCommands` / `execTimeoutSec` / `allowedLocalRoots` |
+| — | 未提及 | 早退路径（参数非法 / 目标不存在 / 本地路径被拒）现在也计入限流额度——否则它们是一条不计费的探测通道 |
 
 ---
 

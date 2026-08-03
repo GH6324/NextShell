@@ -44,6 +44,38 @@ export const READ_ONLY_ANNOTATIONS = {
   openWorldHint: true
 } as const;
 
+/** Mutating but recoverable: creating a directory, writing a file, renaming. */
+export const WRITE_ANNOTATIONS = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true
+} as const;
+
+/** Data loss on the far side; clients are expected to escalate confirmation. */
+export const DESTRUCTIVE_ANNOTATIONS = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true
+} as const;
+
+export const transferSnapshotSchema = z.object({
+  taskId: z.string(),
+  direction: z.enum(["upload", "download"]),
+  connectionId: z.string(),
+  localPath: z.string(),
+  remotePath: z.string(),
+  packed: z.boolean(),
+  state: z.enum(["running", "success", "failed", "cancelled"]),
+  progress: z.number(),
+  transferredBytes: z.number(),
+  totalBytes: z.number().nullable(),
+  startedAt: z.string(),
+  finishedAt: z.string().nullable(),
+  error: z.string().nullable()
+});
+
 export const toCallToolResult = <T>(result: AgentToolResult<T>): CallToolResult => {
   if (result.ok) {
     const payload = { ok: true, data: result.data };

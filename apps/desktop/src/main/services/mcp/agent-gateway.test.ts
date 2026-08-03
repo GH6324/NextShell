@@ -12,8 +12,30 @@ import {
   type AgentRemoteFileStat,
   type AgentSessionInfo
 } from "./agent-gateway";
+import type { AgentTransferSnapshot } from "./transfers";
 
 const TIMESTAMP = "2026-08-03T00:00:00.000Z";
+
+/** Minimal Tier 2 transfer stub; the tracker itself is covered in transfers.test.ts. */
+const stubTransfer = (
+  direction: "upload" | "download",
+  input: { connectionId: string; localPath: string; remotePath: string }
+): AgentTransferSnapshot => ({
+  taskId: "task-stub",
+  direction,
+  connectionId: input.connectionId,
+  localPath: input.localPath,
+  remotePath: input.remotePath,
+  packed: false,
+  state: "running",
+  progress: 0,
+  transferredBytes: 0,
+  totalBytes: null,
+  startedAt: TIMESTAMP,
+  finishedAt: null,
+  error: null
+});
+
 
 const createConnection = (
   overrides: Partial<ConnectionProfile> & Pick<ConnectionProfile, "id" | "name" | "host">
@@ -192,6 +214,21 @@ const createHarness = (overrides: Partial<AgentGatewayDeps> = {}, limits = {}): 
       exitCode: 0,
       executedAt: TIMESTAMP
     }),
+    writeRemoteFile: async () => undefined,
+    makeRemoteDirectory: async () => undefined,
+    renameRemotePath: async () => undefined,
+    deleteRemotePath: async () => undefined,
+    statLocalPath: () => null,
+    localPathContext: () => ({
+      homeDir: "/home/tester",
+      appDataDir: "/home/tester/.nextshell",
+      allowedRoots: []
+    }),
+    startUpload: (input) => stubTransfer("upload", input),
+    startDownload: (input) => stubTransfer("download", input),
+    getTransfer: () => undefined,
+    cancelTransfer: () => false,
+    runningTransferCount: () => 0,
     retainConnection: () => () => undefined,
     closeConnectionIfIdle: async () => undefined,
     promptUser: async (request) => ({
@@ -832,5 +869,294 @@ describe("prompt-flooding guards", () => {
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.error.code).toBe("rate_limited");
     expect(prompts).toEqual(["新的 Agent 客户端请求接入", "Agent 请求执行危险命令"]);
+  });
+});
+
+describe("tier 2 writes and transfers", () => {
+  const approving = (
+    calls: Array<{ title: string; details?: string }>
+  ): Partial<AgentGatewayDeps> => ({
+    promptUser: async (request) => {
+      calls.push({ title: request.title, details: request.details });
+      return {
+        id: "00000000-0000-4000-8000-000000000000",
+        canceled: false,
+        value: "approved"
+      };
+    }
+  });
+
+  test("a readonly host refuses every mutating tool", async () => {
+    const { gateway } = createHarness();
+
+    for (const result of [
+      await gateway.writeFile(CLIENT, { target: "stage-hk", path: "/tmp/x", content: "hi" }),
+      await gateway.makeDirectory(CLIENT, { target: "stage-hk", path: "/tmp/x" }),
+      await gateway.renamePath(CLIENT, { target: "stage-hk", from: "/tmp/a", to: "/tmp/b" }),
+      await gateway.deletePath(CLIENT, { target: "stage-hk", path: "/tmp/x", type: "file" }),
+      await gateway.uploadTransfer(CLIENT, {
+        target: "stage-hk",
+        localPath: "/Users/tester/repo/dist.tar.gz",
+        remotePath: "/opt/app"
+      })
+    ]) {
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe("forbidden");
+    }
+  });
+
+  test("file_write asks before it writes and reports the byte count", async () => {
+    const prompts: Array<{ title: string; details?: string }> = [];
+    const written: Array<{ path: string; content: string }> = [];
+    const { gateway } = createHarness({
+      ...approving(prompts),
+      writeRemoteFile: async (_id, remotePath, content) => {
+        written.push({ path: remotePath, content: content.toString("utf8") });
+      }
+    });
+
+    const result = await gateway.writeFile(CLIENT, {
+      target: "prod-hk",
+      path: "/opt/app/../app/config.yaml",
+      content: "key: value"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data).toEqual({ path: "/opt/app/config.yaml", bytes: 10 });
+    expect(written).toEqual([{ path: "/opt/app/config.yaml", content: "key: value" }]);
+    expect(prompts.map((prompt) => prompt.title)).toEqual([
+      "新的 Agent 客户端请求接入",
+      "Agent 请求写入远端文件"
+    ]);
+  });
+
+  test("confirmWrites off skips the write dialog but never the delete dialog", async () => {
+    const prompts: Array<{ title: string; details?: string }> = [];
+    const { gateway } = createHarness({
+      ...approving(prompts),
+      getPreferences: () => ({
+        ...DEFAULT_APP_PREFERENCES,
+        agent: { ...DEFAULT_APP_PREFERENCES.agent, confirmWrites: false }
+      })
+    });
+
+    await gateway.makeDirectory(CLIENT, { target: "prod-hk", path: "/opt/app" });
+    await gateway.deletePath(CLIENT, { target: "prod-hk", path: "/opt/old", type: "directory" });
+
+    expect(prompts.map((prompt) => prompt.title)).toEqual([
+      "新的 Agent 客户端请求接入",
+      "Agent 请求删除远端路径"
+    ]);
+    expect(prompts.at(-1)?.details).toContain("递归删除");
+  });
+
+  test("deleting the filesystem root is refused outright", async () => {
+    const { gateway } = createHarness();
+    const result = await gateway.deletePath(CLIENT, {
+      target: "prod-hk",
+      path: "/",
+      type: "directory"
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("forbidden");
+  });
+
+  test("transfer_upload refuses a denied local path before any confirmation", async () => {
+    const prompts: Array<{ title: string; details?: string }> = [];
+    const started: string[] = [];
+    const { gateway } = createHarness({
+      ...approving(prompts),
+      startUpload: (input) => {
+        started.push(input.localPath);
+        return stubTransfer("upload", input);
+      }
+    });
+
+    const byDirectory = await gateway.uploadTransfer(CLIENT, {
+      target: "prod-hk",
+      localPath: "/home/tester/.ssh/config",
+      remotePath: "/tmp"
+    });
+    const byFilename = await gateway.uploadTransfer(CLIENT, {
+      target: "prod-hk",
+      localPath: "/home/tester/backup/id_rsa",
+      remotePath: "/tmp"
+    });
+
+    expect(byDirectory.ok).toBe(false);
+    if (!byDirectory.ok) {
+      expect(byDirectory.error.code).toBe("forbidden");
+      expect(byDirectory.error.message).toContain(".ssh");
+    }
+    expect(byFilename.ok).toBe(false);
+    if (!byFilename.ok) {
+      expect(byFilename.error.code).toBe("forbidden");
+      expect(byFilename.error.message).toContain("id_rsa");
+    }
+    expect(started).toEqual([]);
+    // A policy denial is decided before any dialog: the user is never asked to
+    // approve something the policy has already refused.
+    expect(prompts).toEqual([]);
+  });
+
+  test("transfer_upload shows the full local path and starts the transfer detached", async () => {
+    const prompts: Array<{ title: string; details?: string }> = [];
+    const { gateway } = createHarness({
+      ...approving(prompts),
+      statLocalPath: () => ({ type: "file", size: 4096 })
+    });
+
+    const result = await gateway.uploadTransfer(CLIENT, {
+      target: "prod-hk",
+      localPath: "/home/tester/repo/dist.tar.gz",
+      remotePath: "/opt/app/dist.tar.gz"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.state).toBe("running");
+    const dialog = prompts.at(-1);
+    expect(dialog?.title).toBe("Agent 请求上传本机文件");
+    expect(dialog?.details).toContain("/home/tester/repo/dist.tar.gz");
+    expect(dialog?.details).toContain("4096 字节");
+  });
+
+  test("a directory upload is announced as a packed transfer", async () => {
+    const prompts: Array<{ title: string; details?: string }> = [];
+    const packedFlags: boolean[] = [];
+    const { gateway } = createHarness({
+      ...approving(prompts),
+      statLocalPath: () => ({ type: "directory", size: 0 }),
+      startUpload: (input) => {
+        packedFlags.push(input.packed);
+        return stubTransfer("upload", input);
+      }
+    });
+
+    const result = await gateway.uploadTransfer(CLIENT, {
+      target: "prod-hk",
+      localPath: "/home/tester/repo/dist",
+      remotePath: "/opt/app"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(packedFlags).toEqual([true]);
+    expect(prompts.at(-1)?.details).toContain("打包");
+  });
+
+  test("transfer_download refuses a destination that would be executed at login", async () => {
+    const prompts: Array<{ title: string; details?: string }> = [];
+    const { gateway } = createHarness(approving(prompts));
+
+    const result = await gateway.downloadTransfer(CLIENT, {
+      target: "prod-hk",
+      remotePath: "/tmp/payload",
+      localPath: "/home/tester/.zshrc"
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("forbidden");
+  });
+
+  test("transfer_status and transfer_cancel only see this client's tasks", async () => {
+    const { gateway } = createHarness({
+      getTransfer: (taskId, clientId) =>
+        clientId === CLIENT.id && taskId === "mine"
+          ? stubTransfer("upload", {
+              connectionId: grantedFull.id,
+              localPath: "/tmp/a",
+              remotePath: "/tmp/b"
+            })
+          : undefined,
+      cancelTransfer: () => true
+    });
+
+    const mine = await gateway.transferStatus(CLIENT, { taskId: "mine" });
+    const theirs = await gateway.transferStatus(CLIENT, { taskId: "theirs" });
+    const cancelled = await gateway.cancelTransfer(CLIENT, { taskId: "mine" });
+
+    expect(mine.ok).toBe(true);
+    expect(theirs.ok).toBe(false);
+    if (!theirs.ok) expect(theirs.error.code).toBe("not_found");
+    expect(cancelled.ok).toBe(true);
+    if (cancelled.ok) expect(cancelled.data.cancelRequested).toBe(true);
+  });
+
+  test("a client cannot exceed its concurrent transfer budget", async () => {
+    const { gateway } = createHarness(
+      { runningTransferCount: () => 4, statLocalPath: () => ({ type: "file", size: 1 }) },
+      { maxConcurrentTransfers: 4 }
+    );
+
+    const result = await gateway.uploadTransfer(CLIENT, {
+      target: "prod-hk",
+      localPath: "/home/tester/repo/dist.tar.gz",
+      remotePath: "/opt/app"
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("busy");
+  });
+
+  test("an oversized inline write is rejected before it reaches SFTP", async () => {
+    const writes: number[] = [];
+    const { gateway } = createHarness(
+      {
+        writeRemoteFile: async (_id, _path, content) => {
+          writes.push(content.byteLength);
+        }
+      },
+      { maxWriteBytes: 16 }
+    );
+
+    const result = await gateway.writeFile(CLIENT, {
+      target: "prod-hk",
+      path: "/tmp/big",
+      content: "x".repeat(64)
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("too_large");
+    expect(writes).toEqual([]);
+  });
+});
+
+describe("upload destination resolution", () => {
+  const uploadHarness = (remoteType: AgentRemoteFileStat["type"]) => {
+    const started: Array<{ remotePath: string; packed: boolean }> = [];
+    const { gateway } = createHarness({
+      statLocalPath: () => ({ type: "file", size: 10 }),
+      statRemoteFile: async (_id, remotePath) => fileStat({ path: remotePath, type: remoteType }),
+      startUpload: (input) => {
+        started.push({ remotePath: input.remotePath, packed: input.packed });
+        return stubTransfer("upload", input);
+      }
+    });
+    return { gateway, started };
+  };
+
+  test("a file addressed at a remote directory lands inside it", async () => {
+    const { gateway, started } = uploadHarness("directory");
+
+    await gateway.uploadTransfer(CLIENT, {
+      target: "prod-hk",
+      localPath: "/home/tester/repo/dist/app-1.0.tar.gz",
+      remotePath: "/opt/app/"
+    });
+
+    expect(started).toEqual([{ remotePath: "/opt/app/app-1.0.tar.gz", packed: false }]);
+  });
+
+  test("an explicit remote file path is used verbatim", async () => {
+    const { gateway, started } = uploadHarness("file");
+
+    await gateway.uploadTransfer(CLIENT, {
+      target: "prod-hk",
+      localPath: "/home/tester/repo/dist/app-1.0.tar.gz",
+      remotePath: "/opt/app/release.tar.gz"
+    });
+
+    expect(started).toEqual([{ remotePath: "/opt/app/release.tar.gz", packed: false }]);
   });
 });
