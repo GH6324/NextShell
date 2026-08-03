@@ -1,6 +1,6 @@
 import type { IDecoration, IMarker, Terminal } from "@xterm/xterm";
 import { useSessionOscStore, type CommandMark } from "../../store/useSessionOscStore";
-import { recordCommandHistoryEntry } from "../../hooks/commandHistoryBus";
+import { consumeSentCommandEcho, recordCommandHistoryEntry } from "../../hooks/commandHistoryBus";
 import type { OscRuntimeContext } from "../oscRuntime";
 
 // OSC 133 (FinalTerm semantic prompts / shell integration): the remote shell
@@ -136,6 +136,11 @@ export interface ShellCommandTrackerDeps {
   appendMark(sessionId: string, mark: CommandMark): void;
   clearMarks(sessionId: string): void;
   pushHistory(command: string): void;
+  /**
+   * True when this command was already recorded by whoever sent it into the
+   * terminal (input bar, 命令库) — its echo must not be pushed again.
+   */
+  consumeSentCommandEcho(sessionId: string, command: string): boolean;
 }
 
 interface PendingCommand {
@@ -145,13 +150,13 @@ interface PendingCommand {
   inputColumn?: number;
   commandText?: string;
   startedAt?: number;
+  recordedBySender?: boolean;
 }
 
 export class ShellCommandTracker {
   private readonly pendingBySession = new Map<string, PendingCommand>();
   private readonly promptMarkersBySession = new Map<string, IMarker[]>();
   private readonly decorationsBySession = new Map<string, IDecoration[]>();
-  private readonly lastPushedCommandBySession = new Map<string, string>();
   private nextMarkId = 0;
 
   constructor(private readonly deps: ShellCommandTrackerDeps) {}
@@ -229,7 +234,6 @@ export class ShellCommandTracker {
 
   dispose(): void {
     this.disposeTrackedResources();
-    this.lastPushedCommandBySession.clear();
   }
 
   // xterm disposes a marker once its line falls out of the scrollback, but the
@@ -318,6 +322,13 @@ export class ShellCommandTracker {
 
     const commandText = lines.join("\n").trim();
     pending.commandText = commandText ? commandText : undefined;
+
+    // Matched at command start rather than completion: C follows the send
+    // almost immediately, while D can be minutes away for a long-running
+    // command — far past any sane note TTL.
+    if (pending.commandText) {
+      pending.recordedBySender = this.deps.consumeSentCommandEcho(sessionId, pending.commandText);
+    }
   }
 
   private finalizePending(sessionId: string, exitCode: number | undefined): void {
@@ -348,14 +359,12 @@ export class ShellCommandTracker {
       }
     }
 
-    // History push is a side effect: never while replaying a session buffer.
-    // The last-pushed string skips immediate duplicates renderer-side; the
-    // main process dedupe stays authoritative.
-    if (!this.deps.isReplaying() && pending.commandText) {
-      if (this.lastPushedCommandBySession.get(sessionId) !== pending.commandText) {
-        this.lastPushedCommandBySession.set(sessionId, pending.commandText);
-        this.deps.pushHistory(pending.commandText);
-      }
+    // History push is a side effect: never while replaying a session buffer,
+    // and never for an echo of a command some other sender already recorded.
+    // Beyond that every completed A→C→D cycle is a genuine execution — even
+    // an immediate repeat of the previous command must bump its use count.
+    if (!this.deps.isReplaying() && pending.commandText && !pending.recordedBySender) {
+      this.deps.pushHistory(pending.commandText);
     }
   }
 
@@ -412,7 +421,8 @@ export const install = (terminal: Terminal, ctx: OscRuntimeContext): (() => void
       // Through the shared bus so the rendered history list updates too, not
       // just the persisted one.
       recordCommandHistoryEntry(command);
-    }
+    },
+    consumeSentCommandEcho: (sessionId, command) => consumeSentCommandEcho(sessionId, command)
   });
 
   const oscRegistration = terminal.parser.registerOscHandler(133, (data) =>

@@ -35,6 +35,7 @@ import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
 import { TransferQueuePanel } from "./TransferQueuePanel";
 import { TraceroutePane } from "./TraceroutePane";
 import { useCommandHistory } from "../hooks/useCommandHistory";
+import { recordSentCommand } from "../hooks/commandHistoryBus";
 import { useEditorTabStore } from "../store/useEditorTabStore";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import { useSessionOscStore } from "../store/useSessionOscStore";
@@ -375,9 +376,9 @@ const WorkspaceLayoutComponent = ({
       window.nextshell.session
         .write({ sessionId: activeTerminalSessionId, data: `${command}\r` })
         .catch(() => message.error("发送命令失败"));
-      void commandHistory.push(command);
+      recordSentCommand(activeTerminalSessionId, command);
     },
-    [activeTerminalSessionId, activeTerminalSessionStatus, commandHistory.push, message]
+    [activeTerminalSessionId, activeTerminalSessionStatus, message]
   );
 
   const headerSessionText = useMemo(() => {

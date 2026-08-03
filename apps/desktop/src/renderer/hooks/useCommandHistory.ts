@@ -4,7 +4,7 @@ import {
   applyOptimisticCommandHistoryPush,
   applyOptimisticCommandHistoryRemove
 } from "./useCommandHistory.helpers";
-import { recordCommandHistoryEntry, subscribeCommandHistory } from "./commandHistoryBus";
+import { subscribeCommandHistory } from "./commandHistoryBus";
 
 export type { CommandHistoryEntry };
 
@@ -37,10 +37,6 @@ export const useCommandHistory = () => {
       }),
     []
   );
-
-  const push = useCallback(async (command: string) => {
-    recordCommandHistoryEntry(command);
-  }, []);
 
   const remove = useCallback(
     async (command: string) => {
@@ -116,7 +112,6 @@ export const useCommandHistory = () => {
   return useMemo(
     () => ({
       entries,
-      push,
       remove,
       clear,
       search,
@@ -124,6 +119,6 @@ export const useCommandHistory = () => {
       navigateDown,
       resetNavigation
     }),
-    [entries, push, remove, clear, search, navigateUp, navigateDown, resetNavigation]
+    [entries, remove, clear, search, navigateUp, navigateDown, resetNavigation]
   );
 };

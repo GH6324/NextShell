@@ -53,6 +53,9 @@ const createHarness = () => {
   const clearedSessions: string[] = [];
   const pushedHistory: string[] = [];
   const scrolls: number[] = [];
+  // Commands the "sender side" (input bar / 命令库) claims to have recorded
+  // already; consumed once per entry, like the real echo ledger.
+  const sentCommandNotes: Array<{ sessionId: string; command: string }> = [];
 
   const tracker = new ShellCommandTracker({
     getSessionId: () => state.sessionId,
@@ -102,6 +105,16 @@ const createHarness = () => {
     },
     pushHistory: (command) => {
       pushedHistory.push(command);
+    },
+    consumeSentCommandEcho: (sessionId, command) => {
+      const index = sentCommandNotes.findIndex(
+        (note) => note.sessionId === sessionId && note.command === command
+      );
+      if (index >= 0) {
+        sentCommandNotes.splice(index, 1);
+        return true;
+      }
+      return false;
     }
   });
 
@@ -114,7 +127,8 @@ const createHarness = () => {
     appendedMarks,
     clearedSessions,
     pushedHistory,
-    scrolls
+    scrolls,
+    sentCommandNotes
   };
 };
 
@@ -358,7 +372,7 @@ describe("ShellCommandTracker", () => {
     expect(harness.appendedMarks).toHaveLength(0);
   });
 
-  test("skips immediate duplicate history pushes but keeps the marks", () => {
+  test("an immediate repeat of the same command is a genuine execution and is pushed again", () => {
     const harness = createHarness();
 
     driveCommand(harness, { promptLine: 1, command: "ls", exitCode: 0 });
@@ -366,7 +380,27 @@ describe("ShellCommandTracker", () => {
     driveCommand(harness, { promptLine: 5, command: "pwd", exitCode: 0 });
 
     expect(harness.appendedMarks).toHaveLength(3);
-    expect(harness.pushedHistory).toEqual(["ls", "pwd"]);
+    expect(harness.pushedHistory).toEqual(["ls", "ls", "pwd"]);
+  });
+
+  test("the echo of a sender-recorded command is not pushed again, but its mark survives", () => {
+    const harness = createHarness();
+    harness.sentCommandNotes.push({ sessionId: "s1", command: "ls" });
+
+    driveCommand(harness, { promptLine: 1, command: "ls", exitCode: 0 });
+
+    expect(harness.appendedMarks).toHaveLength(1);
+    expect(harness.pushedHistory).toEqual([]);
+  });
+
+  test("a note is consumed once: typing the same command afterwards is pushed", () => {
+    const harness = createHarness();
+    harness.sentCommandNotes.push({ sessionId: "s1", command: "ls" });
+
+    driveCommand(harness, { promptLine: 1, command: "ls", exitCode: 0 });
+    driveCommand(harness, { promptLine: 3, command: "ls", exitCode: 0 });
+
+    expect(harness.pushedHistory).toEqual(["ls"]);
   });
 
   test("replay rebuilds marks without duplicates and pushes no history", () => {

@@ -16,6 +16,10 @@
   padding: 0 4px 0 0;
 }
 
+.app-shell--with-wallpaper .cib-bar {
+  background: color-mix(in srgb, #0a1420 calc(var(--app-background-opacity, 60) * 1%), transparent);
+}
+
 .cib-history-toggle {
   display: flex;
   align-items: center;
@@ -182,6 +186,12 @@
   box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   animation: cib-slide-up 0.12s ease-out;
+}
+
+/* The dark panel is opaque already; this covers the light theme, whose
+   var(--bg-elevated) goes semi-transparent under a wallpaper. */
+.app-shell--with-wallpaper .cib-panel {
+  backdrop-filter: blur(6px);
 }
 
 @keyframes cib-slide-up {

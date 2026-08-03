@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { App as AntdApp } from "antd";
 import type { SessionDescriptor } from "@nextshell/core";
 import type { useCommandHistory, CommandHistoryEntry } from "../hooks/useCommandHistory";
+import { recordSentCommand } from "../hooks/commandHistoryBus";
 
 interface CommandInputBarProps {
   session?: SessionDescriptor;
@@ -27,7 +28,7 @@ export const CommandInputBar = ({
   onTerminalSearchPrevious
 }: CommandInputBarProps) => {
   const { message } = AntdApp.useApp();
-  const { entries, push, remove, clear, search, navigateUp, navigateDown, resetNavigation } =
+  const { entries, remove, clear, search, navigateUp, navigateDown, resetNavigation } =
     commandHistory;
 
   const [commandInput, setCommandInput] = useState("");
@@ -79,12 +80,12 @@ export const CommandInputBar = ({
         .write({ sessionId: session.id, data: `${trimmed}\r` })
         .catch(() => message.error("发送命令失败"));
 
-      void push(trimmed);
+      recordSentCommand(session.id, trimmed);
       setCommandInput("");
       setPanelOpen(false);
       resetNavigation();
     },
-    [session, push, resetNavigation]
+    [session, resetNavigation]
   );
 
   const openHistoryPanel = useCallback(() => {
@@ -228,6 +229,22 @@ export const CommandInputBar = ({
 
   const isConnected = session?.status === "connected";
   const canSearch = Boolean(session);
+
+  // With no terminal session there is nothing the bar can act on — reset any
+  // leftover panel/search state so the bar reappears in its ground state.
+  useEffect(() => {
+    if (session) {
+      return;
+    }
+    setPanelOpen(false);
+    if (searchMode) {
+      onSearchModeChange(false);
+    }
+  }, [session, searchMode, onSearchModeChange]);
+
+  if (!session) {
+    return null;
+  }
 
   return (
     <div className="cib-root" ref={rootRef}>
@@ -380,7 +397,9 @@ export const CommandInputBar = ({
                 ? "搜索终端输出，Enter 下一条 / Shift+Enter 上一条…"
                 : isConnected
                   ? "输入命令，回车发送；↑/↓ 翻阅历史…"
-                  : "请先建立 SSH 连接"
+                  : session.status === "connecting"
+                    ? "正在连接…"
+                    : "连接已断开，重连后可输入命令"
             }
             disabled={searchMode ? !canSearch : !isConnected}
             spellCheck={false}
