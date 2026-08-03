@@ -30,6 +30,24 @@ app's endpoint file automatically; if NextShell is not running, tools return a c
 | `skills/disk-forensics` | "哪个文件夹占用最大" — du drill-down anchored on the user's session cwd |
 | `commands/nextshell-triage.md` | `/nextshell:nextshell-triage <host>` |
 | `agents/sre-operator.md` | Subagent restricted to the read-only tool tier |
+| `skills/nextshell-cli` | MCP-free access: a self-contained CLI + SKILL.md for agents that speak shell but not MCP |
+
+## No MCP? Use the skill instead
+
+Any agent that can run shell commands and read locally installed skills (Claude Code,
+Copilot, Cursor, custom harnesses) can skip MCP entirely: copy `skills/nextshell-cli/`
+into the agent's skills directory (e.g. `~/.claude/skills/`). The skill wraps
+`scripts/nextshell-cli.mjs`, a single-file Node CLI that discovers the running app's
+endpoint the same way the bridge does:
+
+```bash
+node skills/nextshell-cli/scripts/nextshell-cli.mjs status
+node skills/nextshell-cli/scripts/nextshell-cli.mjs exec --target web-1 --command uptime
+```
+
+Same trust model as MCP: zero credentials in the CLI, per-host authorization and all
+confirmations enforced by NextShell itself. The trade-off is coarser client-side
+permissioning — everything is a `Bash(node …)` call, so per-tool allowlists don't apply.
 
 ## Permission allowlist examples
 
@@ -61,7 +79,9 @@ the plugin cannot weaken those.
 ```
 pnpm --filter @nextshell/mcp-bridge run build
 cp apps/mcp-bridge/dist/index.js nextshell-plugin/bin/bridge.mjs
+pnpm --filter @nextshell/mcp-bridge run build:cli
+cp apps/mcp-bridge/dist/cli.js nextshell-plugin/skills/nextshell-cli/scripts/nextshell-cli.mjs
 ```
 
-Re-copy it whenever the bridge changes; the static tool manifest it answers `tools/list` with
-lives inside the bundle.
+Re-copy them whenever the bridge changes; the static tool manifest they answer
+`tools/list` / `tools` with lives inside the bundles.
