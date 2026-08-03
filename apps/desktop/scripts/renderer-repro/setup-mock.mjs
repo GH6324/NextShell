@@ -282,7 +282,6 @@ async (page) => {
         clearRemembered: () => ok,
         passwordStatus: async () => ({ configured: false, unlocked: false, remembered: false }),
         getCached: async () => ({ cached: false }),
-        copyMcpProxyConfig: async () => ({ ok: true }),
         reauthorizeCredentialStore: async () => ({ ok: true, status: "available" })
       },
       sshKey: { list: async () => [], upsert: async (p) => p, remove: () => ok },

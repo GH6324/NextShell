@@ -1,6 +1,6 @@
 # NextShell Agent 接入（MCP）—— 调研报告与实施方案
 
-> 状态：**Phase 0 / 1 / 2 / 3 / 4 已落地** / Phase 5 待实施
+> 状态：**Phase 0 / 1 / 2 / 3 / 4 / 5 已全部落地**
 > 日期：2026-08-03
 > 范围：`apps/desktop`(main / preload / renderer)、`packages/{shared,core,terminal,ssh,storage}`、`apps/mcp-ssh-proxy` 与 `packages/runtime`(已删除)、新增 `apps/mcp-bridge` 与独立插件仓库
 
@@ -85,6 +85,17 @@
 | 4.3 输入抢占 | 人一敲键盘即暂停注入 | 3 秒窗口内有真人击键则注入返回 `busy`。人赢，agent 让路——两股输入流交织进同一个行编辑器，轻则命令乱码，重则拼出一条谁也没打算执行的命令 |
 | 确认策略 | 未明确 | `session_send_keys` / `session_open` / `session_close` **始终确认**（`confirmWrites` 管不着）；`session_send_signal` 里只有 `interrupt` 免确认——那是人叫停失控 agent 的手段，不该反过来被 agent 的确认框挡住 |
 | — | 未提及 | 注入确认框里控制字节按名字显示（`<Ctrl-C>`）：藏在一行看似无害的文本中间的不可见 `` 正是这个弹窗要暴露的东西 |
+
+**Phase 5 已完成**（typecheck 0 error / lint 0 error / 633 单测 + 34 契约测试全绿）。落地内容与本文档的偏差：
+
+| 项 | 计划 | 实际 |
+| --- | --- | --- |
+| 5.1 插件仓库 | 独立仓库 HynoR/nextshell-plugin | 以本仓 `nextshell-plugin/` 目录为该仓库的源（含 `.claude-plugin/{plugin.json,marketplace.json}`、三个 skills、command、只读 sre-operator 子代理）。`bin/bridge.mjs` 是 `apps/mcp-bridge` 构建产物的拷贝（43KB，已提交，README 记录刷新命令）；已实测 plain node 下独立应答 `initialize` + 27 工具静态清单 |
+| 5.2 Cursor deeplink | deeplink 一键安装 | `installCursor`：TCP 开着走 `{url, headers}`，否则 stdio 桥配置，base64 进 `cursor://anysphere.cursor-deeplink/mcp/install`，`shell.openExternal` 打开 |
+| 5.2 Claude Desktop 写入 | 改配置文件，操作前确认 | 渲染层 Popconfirm 确认后合并写入 `claude_desktop_config.json`：保留无关键；**existing 文件是坏 JSON 或顶层非对象时拒绝写入**（宁可失败不可清掉用户手改的配置）；Claude 配置目录不存在视为未安装、直接报错不创建。**恒用 stdio 桥**（Claude Desktop 不吃 http 配置），TCP 开着也一样 |
+| 5.2 `.mcpb` 导出 | 未明确 | 手写最小 ZIP writer（store 不压缩，含 CRC32 与 unix mode，实测系统 `unzip -t` 通过，零新依赖），打包 `manifest.json`（manifest_version 0.2，`server.type: node`）+ 桥 bundle；保存对话框注入为 `chooseSavePath` dep，桥缺失在弹框前就失败 |
+| 5.3 删旧 proxy | 本阶段删除 | Phase 0 时已整体删除（`apps/mcp-ssh-proxy`、`packages/runtime` 均不存在）；本阶段仅清掉 renderer-repro mock 里残留的 `copyMcpProxyConfig` 桩 |
+| 5.4 威胁模型 | 纳入三个新主体 | `docs/threat-model.md` 重写：新增威胁 5–8（本地监听端点、agent 半可信主体、传输通道外泄/篡改、PTY 抢占）与对应控制措施节；待补充项补记会话数据留存与 Windows 命名管道未实测 |
 
 ---
 

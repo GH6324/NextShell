@@ -220,6 +220,84 @@ describe("agent mcp service", () => {
     expect(clipboard).toEqual([]);
   });
 
+  test("installCursor opens a deeplink that carries the bridge config", async () => {
+    const userDataDir = await createTempDir();
+    const preferences = withAgent({ enabled: true });
+    const opened: string[] = [];
+    const bridgeEntry = path.join(userDataDir, "mcp-bridge", "index.js");
+    service = createAgentMcpService(
+      baseDeps(userDataDir, () => preferences, {
+        resolveBridgeEntry: () => bridgeEntry,
+        bridgeRuntimePath: "/apps/NextShell",
+        openExternal: async (url) => {
+          opened.push(url);
+        }
+      })
+    );
+    await service.start();
+
+    const result = await service.installCursor();
+    expect(result.ok).toBe(true);
+    expect(opened).toEqual([result.deeplink]);
+    expect(result.deeplink).toContain("cursor://anysphere.cursor-deeplink/mcp/install?name=nextshell");
+    const encoded = decodeURIComponent(result.deeplink.split("config=")[1]!);
+    const decoded = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+    expect(decoded.command).toBe("/apps/NextShell");
+    expect(decoded.args).toEqual([bridgeEntry]);
+  });
+
+  test("installClaudeDesktop merges the stdio bridge into the config file", async () => {
+    const userDataDir = await createTempDir();
+    const preferences = withAgent({ enabled: true, tcpEnabled: true });
+    const bridgeEntry = path.join(userDataDir, "mcp-bridge", "index.js");
+    const claudeDir = path.join(userDataDir, "Claude");
+    const configPath = path.join(claudeDir, "claude_desktop_config.json");
+    const { mkdir, readFile } = await import("node:fs/promises");
+    await mkdir(claudeDir, { recursive: true });
+    service = createAgentMcpService(
+      baseDeps(userDataDir, () => preferences, {
+        resolveBridgeEntry: () => bridgeEntry,
+        bridgeRuntimePath: "/apps/NextShell",
+        claudeDesktopConfigPath: configPath
+      })
+    );
+    await service.start();
+
+    const result = service.installClaudeDesktop();
+    expect(result.configPath).toBe(configPath);
+    const written = JSON.parse(await readFile(configPath, "utf8"));
+    // Claude Desktop only speaks stdio: even with TCP listening, it gets the bridge.
+    expect(written.mcpServers.nextshell.command).toBe("/apps/NextShell");
+    expect(written.mcpServers.nextshell.env.ELECTRON_RUN_AS_NODE).toBe("1");
+  });
+
+  test("exportMcpb writes a bundle and honours dialog cancellation", async () => {
+    const userDataDir = await createTempDir();
+    const preferences = withAgent({ enabled: true });
+    const bridgeEntry = path.join(userDataDir, "bridge.js");
+    const savePath = path.join(userDataDir, "nextshell.mcpb");
+    const { writeFile, readFile } = await import("node:fs/promises");
+    await writeFile(bridgeEntry, "#!/usr/bin/env node\n// bridge\n");
+    let nextSavePath: string | null = savePath;
+    service = createAgentMcpService(
+      baseDeps(userDataDir, () => preferences, {
+        resolveBridgeEntry: () => bridgeEntry,
+        chooseSavePath: async () => nextSavePath
+      })
+    );
+    await service.start();
+
+    const exported = await service.exportMcpb();
+    expect(exported).toEqual({ ok: true, filePath: savePath });
+    const bundle = await readFile(savePath);
+    expect(bundle.readUInt32LE(0)).toBe(0x04034b50); // ZIP local header
+    expect(bundle.toString("latin1")).toContain("manifest.json");
+
+    nextSavePath = null;
+    const canceled = await service.exportMcpb();
+    expect(canceled).toEqual({ ok: false, canceled: true });
+  });
+
   test("client config switches to loopback HTTP when TCP is on", async () => {
     const userDataDir = await createTempDir();
     const preferences = withAgent({ enabled: true, tcpEnabled: true });

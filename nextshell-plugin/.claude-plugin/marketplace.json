@@ -1,0 +1,11 @@
+{
+  "name": "nextshell",
+  "owner": { "name": "HynoR" },
+  "plugins": [
+    {
+      "name": "nextshell",
+      "source": "./",
+      "description": "Operate your servers through a running NextShell desktop app — zero credentials in the agent config, every action visible and revocable in the GUI."
+    }
+  ]
+}

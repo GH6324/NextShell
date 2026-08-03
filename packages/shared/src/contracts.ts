@@ -923,6 +923,9 @@ export const agentRotateTokenSchema = z.object({});
 export const agentCopyClientConfigSchema = z.object({
   client: agentClientKindSchema.default("claude-code")
 });
+export const agentInstallCursorSchema = z.object({});
+export const agentInstallClaudeDesktopSchema = z.object({});
+export const agentExportMcpbSchema = z.object({});
 
 export const agentPromptRequestSchema = z.object({
   id: z.string().uuid(),
@@ -977,6 +980,9 @@ export type AgentEnableInput = z.infer<typeof agentEnableSchema>;
 export type AgentDisableInput = z.infer<typeof agentDisableSchema>;
 export type AgentRotateTokenInput = z.infer<typeof agentRotateTokenSchema>;
 export type AgentCopyClientConfigInput = z.infer<typeof agentCopyClientConfigSchema>;
+export type AgentInstallCursorInput = z.infer<typeof agentInstallCursorSchema>;
+export type AgentInstallClaudeDesktopInput = z.infer<typeof agentInstallClaudeDesktopSchema>;
+export type AgentExportMcpbInput = z.infer<typeof agentExportMcpbSchema>;
 export type AgentPromptRequest = z.infer<typeof agentPromptRequestSchema>;
 export type AgentPromptResponse = z.infer<typeof agentPromptResponseSchema>;
 export type AgentActivityEvent = z.infer<typeof agentActivityEventSchema>;
@@ -1025,6 +1031,25 @@ export interface AgentClientConfigResult {
   /** MCP 客户端配置文件里的 mcpServers 片段 */
   json: string;
 }
+
+/** Cursor 一键安装：主进程已用系统默认处理器打开 deeplink。 */
+export interface AgentInstallCursorResult {
+  ok: true;
+  /** 已打开的 `cursor://` deeplink，供界面展示与手动兜底 */
+  deeplink: string;
+}
+
+/** 写入 Claude Desktop 配置文件的结果。 */
+export interface AgentInstallClaudeDesktopResult {
+  ok: true;
+  /** 实际写入的 claude_desktop_config.json 绝对路径 */
+  configPath: string;
+}
+
+/** 导出 `.mcpb` 一键安装包的结果；用户取消保存对话框时 `canceled: true`。 */
+export type AgentExportMcpbResult =
+  | { ok: true; filePath: string }
+  | { ok: false; canceled: true };
 
 // ─── SSH Key Management ─────────────────────────────────────────────────────
 

@@ -105,6 +105,9 @@ import {
   agentDisableSchema,
   agentRotateTokenSchema,
   agentCopyClientConfigSchema,
+  agentInstallCursorSchema,
+  agentInstallClaudeDesktopSchema,
+  agentExportMcpbSchema,
   agentPromptResponseSchema,
   agentSetHaltedSchema
 } from "../../../../../packages/shared/src/index";
@@ -975,6 +978,27 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     coerceEmptyPayload: true,
     // buildClientConfig writes the clipboard itself.
     dispatch: (services, input) => services.agentMcp.buildClientConfig(input.client)
+  }),
+  define({
+    channel: IPCChannel.AgentInstallCursor,
+    schema: agentInstallCursorSchema,
+    label: "Cursor 一键安装 Agent 配置",
+    coerceEmptyPayload: true,
+    dispatch: (services) => services.agentMcp.installCursor()
+  }),
+  define({
+    channel: IPCChannel.AgentInstallClaudeDesktop,
+    schema: agentInstallClaudeDesktopSchema,
+    label: "写入 Claude Desktop 配置",
+    coerceEmptyPayload: true,
+    dispatch: (services) => services.agentMcp.installClaudeDesktop()
+  }),
+  define({
+    channel: IPCChannel.AgentExportMcpb,
+    schema: agentExportMcpbSchema,
+    label: "导出 .mcpb 安装包",
+    coerceEmptyPayload: true,
+    dispatch: (services) => services.agentMcp.exportMcpb()
   }),
   define({
     channel: IPCChannel.AgentPromptResponse,

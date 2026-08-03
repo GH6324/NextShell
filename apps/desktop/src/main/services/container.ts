@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, clipboard, Notification } from "electron";
+import { app, BrowserWindow, clipboard, dialog, Notification, shell } from "electron";
 import type { WebContents } from "electron";
 import type {
   ConnectionProfile,
@@ -1128,6 +1128,19 @@ export const createServiceContainer = async (
       return fs.existsSync(candidate) ? candidate : null;
     },
     writeClipboard: (text) => clipboard.writeText(text),
+    openExternal: (url) => shell.openExternal(url),
+    chooseSavePath: async ({ title, defaultFileName }) => {
+      const focused = BrowserWindow.getFocusedWindow();
+      const options = {
+        title,
+        defaultPath: path.join(app.getPath("downloads"), defaultFileName),
+        filters: [{ name: "MCP Bundle", extensions: ["mcpb"] }]
+      };
+      const result = focused
+        ? await dialog.showSaveDialog(focused, options)
+        : await dialog.showSaveDialog(options);
+      return result.canceled || !result.filePath ? null : result.filePath;
+    },
     logger: {
       info: (message, meta) => logger.info(`[Agent] ${message}`, meta),
       warn: (message, meta) => logger.warn(`[Agent] ${message}`, meta),

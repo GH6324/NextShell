@@ -1,13 +1,22 @@
 import { randomBytes } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   AgentClientConfigResult,
   AgentClientKind,
   AgentEndpointStatus,
+  AgentExportMcpbResult,
+  AgentInstallClaudeDesktopResult,
+  AgentInstallCursorResult,
   AgentPromptResponse
 } from "@nextshell/shared";
 
+import {
+  buildCursorDeeplink,
+  buildMcpbArchive,
+  installClaudeDesktopConfig
+} from "./client-install";
 import {
   AgentGateway,
   type AgentClientIdentity,
@@ -42,6 +51,12 @@ export interface AgentMcpServiceDeps extends AgentGatewayDeps {
   /** Runtime that executes the bridge; defaults to the current executable. */
   bridgeRuntimePath?: string;
   writeClipboard?: (text: string) => void;
+  /** Opens a URL with the OS default handler (Cursor deeplink install). */
+  openExternal?: (url: string) => Promise<void>;
+  /** Native save dialog; resolves null when the user cancels. */
+  chooseSavePath?: (options: { title: string; defaultFileName: string }) => Promise<string | null>;
+  /** Test override for the Claude Desktop config file location. */
+  claudeDesktopConfigPath?: string;
   respondToPrompt: (response: AgentPromptResponse) => void;
   logger?: AgentLogger;
 }
@@ -57,6 +72,12 @@ export interface AgentMcpService {
   /** Issues a new bearer token and drops every connected client. */
   rotateToken: () => Promise<AgentEndpointStatus>;
   buildClientConfig: (client: AgentClientKind) => AgentClientConfigResult;
+  /** Opens the Cursor one-click install deeplink. */
+  installCursor: () => Promise<AgentInstallCursorResult>;
+  /** Merges the stdio bridge config into claude_desktop_config.json. */
+  installClaudeDesktop: () => AgentInstallClaudeDesktopResult;
+  /** Exports a `.mcpb` bundle via a save dialog. */
+  exportMcpb: () => Promise<AgentExportMcpbResult>;
   respondToPrompt: (response: AgentPromptResponse) => void;
   /** Global breaker: rejects every tool call without tearing the endpoint down. */
   setHalted: (halted: boolean) => AgentEndpointStatus;
@@ -193,6 +214,30 @@ export const createAgentMcpService = (deps: AgentMcpServiceDeps): AgentMcpServic
     return getStatus();
   };
 
+  /**
+   * The stdio bridge config every command-based client shares. Throws when the
+   * bundled bridge is missing — every caller must fail before showing dialogs.
+   */
+  const buildStdioServerConfig = (): {
+    bridgeEntry: string;
+    runtime: string;
+    env: Record<string, string>;
+    serverConfig: Record<string, unknown>;
+  } => {
+    const bridgeEntry = deps.resolveBridgeEntry?.() ?? null;
+    if (!bridgeEntry) {
+      throw new Error(
+        "未找到随应用分发的 MCP 桥接程序，无法生成 Socket 接入配置；请改用 127.0.0.1 TCP 监听，或重新安装应用"
+      );
+    }
+    const runtime = deps.bridgeRuntimePath ?? process.execPath;
+    const env = {
+      [RUN_AS_NODE_ENV_VAR]: "1",
+      [ENDPOINT_ENV_VAR]: discovery.primaryPath
+    };
+    return { bridgeEntry, runtime, env, serverConfig: { command: runtime, args: [bridgeEntry], env } };
+  };
+
   const reconcile = async (): Promise<void> => {
     const agent = preferences();
     if (!agent.enabled) {
@@ -242,26 +287,58 @@ export const createAgentMcpService = (deps: AgentMcpServiceDeps): AgentMcpServic
           `Authorization: Bearer ${status.token}`
         )}`;
       } else {
-        const bridgeEntry = deps.resolveBridgeEntry?.() ?? null;
-        if (!bridgeEntry) {
-          throw new Error(
-            "未找到随应用分发的 MCP 桥接程序，无法生成 Socket 接入配置；请改用 127.0.0.1 TCP 监听，或重新安装应用"
-          );
-        }
-        const runtime = deps.bridgeRuntimePath ?? process.execPath;
-        const env = {
-          [RUN_AS_NODE_ENV_VAR]: "1",
-          [ENDPOINT_ENV_VAR]: status.endpointFilePath
-        };
-        serverConfig = { command: runtime, args: [bridgeEntry], env };
+        const stdio = buildStdioServerConfig();
+        serverConfig = stdio.serverConfig;
         command = `claude mcp add ${MCP_CLIENT_KEY} --env ${RUN_AS_NODE_ENV_VAR}=1 --env ${ENDPOINT_ENV_VAR}=${shellQuote(
           status.endpointFilePath
-        )} -- ${shellQuote(runtime)} ${shellQuote(bridgeEntry)}`;
+        )} -- ${shellQuote(stdio.runtime)} ${shellQuote(stdio.bridgeEntry)}`;
       }
 
       const json = JSON.stringify({ mcpServers: { [MCP_CLIENT_KEY]: serverConfig } }, null, 2);
       deps.writeClipboard?.(client === "claude-code" ? command : json);
       return { ok: true, command, json };
+    },
+    installCursor: async () => {
+      const status = getStatus();
+      const useTcp = status.tcpPort !== null && status.token !== null;
+      const serverConfig = useTcp
+        ? {
+            url: `http://127.0.0.1:${status.tcpPort}/mcp`,
+            headers: { Authorization: `Bearer ${status.token}` }
+          }
+        : buildStdioServerConfig().serverConfig;
+      const deeplink = buildCursorDeeplink(MCP_CLIENT_KEY, serverConfig);
+      await deps.openExternal?.(deeplink);
+      return { ok: true, deeplink };
+    },
+    // Claude Desktop only speaks stdio servers, so this always uses the bridge
+    // regardless of whether the TCP listener is up.
+    installClaudeDesktop: () => {
+      const { serverConfig } = buildStdioServerConfig();
+      const { configPath } = installClaudeDesktopConfig(MCP_CLIENT_KEY, serverConfig, {
+        configPath: deps.claudeDesktopConfigPath
+      });
+      return { ok: true, configPath };
+    },
+    exportMcpb: async () => {
+      // Resolve the bridge before the dialog: a save prompt that can only end
+      // in an error is worse than failing immediately.
+      const { bridgeEntry } = buildStdioServerConfig();
+      if (!deps.chooseSavePath) {
+        throw new Error("当前环境不支持保存对话框，无法导出 .mcpb");
+      }
+      const savePath = await deps.chooseSavePath({
+        title: "导出 NextShell .mcpb 安装包",
+        defaultFileName: "nextshell.mcpb"
+      });
+      if (!savePath) return { ok: false, canceled: true };
+      const archive = buildMcpbArchive({
+        appVersion: deps.appVersion,
+        endpointFilePath: discovery.primaryPath,
+        bridgeCode: readFileSync(bridgeEntry)
+      });
+      writeFileSync(savePath, archive);
+      return { ok: true, filePath: savePath };
     },
     respondToPrompt: (response) => deps.respondToPrompt(response),
     // Deliberately not `enqueue`d: a kill switch that waits behind whatever the

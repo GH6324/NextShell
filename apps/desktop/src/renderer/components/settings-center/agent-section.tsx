@@ -60,6 +60,7 @@ export const AgentSection = () => {
   const [tokenVisible, setTokenVisible] = useState(false);
   const [clientKind, setClientKind] = useState<AgentClientKind>("claude-code");
   const [copyingConfig, setCopyingConfig] = useState(false);
+  const [installing, setInstalling] = useState(false);
   const [configResult, setConfigResult] = useState<{ command: string; json: string } | null>(null);
 
   const refreshStatus = useCallback(async (): Promise<void> => {
@@ -158,6 +159,44 @@ export const AgentSection = () => {
       message.error(`生成接入配置失败：${formatErrorMessage(error, "请稍后重试")}`);
     } finally {
       setCopyingConfig(false);
+    }
+  };
+
+  const handleInstallCursor = async (): Promise<void> => {
+    setInstalling(true);
+    try {
+      await window.nextshell.agent.installCursor();
+      message.success("已打开 Cursor 安装链接，请在 Cursor 中确认添加");
+    } catch (error) {
+      message.error(`打开 Cursor 安装链接失败：${formatErrorMessage(error, "请稍后重试")}`);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const handleInstallClaudeDesktop = async (): Promise<void> => {
+    setInstalling(true);
+    try {
+      const result = await window.nextshell.agent.installClaudeDesktop();
+      message.success(`已写入 ${result.configPath}，重启 Claude Desktop 后生效`);
+    } catch (error) {
+      message.error(`写入 Claude Desktop 配置失败：${formatErrorMessage(error, "请稍后重试")}`);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const handleExportMcpb = async (): Promise<void> => {
+    setInstalling(true);
+    try {
+      const result = await window.nextshell.agent.exportMcpb();
+      if (result.ok) {
+        message.success(`已导出安装包：${result.filePath}，在 Claude Desktop 中打开即可安装`);
+      }
+    } catch (error) {
+      message.error(`导出 .mcpb 失败：${formatErrorMessage(error, "请稍后重试")}`);
+    } finally {
+      setInstalling(false);
     }
   };
 
@@ -312,10 +351,31 @@ export const AgentSection = () => {
             size="small"
           />
         </SettingsRow>
-        <Space>
+        <Space wrap>
           <Button type="primary" loading={copyingConfig} onClick={() => void handleCopyClientConfig()}>
             生成并复制接入配置
           </Button>
+          {clientKind === "cursor" && (
+            <Button loading={installing} onClick={() => void handleInstallCursor()}>
+              在 Cursor 中一键安装
+            </Button>
+          )}
+          {clientKind === "claude-desktop" && (
+            <>
+              <Popconfirm
+                title="写入 Claude Desktop 配置？"
+                description="将把 NextShell 的接入配置合并进 claude_desktop_config.json，其他配置项保持不变。"
+                okText="写入"
+                cancelText="取消"
+                onConfirm={() => void handleInstallClaudeDesktop()}
+              >
+                <Button loading={installing}>写入 Claude Desktop 配置</Button>
+              </Popconfirm>
+              <Button loading={installing} onClick={() => void handleExportMcpb()}>
+                导出 .mcpb 安装包
+              </Button>
+            </>
+          )}
         </Space>
         {configResult && (
           <>
@@ -347,9 +407,10 @@ export const AgentSection = () => {
             </SettingsRow>
           </>
         )}
-        {(clientKind === "cursor" || clientKind === "claude-desktop") && (
+        {clientKind === "claude-desktop" && (
           <div className="stg-note">
-            Cursor 一键安装与自动写入 Claude Desktop 配置文件将在后续版本支持，当前请手动粘贴上方配置。
+            .mcpb 安装包适合分发给同机器的其他账户或离线安装：在 Claude Desktop
+            的「扩展」页打开该文件即可完成安装。
           </div>
         )}
       </SettingsCard>

@@ -261,6 +261,9 @@ const api: NextShellApi = {
     rotateToken: () => invoke(IPCChannel.AgentRotateToken, {}),
     copyClientConfig: (payload) =>
       invoke(IPCChannel.AgentCopyClientConfig, payload ?? { client: "claude-code" }),
+    installCursor: () => invoke(IPCChannel.AgentInstallCursor, {}),
+    installClaudeDesktop: () => invoke(IPCChannel.AgentInstallClaudeDesktop, {}),
+    exportMcpb: () => invoke(IPCChannel.AgentExportMcpb, {}),
     respondPrompt: (payload) => invoke(IPCChannel.AgentPromptResponse, payload),
     onPrompt: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: AgentPromptRequest) => {
