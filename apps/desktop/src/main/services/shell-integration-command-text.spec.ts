@@ -1,0 +1,93 @@
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { describe, expect, test } from "vitest";
+
+const scriptFile = (family: "bash" | "zsh" | "sh" | "fish"): string =>
+  fileURLToPath(
+    new URL(`../../shared/shell-integration/nextshell-shell-integration.${family}`, import.meta.url)
+  );
+
+const sanitizeOscCommand = (value: string): string => value.replace(/[\x00-\x1f\x7f]/g, "");
+const runShell = (command: string, args: string[], environment: Record<string, string> = {}) =>
+  spawnSync(command, args, { encoding: "utf8", env: { ...process.env, ...environment } });
+const fishAvailable = runShell("fish", ["--version"]).status === 0;
+
+describe("shell integration command text", () => {
+  test("bash, zsh and dash parse their dedicated scripts", () => {
+    const checks = [
+      ["bash", ["--noprofile", "--norc", "-n", scriptFile("bash")]],
+      ["zsh", ["-n", scriptFile("zsh")]],
+      ["dash", ["-n", scriptFile("sh")]]
+    ] as const;
+    for (const [command, args] of checks) {
+      const result = runShell(command, [...args]);
+      expect(result.status, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  test("bash preserves hooks, stays idempotent and sanitizes the command mark", () => {
+    const commandText = `printf 'x;y' && echo "$(should-not-run)";\n\u001b]evil\u0007 echo café`;
+    const result = runShell(
+      "bash",
+      [
+        "--noprofile",
+        "--norc",
+        "-c",
+        'PROMPT_COMMAND="user_prompt_hook"; PS0="user-ps0"; . "$1"; . "$1"; printf "STATE:%s\\n" "$PROMPT_COMMAND"; printf "PS0:%s\\n" "$PS0"; __nextshell_preexec "$NEXTSHELL_TEST_COMMAND"',
+        "--",
+        scriptFile("bash")
+      ],
+      { NEXTSHELL_TEST_COMMAND: commandText }
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("user_prompt_hook");
+    expect(result.stdout).toContain("PS0:user-ps0$(__nextshell_preexec)");
+    expect(result.stdout.match(/__nextshell_prompt_start/g)).toHaveLength(1);
+    expect(result.stdout.endsWith(`\u001B]133;C;${sanitizeOscCommand(commandText)}\u0007`)).toBe(true);
+  });
+
+  test("zsh preserves hook arrays, stays idempotent and sanitizes preexec", () => {
+    const commandText = `printf 'x;y' && echo "$(should-not-run)";\n\u001b]evil\u0007 echo café`;
+    const result = runShell(
+      "zsh",
+      [
+        "-c",
+        'precmd_functions=(user_precmd); preexec_functions=(user_preexec); . "$1"; . "$1"; print -r -- "PRECMD:${(j:,:)precmd_functions}"; print -r -- "PREEXEC:${(j:,:)preexec_functions}"; __nextshell_preexec "$NEXTSHELL_TEST_COMMAND"',
+        "--",
+        scriptFile("zsh")
+      ],
+      { NEXTSHELL_TEST_COMMAND: commandText }
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("PRECMD:__nextshell_precmd,user_precmd,__nextshell_prompt_end");
+    expect(result.stdout).toContain("PREEXEC:user_preexec,__nextshell_preexec");
+    expect(result.stdout.endsWith(`\u001B]133;C;${sanitizeOscCommand(commandText)}\u0007`)).toBe(true);
+  });
+
+  test("dash sources its fallback twice without inventing command marks", () => {
+    const result = runShell("dash", [
+      "-c",
+      'PS1="user> "; . "$1"; . "$1"; printf "%s" "$PS1"',
+      "--",
+      scriptFile("sh")
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("user> $(__nextshell_emit_cwd)");
+    expect(result.stdout).not.toContain("133;");
+  });
+
+  test.skipIf(!fishAvailable)("fish stays idempotent and sanitizes preexec", () => {
+    const commandText = `printf 'x;y' && echo "$(should-not-run)";\n\u001b]evil\u0007 echo café`;
+    const result = runShell(
+      "fish",
+      [
+        "-c",
+        'source "$argv[1]"; source "$argv[1]"; __nextshell_preexec "$NEXTSHELL_TEST_COMMAND"',
+        scriptFile("fish")
+      ],
+      { NEXTSHELL_TEST_COMMAND: commandText }
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`\u001B]133;C;${sanitizeOscCommand(commandText)}\u0007`);
+  });
+});

@@ -916,12 +916,44 @@ export const agentCopyClientConfigSchema = z.object({
   client: agentClientKindSchema.default("claude-code")
 });
 
+export const agentPromptRequestSchema = z.object({
+  id: z.string().uuid(),
+  kind: z.enum(["confirm", "select", "text"]),
+  title: z.string().trim().min(1).max(160),
+  message: z.string().trim().min(1).max(4000),
+  details: z.string().max(16_000).optional(),
+  choices: z.array(z.string().trim().min(1).max(200)).min(1).max(20).optional(),
+  placeholder: z.string().max(300).optional(),
+  sensitive: z.boolean().optional(),
+  allowRemember: z.boolean().optional()
+});
+
+export const agentPromptResponseSchema = z.object({
+  id: z.string().uuid(),
+  canceled: z.boolean(),
+  value: z.string().max(16_000).optional(),
+  rememberForSession: z.boolean().optional()
+});
+
+export const agentActivityEventSchema = z.object({
+  id: z.string().min(1),
+  clientName: z.string().nullable(),
+  tool: z.string().min(1),
+  status: z.enum(["running", "succeeded", "failed"]),
+  connectionId: z.string().uuid().optional(),
+  summary: z.string().max(1000),
+  createdAt: z.string()
+});
+
 export type AgentClientKind = z.infer<typeof agentClientKindSchema>;
 export type AgentStatusInput = z.infer<typeof agentStatusSchema>;
 export type AgentEnableInput = z.infer<typeof agentEnableSchema>;
 export type AgentDisableInput = z.infer<typeof agentDisableSchema>;
 export type AgentRotateTokenInput = z.infer<typeof agentRotateTokenSchema>;
 export type AgentCopyClientConfigInput = z.infer<typeof agentCopyClientConfigSchema>;
+export type AgentPromptRequest = z.infer<typeof agentPromptRequestSchema>;
+export type AgentPromptResponse = z.infer<typeof agentPromptResponseSchema>;
+export type AgentActivityEvent = z.infer<typeof agentActivityEventSchema>;
 
 export interface AgentConnectedClient {
   /** MCP session id */

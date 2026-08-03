@@ -8,7 +8,14 @@ import type {
   SessionStatus,
   SessionType
 } from "@nextshell/core";
+import type {
+  AgentActivityEvent,
+  AgentPromptRequest,
+  AgentPromptResponse,
+  SessionAuthOverrideInput
+} from "@nextshell/shared";
 import { redactAuditMetadata } from "@nextshell/storage";
+import { classifyCommandRisk, type CommandRiskAssessment } from "@nextshell/terminal";
 
 import {
   ConnectionTargetAmbiguousError,
@@ -191,6 +198,33 @@ export interface AgentCommandSearchPayload {
   source: "library";
 }
 
+export interface AgentSessionHistoryEntry {
+  command: string | null;
+  exitCode: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+  output: string;
+  truncated: boolean;
+}
+
+export interface AgentSessionHistoryPayload {
+  sessionId: string;
+  integrationAvailable: boolean;
+  entries: AgentSessionHistoryEntry[];
+  truncated: boolean;
+}
+
+export interface AgentExecPayload {
+  connectionId: string;
+  command: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  actualCwd: string | null;
+  executedAt: string;
+  risk: CommandRiskAssessment;
+}
+
 // ─── Dependencies ───────────────────────────────────────────────────────────
 
 export interface AgentAuditEntry {
@@ -220,6 +254,26 @@ export interface AgentGatewayDeps {
     signal: AbortSignal
   ) => Promise<AgentRemoteFileChunk>;
   listSavedCommands: (query: { keyword?: string; group?: string }) => SavedCommand[];
+  getSessionHistory: (sessionId: string) => {
+    integrationAvailable: boolean;
+    entries: AgentSessionHistoryEntry[];
+  } | null;
+  execCommand: (
+    connectionId: string,
+    command: string,
+    options: { cwd?: string; signal: AbortSignal; authOverride?: SessionAuthOverrideInput }
+  ) => Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    executedAt: string;
+    cwd?: string;
+  }>;
+  retainConnection: (connectionId: string) => () => void;
+  closeConnectionIfIdle: (connectionId: string) => Promise<void>;
+  promptUser: (request: Omit<AgentPromptRequest, "id">) => Promise<AgentPromptResponse>;
+  notifyUser: (title: string, message: string) => void;
+  emitActivity: (event: AgentActivityEvent) => void;
   /** Must append unconditionally — agent activity is audited even when the user disabled audit capture. */
   appendAuditLog: (entry: AgentAuditEntry) => void;
   getPreferences: () => AppPreferences;
@@ -255,6 +309,7 @@ export interface AgentResolvedTarget {
   connection: ConnectionProfile;
   summary: ServerSummary;
   level: Exclude<AgentAccessLevel, "off">;
+  sessionId?: string;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -262,6 +317,7 @@ export interface AgentResolvedTarget {
 const AGENT_REDACTED = "«redacted»";
 const RATE_WINDOW_MS = 60_000;
 const BINARY_SNIFF_BYTES = 4096;
+const ANSI_ESCAPE_PATTERN = /[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\x2f#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
 
 const accessLevelOf = (connection: ConnectionProfile): AgentAccessLevel =>
   connection.agentAccess ?? "off";
@@ -432,6 +488,10 @@ export class AgentGateway {
   private readonly limits: AgentGatewayLimits;
   private readonly callWindows = new Map<string, number[]>();
   private readonly hostInflight = new Map<string, number>();
+  private readonly rememberedApprovals = new Map<string, Set<string>>();
+  private readonly approvedClients = new Set<string>();
+  private readonly pendingClientApprovals = new Map<string, Promise<boolean>>();
+  private activitySequence = 0;
 
   constructor(deps: AgentGatewayDeps, options: AgentGatewayOptions = {}) {
     this.deps = deps;
@@ -459,6 +519,15 @@ export class AgentGateway {
     }
   }
 
+  pruneClientSessions(activeSessionIds: ReadonlySet<string>): void {
+    for (const id of this.approvedClients) {
+      if (!activeSessionIds.has(id)) this.approvedClients.delete(id);
+    }
+    for (const id of this.rememberedApprovals.keys()) {
+      if (!activeSessionIds.has(id)) this.rememberedApprovals.delete(id);
+    }
+  }
+
   /**
    * Connections the agent is allowed to know about at all. `off` (including a
    * missing field) means the host does not exist as far as MCP is concerned.
@@ -475,9 +544,11 @@ export class AgentGateway {
     target: string,
     requirement: AgentAccessRequirement
   ): AgentToolResult<AgentResolvedTarget> {
+    const session = this.authorizedSessions().find((candidate) => candidate.id === target);
+    const effectiveTarget = session?.connectionId ?? target;
     let resolved;
     try {
-      resolved = resolveConnectionTarget(this.authorizedConnections(), target);
+      resolved = resolveConnectionTarget(this.authorizedConnections(), effectiveTarget);
     } catch (error) {
       if (error instanceof ConnectionTargetAmbiguousError) {
         return {
@@ -519,7 +590,12 @@ export class AgentGateway {
     }
     return {
       ok: true,
-      data: { connection: resolved.connection, summary: resolved.summary, level }
+      data: {
+        connection: resolved.connection,
+        summary: resolved.summary,
+        level,
+        ...(session ? { sessionId: session.id } : {})
+      }
     };
   }
 
@@ -559,6 +635,10 @@ export class AgentGateway {
     outcome: { code: "ok" | AgentErrorCode; connectionId?: string; level: "info" | "warn" }
   ): void {
     try {
+      const safeParams = {
+        ...params,
+        ...(typeof params.command === "string" ? { command: redactText(params.command) } : {})
+      };
       this.deps.appendAuditLog({
         action: `agent.${tool}`,
         level: outcome.level,
@@ -570,13 +650,58 @@ export class AgentGateway {
           clientSessionId: client.id,
           transport: client.transport,
           tool,
-          params: redactAuditMetadata(params) ?? {},
+          params: redactAuditMetadata(safeParams) ?? {},
           result: outcome.code
         }
       });
     } catch {
       // Audit must never break a tool call.
     }
+  }
+
+  private emitActivity(
+    client: AgentClientIdentity,
+    id: string,
+    tool: string,
+    status: AgentActivityEvent["status"],
+    connectionId?: string,
+    result?: string
+  ): void {
+    try {
+      this.deps.emitActivity({
+        id,
+        clientName: client.name,
+        tool,
+        status,
+        ...(connectionId ? { connectionId } : {}),
+        summary: result ? `${tool}: ${result}` : tool,
+        createdAt: new Date(this.now()).toISOString()
+      });
+    } catch {
+      // Activity rendering is best-effort; authorization/audit remain authoritative.
+    }
+  }
+
+  private ensureClientApproved(client: AgentClientIdentity): Promise<boolean> {
+    if (this.approvedClients.has(client.id)) return Promise.resolve(true);
+    const pending = this.pendingClientApprovals.get(client.id);
+    if (pending) return pending;
+    const approval = this.deps
+      .promptUser({
+        kind: "confirm",
+        title: "新的 Agent 客户端请求接入",
+        message: `${client.name ?? "未知客户端"} (${client.transport}) 请求使用 NextShell 的 Agent 能力。`,
+        details: `客户端版本：${client.version ?? "未知"}\n会话标识：${client.id}`
+      })
+      .then((response) => {
+        const approved = !response.canceled && response.value === "approved";
+        if (approved) this.approvedClients.add(client.id);
+        return approved;
+      })
+      .catch(() => false)
+      .finally(() => this.pendingClientApprovals.delete(client.id));
+    this.pendingClientApprovals.set(client.id, approval);
+    return approval;
   }
 
   /**
@@ -590,11 +715,32 @@ export class AgentGateway {
     tool: string,
     params: Record<string, unknown>,
     task: (signal: AbortSignal) => Promise<T>,
-    connectionId?: string
+    connectionId?: string,
+    requestedTimeoutMs?: number
   ): Promise<AgentToolResult<T>> {
+    const activityId = `${client.id}:${++this.activitySequence}`;
+    const commandSummary = typeof params.command === "string" ? redactText(params.command) : undefined;
+    this.emitActivity(client, activityId, tool, "running", connectionId, commandSummary);
+    if (!(await this.ensureClientApproved(client))) {
+      const error: AgentToolError = {
+        code: "forbidden",
+        message: "The user did not approve this MCP client"
+      };
+      this.audit(client, tool, params, { code: error.code, connectionId, level: "warn" });
+      this.emitActivity(
+        client,
+        activityId,
+        tool,
+        "failed",
+        connectionId,
+        commandSummary ? `${commandSummary} → ${error.code}` : error.code
+      );
+      return { ok: false, error };
+    }
     const rateError = this.checkRateLimit(client.rateKey);
     if (rateError) {
       this.audit(client, tool, params, { code: rateError.code, connectionId, level: "warn" });
+      this.emitActivity(client, activityId, tool, "failed", connectionId, rateError.code);
       return { ok: false, error: rateError };
     }
 
@@ -606,6 +752,7 @@ export class AgentGateway {
           message: `Too many concurrent calls against this host (limit ${this.limits.perHostConcurrency})`
         };
         this.audit(client, tool, params, { code: error.code, connectionId, level: "warn" });
+        this.emitActivity(client, activityId, tool, "failed", connectionId, error.code);
         return { ok: false, error };
       }
       this.hostInflight.set(connectionId, inflight + 1);
@@ -614,7 +761,10 @@ export class AgentGateway {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     try {
-      const timeoutMs = this.callTimeoutMs();
+      const timeoutMs = Math.min(
+        requestedTimeoutMs ?? this.callTimeoutMs(),
+        this.limits.maxCallTimeoutMs
+      );
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           controller.abort();
@@ -623,10 +773,30 @@ export class AgentGateway {
       });
       const data = await Promise.race([task(controller.signal), timeout]);
       this.audit(client, tool, params, { code: "ok", connectionId, level: "info" });
+      const exitCode =
+        typeof data === "object" && data !== null && "exitCode" in data
+          ? String((data as { exitCode: unknown }).exitCode)
+          : null;
+      this.emitActivity(
+        client,
+        activityId,
+        tool,
+        "succeeded",
+        connectionId,
+        commandSummary && exitCode !== null ? `${commandSummary} → exit ${exitCode}` : "ok"
+      );
       return { ok: true, data };
     } catch (error) {
       const toolError = error instanceof AgentToolFailure ? error.toolError : classifyError(error);
       this.audit(client, tool, params, { code: toolError.code, connectionId, level: "warn" });
+      this.emitActivity(
+        client,
+        activityId,
+        tool,
+        "failed",
+        connectionId,
+        commandSummary ? `${commandSummary} → ${toolError.code}` : toolError.code
+      );
       return { ok: false, error: toolError };
     } finally {
       if (timer) {
@@ -776,6 +946,47 @@ export class AgentGateway {
         return { sessions: capped, truncated: capped.length < sessions.length };
       },
       connectionId
+    );
+  }
+
+  async sessionHistory(
+    client: AgentClientIdentity,
+    input: { target: string; limit?: number; stripAnsi?: boolean }
+  ): Promise<AgentToolResult<AgentSessionHistoryPayload>> {
+    const params = { target: input.target, limit: input.limit, stripAnsi: input.stripAnsi };
+    const session = this.authorizedSessions().find((candidate) => candidate.id === input.target);
+    if (!session) {
+      return this.failed(client, "session_history", params, {
+        code: "not_found",
+        message: "No active authorized session matches that id; call session_list first"
+      });
+    }
+    const limit = clampInt(input.limit, 50, 1, this.limits.maxListItems);
+    return this.execute(
+      client,
+      "session_history",
+      params,
+      async () => {
+        const snapshot = this.deps.getSessionHistory(session.id);
+        if (!snapshot) {
+          throw new AgentToolFailure({
+            code: "unavailable",
+            message: "Session integration data is not available"
+          });
+        }
+        const entries = snapshot.entries.slice(-limit).map((entry) => ({
+          ...entry,
+          command: entry.command === null ? null : redactText(entry.command),
+          output: redactText(input.stripAnsi ? entry.output.replace(ANSI_ESCAPE_PATTERN, "") : entry.output)
+        }));
+        return {
+          sessionId: session.id,
+          integrationAvailable: snapshot.integrationAvailable,
+          entries,
+          truncated: snapshot.entries.length > entries.length
+        };
+      },
+      session.connectionId ?? undefined
     );
   }
 
@@ -1008,6 +1219,203 @@ export class AgentGateway {
         truncated: capped.length < matches.length,
         source: "library" as const
       };
+    });
+  }
+
+  async execCommand(
+    client: AgentClientIdentity,
+    input: { target: string; command: string; cwd?: string; timeoutSec?: number }
+  ): Promise<AgentToolResult<AgentExecPayload>> {
+    const command = input.command.trim();
+    const params = { target: input.target, command, cwd: input.cwd, timeoutSec: input.timeoutSec };
+    if (!command) {
+      return this.failed(client, "exec", params, {
+        code: "invalid_argument",
+        message: "command must not be empty"
+      });
+    }
+    if (!(await this.ensureClientApproved(client))) {
+      return this.failed(client, "exec", params, {
+        code: "forbidden",
+        message: "The user did not approve this MCP client"
+      });
+    }
+
+    const risk = classifyCommandRisk(command);
+    const requiresWriteAccess = risk.level !== "readonly" || risk.hasSudo;
+    const resolved = this.resolveTarget(input.target, requiresWriteAccess ? "write" : "read");
+    if (!resolved.ok) {
+      return this.failed(client, "exec", params, resolved.error);
+    }
+
+    let requestedCwd: string | undefined;
+    if (input.cwd !== undefined) {
+      const normalized = normalizeRemotePath(input.cwd);
+      if (!normalized.ok) {
+        return this.failed(
+          client,
+          "exec",
+          params,
+          normalized.error,
+          resolved.data.connection.id
+        );
+      }
+      requestedCwd = normalized.data;
+    } else if (resolved.data.sessionId) {
+      requestedCwd = this.authorizedSessions().find(
+        (session) => session.id === resolved.data.sessionId
+      )?.cwd ?? undefined;
+    }
+
+    const connection = resolved.data.connection;
+    if (!this.safeOnline(connection.id) && !connection.hostFingerprint?.trim()) {
+      return this.failed(client, "exec", params, {
+        code: "unavailable",
+        message:
+          "This host has no pinned host key. Open it in NextShell once so the user can establish trust before an agent connects."
+      }, connection.id);
+    }
+
+    const approvalKey = `${connection.id}\0${command}`;
+    const remembered = this.rememberedApprovals.get(client.id)?.has(approvalKey) ?? false;
+    const preferences = this.deps.getPreferences().agent;
+    const needsConfirmation =
+      !remembered &&
+      (risk.level === "dangerous" ||
+        risk.hasSudo ||
+        (risk.level === "unknown" && preferences.confirmUnknownCommands));
+    if (needsConfirmation) {
+      const response = await this.deps.promptUser({
+        kind: "confirm",
+        title: risk.level === "dangerous" ? "Agent 请求执行危险命令" : "Agent 请求执行命令",
+        message: `${client.name ?? "未知客户端"} 请求在 ${connection.name} 上执行：`,
+        details: `${command}${requestedCwd ? `\n\n工作目录：${requestedCwd}` : ""}\n\n风险判定：${risk.reason}`,
+        allowRemember: true
+      });
+      if (response.canceled || response.value !== "approved") {
+        return this.failed(client, "exec", params, {
+          code: "forbidden",
+          message: "The user denied the command"
+        }, connection.id);
+      }
+      if (response.rememberForSession) {
+        const approvals = this.rememberedApprovals.get(client.id) ?? new Set<string>();
+        approvals.add(approvalKey);
+        this.rememberedApprovals.set(client.id, approvals);
+      }
+    }
+
+    const requestedTimeoutMs =
+      input.timeoutSec === undefined
+        ? undefined
+        : clampInt(input.timeoutSec, preferences.execTimeoutSec, 1, 3600) * 1000;
+    return this.execute(
+      client,
+      "exec",
+      params,
+      async (signal) => {
+        const release = this.deps.retainConnection(connection.id);
+        try {
+          const execute = (authOverride?: SessionAuthOverrideInput) =>
+            this.deps.execCommand(connection.id, command, {
+              ...(requestedCwd ? { cwd: requestedCwd } : {}),
+              signal,
+              ...(authOverride ? { authOverride } : {})
+            });
+          let result;
+          try {
+            result = await execute();
+          } catch (error) {
+            const reason = error instanceof Error ? error.message.toLowerCase() : String(error);
+            const canRetryInteractive =
+              (connection.authType === "password" || connection.authType === "interactive") &&
+              /auth|password|permission denied|userauth/.test(reason);
+            if (!canRetryInteractive) throw error;
+            const response = await this.deps.promptUser({
+              kind: "text",
+              title: "SSH 需要交互认证",
+              message: `请输入 ${connection.name} 的一次性验证码或密码。该值不会保存，也不会返回给 Agent。`,
+              sensitive: true,
+              placeholder: "验证码或密码"
+            });
+            if (response.canceled || !response.value) {
+              throw new AgentToolFailure({
+                code: "forbidden",
+                message: "The user canceled interactive authentication"
+              });
+            }
+            const interactiveAuthType: "password" | "interactive" =
+              connection.authType === "interactive" ? "interactive" : "password";
+            result = await execute({
+              username: connection.username,
+              authType: interactiveAuthType,
+              password: response.value
+            });
+          }
+          return {
+            connectionId: connection.id,
+            command: redactText(command),
+            stdout: redactText(result.stdout),
+            stderr: redactText(result.stderr),
+            exitCode: result.exitCode,
+            actualCwd: result.cwd ?? requestedCwd ?? null,
+            executedAt: result.executedAt,
+            risk
+          };
+        } finally {
+          release();
+          await this.deps.closeConnectionIfIdle(connection.id).catch(() => undefined);
+        }
+      },
+      connection.id,
+      requestedTimeoutMs
+    );
+  }
+
+  async askUser(
+    client: AgentClientIdentity,
+    input: {
+      question: string;
+      choices?: string[];
+      allowText?: boolean;
+      sensitive?: boolean;
+    }
+  ): Promise<AgentToolResult<{ canceled: boolean; answer: string | null }>> {
+    const question = input.question.trim();
+    if (!question) {
+      return this.failed(client, "ask_user", {}, {
+        code: "invalid_argument",
+        message: "question must not be empty"
+      });
+    }
+    return this.execute(client, "ask_user", { question, choices: input.choices }, async () => {
+      const choices = input.choices?.map((choice) => choice.trim()).filter(Boolean);
+      const response = await this.deps.promptUser({
+        kind: choices && choices.length > 0 ? "select" : input.allowText ? "text" : "confirm",
+        title: "Agent 向你提问",
+        message: question,
+        ...(choices && choices.length > 0 ? { choices } : {}),
+        ...(input.sensitive ? { sensitive: true } : {})
+      });
+      return { canceled: response.canceled, answer: response.value ?? null };
+    });
+  }
+
+  async notifyUser(
+    client: AgentClientIdentity,
+    input: { title: string; message: string }
+  ): Promise<AgentToolResult<{ delivered: true }>> {
+    const title = input.title.trim();
+    const message = input.message.trim();
+    if (!title || !message) {
+      return this.failed(client, "notify_user", {}, {
+        code: "invalid_argument",
+        message: "title and message must not be empty"
+      });
+    }
+    return this.execute(client, "notify_user", { title, message }, async () => {
+      this.deps.notifyUser(title, message);
+      return { delivered: true as const };
     });
   }
 }

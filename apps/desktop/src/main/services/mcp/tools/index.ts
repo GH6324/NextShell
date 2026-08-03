@@ -1,10 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { registerCommandTools } from "./command";
+import { registerExecTools } from "./exec";
 import { registerFileTools } from "./file";
 import { registerHostTools } from "./host";
 import { registerMonitorTools } from "./monitor";
 import { registerSessionTools } from "./session";
+import { registerInteractionTools } from "./interact";
 import type { AgentToolContext } from "./shared";
 
 export type AgentToolRegistrar = (server: McpServer, ctx: AgentToolContext) => void;
@@ -19,7 +21,9 @@ export const AGENT_TOOL_REGISTRARS: readonly AgentToolRegistrar[] = [
   registerSessionTools,
   registerFileTools,
   registerMonitorTools,
-  registerCommandTools
+  registerCommandTools,
+  registerExecTools,
+  registerInteractionTools
 ];
 
 export const registerAgentTools = (server: McpServer, ctx: AgentToolContext): void => {
@@ -31,8 +35,10 @@ export const registerAgentTools = (server: McpServer, ctx: AgentToolContext): vo
 export type { AgentToolContext } from "./shared";
 export {
   registerCommandTools,
+  registerExecTools,
   registerFileTools,
   registerHostTools,
   registerMonitorTools,
-  registerSessionTools
+  registerSessionTools,
+  registerInteractionTools
 };

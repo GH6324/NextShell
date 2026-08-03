@@ -133,7 +133,7 @@ export const searchServerSummaries = (
 };
 
 /**
- * Match cascade: exact nameId → exact name → exact host → name prefix → fuzzy
+ * Match cascade: exact nameId → exact connectionId → exact name → exact host → name prefix → fuzzy
  * full-text. Each level resolves only on a single hit; multiple hits at the
  * same level are ambiguous and must be disambiguated by the user rather than
  * guessed at by the agent.
@@ -159,6 +159,16 @@ export const resolveConnectionTarget = (
   }
   if (exactNameId.length > 1) {
     throw new ConnectionTargetAmbiguousError(trimmedTarget, toSummaryMap(exactNameId));
+  }
+
+  const exactConnectionId = resolveMatches(
+    connections,
+    trimmedTarget,
+    (connection, normalizedTarget) => normalizeText(connection.id) === normalizedTarget
+  );
+  if (exactConnectionId.length === 1) {
+    const match = exactConnectionId[0]!;
+    return { connection: match, summary: buildServerSummary(match) };
   }
 
   const exactName = resolveMatches(

@@ -90,6 +90,9 @@ export const IPCChannel = {
   AgentDisable: "nextshell:agent:disable",
   AgentRotateToken: "nextshell:agent:rotate-token",
   AgentCopyClientConfig: "nextshell:agent:copy-client-config",
+  AgentPromptRequest: "nextshell:agent:prompt:request",
+  AgentPromptResponse: "nextshell:agent:prompt:response",
+  AgentActivityEvent: "nextshell:agent:activity:event",
 
   ConnectionRevealPassword: "nextshell:connection:reveal-password",
   SshKeyList: "nextshell:ssh-key:list",

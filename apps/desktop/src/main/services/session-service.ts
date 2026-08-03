@@ -61,6 +61,8 @@ export interface SessionServiceOptions {
     connectionId: string,
     authOverride: SessionAuthOverrideInput
   ) => Promise<string | undefined>;
+  tapAgentSessionData: (sessionId: string, connectionId: string, data: string) => void;
+  disposeAgentSessionData: (sessionId: string) => void;
 }
 
 export class SessionService {
@@ -85,6 +87,8 @@ export class SessionService {
     connectionId: string,
     authOverride: SessionAuthOverrideInput
   ) => Promise<string | undefined>;
+  private readonly tapAgentSessionData: SessionServiceOptions["tapAgentSessionData"];
+  private readonly disposeAgentSessionData: SessionServiceOptions["disposeAgentSessionData"];
 
   constructor(options: SessionServiceOptions) {
     this.connections = options.connections;
@@ -100,6 +104,8 @@ export class SessionService {
     this.clearMonitorSuspension = options.clearMonitorSuspension;
     this.warmupSftp = options.warmupSftp;
     this.persistAuthOverride = options.persistAuthOverride;
+    this.tapAgentSessionData = options.tapAgentSessionData;
+    this.disposeAgentSessionData = options.disposeAgentSessionData;
   }
 
   // ─── Public API ──────────────────────────────────────────────────────────
@@ -204,14 +210,16 @@ export class SessionService {
 
       shell.on("data", (chunk: Buffer | string) => {
         const active = this.activeSessions.get(descriptor.id);
-        if (!active) {
+        if (!active || active.kind !== "remote") {
           return;
         }
 
+        const decoded = decodeTerminalData(chunk, active.terminalEncoding);
+        this.tapAgentSessionData(descriptor.id, active.connectionId, decoded);
         this.sessionDataDispatcher.push({
           streamId: descriptor.id,
           sender: active.sender,
-          chunk: decodeTerminalData(chunk, active.terminalEncoding),
+          chunk: decoded,
           onPause: () => shell.pause(),
           onResume: () => shell.resume()
         });
@@ -219,13 +227,15 @@ export class SessionService {
 
       shell.stderr.on("data", (chunk: Buffer | string) => {
         const active = this.activeSessions.get(descriptor.id);
-        if (!active) {
+        if (!active || active.kind !== "remote") {
           return;
         }
+        const decoded = decodeTerminalData(chunk, active.terminalEncoding);
+        this.tapAgentSessionData(descriptor.id, active.connectionId, decoded);
         this.sessionDataDispatcher.push({
           streamId: descriptor.id,
           sender: active.sender,
-          chunk: decodeTerminalData(chunk, active.terminalEncoding),
+          chunk: decoded,
           onPause: () => shell.pause(),
           onResume: () => shell.resume()
         });
@@ -484,9 +494,11 @@ export class SessionService {
       target: active.descriptor.target
     });
     this.sessionDataDispatcher.clear(sessionId);
+    this.disposeAgentSessionData(sessionId);
     if (active.kind === "local") {
       active.pty.kill();
       this.activeSessions.delete(sessionId);
+      this.disposeAgentSessionData(sessionId);
       this.sendSessionStatus(active.sender, {
         sessionId,
         status: "disconnected"
@@ -562,6 +574,7 @@ export class SessionService {
       }
 
       this.activeSessions.delete(sessionId);
+      this.disposeAgentSessionData(sessionId);
       drained.descriptor.status = status;
       this.sendSessionStatus(drained.sender, { sessionId, status, reason });
       void this.closeConnectionIfIdle(drained.connectionId);

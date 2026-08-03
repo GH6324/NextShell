@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { DEFAULT_APP_PREFERENCES } from "@nextshell/core";
 import type { ConnectionProfile, MonitorSnapshot, SavedCommand } from "@nextshell/core";
+import type { AgentPromptResponse } from "@nextshell/shared";
 
 import {
   AgentGateway,
@@ -101,8 +102,8 @@ const SESSIONS: AgentSessionInfo[] = [
     status: "connected",
     type: "terminal",
     createdAt: TIMESTAMP,
-    cwd: null,
-    lastCommand: null
+    cwd: "/var/www",
+    lastCommand: "pwd"
   },
   {
     id: "sess-denied",
@@ -184,6 +185,22 @@ const createHarness = (overrides: Partial<AgentGatewayDeps> = {}, limits = {}): 
     statRemoteFile: async () => fileStat(),
     readRemoteFile: async () => ({ bytes: Buffer.from("127.0.0.1 x"), truncated: false }),
     listSavedCommands: () => [],
+    getSessionHistory: () => null,
+    execCommand: async (_connectionId, _command) => ({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      executedAt: TIMESTAMP
+    }),
+    retainConnection: () => () => undefined,
+    closeConnectionIfIdle: async () => undefined,
+    promptUser: async (request) => ({
+      id: "00000000-0000-4000-8000-000000000000",
+      canceled: false,
+      value: request.kind === "confirm" ? "approved" : "answer"
+    }),
+    notifyUser: () => undefined,
+    emitActivity: () => undefined,
     appendAuditLog: (entry) => {
       audits.push(entry);
     },
@@ -273,6 +290,18 @@ describe("host authorization", () => {
 });
 
 describe("limits and failure paths", () => {
+  test("a new MCP session must be approved before it can see hosts", async () => {
+    const promptUser = vi.fn<() => Promise<AgentPromptResponse>>(async () => ({
+      id: "00000000-0000-4000-8000-000000000000",
+      canceled: true
+    }));
+    const { gateway } = createHarness({ promptUser });
+    const result = await gateway.listHosts(CLIENT, {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("forbidden");
+    expect(promptUser).toHaveBeenCalledOnce();
+  });
+
   test("rate limiting kicks in per client and is audited", async () => {
     const { gateway, audits } = createHarness({}, { callsPerMinute: 2 });
 
@@ -480,6 +509,148 @@ describe("file reads", () => {
   });
 });
 
+describe("session awareness and exec policy", () => {
+  test("session_history returns OSC-derived command output and can strip ANSI", async () => {
+    const { gateway } = createHarness({
+      getSessionHistory: () => ({
+        integrationAvailable: true,
+        entries: [
+          {
+            command: "du -sh -- *",
+            exitCode: 0,
+            startedAt: TIMESTAMP,
+            finishedAt: TIMESTAMP,
+            output: "\u001b[31m10G uploads\u001b[0m",
+            truncated: false
+          }
+        ]
+      })
+    });
+
+    const result = await gateway.sessionHistory(CLIENT, {
+      target: "sess-full",
+      stripAnsi: true
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.integrationAvailable).toBe(true);
+    expect(result.data.entries[0]?.command).toBe("du -sh -- *");
+    expect(result.data.entries[0]?.output).toBe("10G uploads");
+  });
+
+  test("a session target inherits its OSC cwd and retains the pooled connection", async () => {
+    const calls: Array<{ connectionId: string; command: string; cwd?: string }> = [];
+    const release = vi.fn();
+    const close = vi.fn(async () => undefined);
+    const activities: string[] = [];
+    const { gateway } = createHarness({
+      execCommand: async (connectionId, command, options) => {
+        calls.push({ connectionId, command, cwd: options.cwd });
+        return {
+          stdout: "10G uploads\n",
+          stderr: "",
+          exitCode: 0,
+          cwd: options.cwd,
+          executedAt: TIMESTAMP
+        };
+      },
+      retainConnection: () => release,
+      closeConnectionIfIdle: close,
+      emitActivity: (activity) => activities.push(activity.status)
+    });
+
+    const result = await gateway.execCommand(CLIENT, {
+      target: "sess-full",
+      command: "du -sh -- *"
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(calls).toEqual([
+      { connectionId: grantedFull.id, command: "du -sh -- *", cwd: "/var/www" }
+    ]);
+    expect(result.data.actualCwd).toBe("/var/www");
+    expect(result.data.risk.level).toBe("readonly");
+    expect(release).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledWith(grantedFull.id);
+    expect(activities).toEqual(["running", "succeeded"]);
+  });
+
+  test("readonly hosts allow proven reads but reject unknown commands without prompting", async () => {
+    const exec = vi.fn(async () => ({
+      stdout: "ok",
+      stderr: "",
+      exitCode: 0,
+      executedAt: TIMESTAMP,
+      cwd: "/srv"
+    }));
+    const prompt = vi.fn(async () => ({
+      id: "00000000-0000-4000-8000-000000000000",
+      canceled: false,
+      value: "approved"
+    }));
+    const { gateway } = createHarness({ execCommand: exec, promptUser: prompt });
+    await gateway.listHosts(CLIENT, {});
+    prompt.mockClear();
+
+    expect(
+      (await gateway.execCommand(CLIENT, {
+        target: "stage-hk",
+        command: "systemctl restart nginx"
+      })).ok
+    ).toBe(false);
+    expect(prompt).not.toHaveBeenCalled();
+
+    const read = await gateway.execCommand(CLIENT, {
+      target: "stage-hk",
+      command: "systemctl status nginx"
+    });
+    expect(read.ok).toBe(true);
+    expect(exec).toHaveBeenCalledOnce();
+  });
+
+  test("dangerous commands require approval and a denial prevents execution", async () => {
+    const exec = vi.fn();
+    const prompt = vi.fn<() => Promise<AgentPromptResponse>>(async () => ({
+      id: "00000000-0000-4000-8000-000000000000",
+      canceled: true
+    }));
+    const { gateway } = createHarness({ execCommand: exec, promptUser: prompt });
+    prompt.mockResolvedValueOnce({
+      id: "00000000-0000-4000-8000-000000000000",
+      canceled: false,
+      value: "approved"
+    });
+    await gateway.listHosts(CLIENT, {});
+    prompt.mockClear();
+
+    const result = await gateway.execCommand(CLIENT, {
+      target: "prod-hk",
+      command: "rm -rf /"
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("forbidden");
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  test("an offline unpinned host cannot use agent-driven TOFU", async () => {
+    const unpinned = { ...grantedFull, hostFingerprint: undefined };
+    const exec = vi.fn();
+    const { gateway } = createHarness({
+      listConnections: () => [unpinned],
+      isConnectionOnline: () => false,
+      execCommand: exec
+    });
+    const result = await gateway.execCommand(CLIENT, {
+      target: unpinned.id,
+      command: "pwd"
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("unavailable");
+    expect(exec).not.toHaveBeenCalled();
+  });
+});
+
 describe("command search", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -578,5 +749,17 @@ describe("auditing", () => {
     expect(audits[1]?.connectionId).toBe(grantedFull.id);
     expect(audits[1]?.metadata?.client).toBe("claude-code");
     expect(audits[1]?.metadata?.result).toBe("ok");
+  });
+
+  test("agent exec audit and response redact command-line secrets", async () => {
+    const { gateway, audits } = createHarness();
+    const result = await gateway.execCommand(CLIENT, {
+      target: "prod-hk",
+      command: "echo DB_PASSWORD=hunter2"
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.command).not.toContain("hunter2");
+    expect(JSON.stringify(audits.at(-1)?.metadata)).not.toContain("hunter2");
   });
 });

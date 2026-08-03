@@ -23,7 +23,10 @@ import { buildRemoteHomeDirCommand, parseRemoteHomeDir } from "./remote-home-dir
 interface CommandServiceOptions {
   connections: CachedConnectionRepository;
   getConnectionOrThrow: (id: string) => ConnectionProfile;
-  ensureConnection: (connectionId: string) => Promise<SshConnection>;
+  ensureConnection: (
+    connectionId: string,
+    authOverride?: import("@nextshell/shared").SessionAuthOverrideInput
+  ) => Promise<SshConnection>;
   listWorkspaces: () => CloudSyncWorkspaceProfile[];
   markWorkspaceCommandsDirty: (workspaceId: string) => void;
   appendAuditLogIfEnabled: (payload: {
@@ -35,10 +38,22 @@ interface CommandServiceOptions {
   }) => void;
 }
 
+export interface CommandExecutionOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  authOverride?: import("@nextshell/shared").SessionAuthOverrideInput;
+  /** AgentGateway writes its own redacted agent.exec record. */
+  audit?: boolean;
+}
+
+const quotePosix = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
+const CWD_MARKER_PREFIX = "\u001eNEXTSHELL_CWD=";
+const CWD_MARKER_SUFFIX = "\u001f";
+
 export class CommandService {
   private readonly connections: CachedConnectionRepository;
   private readonly getConnectionOrThrow: (id: string) => ConnectionProfile;
-  private readonly ensureConnection: (connectionId: string) => Promise<SshConnection>;
+  private readonly ensureConnection: CommandServiceOptions["ensureConnection"];
   private readonly listWorkspaces: () => CloudSyncWorkspaceProfile[];
   private readonly markWorkspaceCommandsDirty: (workspaceId: string) => void;
   private readonly appendAuditLogIfEnabled: CommandServiceOptions["appendAuditLogIfEnabled"];
@@ -52,25 +67,47 @@ export class CommandService {
     this.appendAuditLogIfEnabled = options.appendAuditLogIfEnabled;
   }
 
-  async execCommand(connectionId: string, command: string): Promise<CommandExecutionResult> {
+  async execCommand(
+    connectionId: string,
+    command: string,
+    options: CommandExecutionOptions = {}
+  ): Promise<CommandExecutionResult & { cwd?: string }> {
     this.getConnectionOrThrow(connectionId);
-    const connection = await this.ensureConnection(connectionId);
-    const result = await connection.exec(command);
-    const execution: CommandExecutionResult = {
+    const connection = await this.ensureConnection(connectionId, options.authOverride);
+    const cwdPrefix = options.cwd ? `cd ${quotePosix(options.cwd)} || exit $?; ` : "";
+    const effectiveCommand = `${cwdPrefix}printf '\\036NEXTSHELL_CWD=%s\\037' "$PWD" >&2; ${command}`;
+    const result = await connection.exec(effectiveCommand, { signal: options.signal });
+    const markerStart = result.stderr.indexOf(CWD_MARKER_PREFIX);
+    const markerEnd =
+      markerStart >= 0
+        ? result.stderr.indexOf(CWD_MARKER_SUFFIX, markerStart + CWD_MARKER_PREFIX.length)
+        : -1;
+    const actualCwd =
+      markerStart >= 0 && markerEnd > markerStart
+        ? result.stderr.slice(markerStart + CWD_MARKER_PREFIX.length, markerEnd)
+        : options.cwd;
+    const cleanStderr =
+      markerStart >= 0 && markerEnd >= 0
+        ? `${result.stderr.slice(0, markerStart)}${result.stderr.slice(markerEnd + 1)}`
+        : result.stderr;
+    const execution: CommandExecutionResult & { cwd?: string } = {
       connectionId,
       command,
       stdout: result.stdout,
-      stderr: result.stderr,
+      stderr: cleanStderr,
       exitCode: result.exitCode,
-      executedAt: new Date().toISOString()
+      executedAt: new Date().toISOString(),
+      ...(actualCwd ? { cwd: actualCwd } : {})
     };
-    this.appendAuditLogIfEnabled({
-      action: "command.exec",
-      level: result.exitCode === 0 ? "info" : "warn",
-      connectionId,
-      message: "Executed command on remote host",
-      metadata: { command, exitCode: result.exitCode }
-    });
+    if (options.audit !== false) {
+      this.appendAuditLogIfEnabled({
+        action: "command.exec",
+        level: result.exitCode === 0 ? "info" : "warn",
+        connectionId,
+        message: "Executed command on remote host",
+        metadata: { command, exitCode: result.exitCode }
+      });
+    }
     return execution;
   }
 

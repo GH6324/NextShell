@@ -6,8 +6,8 @@
 #
 # Emits OSC 7 (cwd report) and OSC 133 A/C/D marks. The B mark (prompt end) is
 # omitted: fish paints its prompt inside the fish_prompt function, so a generic
-# append-to-PROMPT hook does not exist; NextShell's renderer treats B as
-# optional and simply reports no command text for fish sessions. Idempotent:
+# append-to-PROMPT hook does not exist; NextShell treats B as optional.
+# Idempotent:
 # the NEXTSHELL_INTEGRATED sentinel guards the whole body, and fish's
 # --on-event handlers never touch user functions.
 
@@ -32,6 +32,10 @@ if not set -q NEXTSHELL_INTEGRATED
     end
 
     function __nextshell_preexec --on-event fish_preexec
-        printf '\033]133;C\007'
+        # Keep printable text verbatim for OscTap, but strip bytes that could
+        # terminate or inject a control sequence. `string` is a fish builtin;
+        # the command is never evaluated as source.
+        set -l __nextshell_command (string replace --all --regex '[[:cntrl:]]' '' -- "$argv[1]")
+        printf '\033]133;C;%s\007' "$__nextshell_command"
     end
 end

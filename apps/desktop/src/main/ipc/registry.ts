@@ -104,7 +104,8 @@ import {
   agentEnableSchema,
   agentDisableSchema,
   agentRotateTokenSchema,
-  agentCopyClientConfigSchema
+  agentCopyClientConfigSchema,
+  agentPromptResponseSchema
 } from "../../../../../packages/shared/src/index";
 import type { ServiceContainer } from "../services/container-types";
 
@@ -965,5 +966,14 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     coerceEmptyPayload: true,
     // buildClientConfig writes the clipboard itself.
     dispatch: (services, input) => services.agentMcp.buildClientConfig(input.client)
+  }),
+  define({
+    channel: IPCChannel.AgentPromptResponse,
+    schema: agentPromptResponseSchema,
+    label: "回应 Agent 问询",
+    dispatch: (services, input) => {
+      services.agentMcp.respondToPrompt(input);
+      return { ok: true as const };
+    }
   })
 ];

@@ -35,7 +35,7 @@ export const outputShape = <T extends z.ZodTypeAny>(data: T) => ({
 });
 
 export const targetInputDescription =
-  "Host to act on: nameId, connection name, hostname/IP, or a unique prefix. Ambiguous values come back with a candidate list instead of a guess.";
+  "Target to act on: nameId, connectionId, connection name, hostname/IP, unique prefix, or (where documented) a live session id. Ambiguous values come back with candidates instead of a guess.";
 
 export const READ_ONLY_ANNOTATIONS = {
   readOnlyHint: true,

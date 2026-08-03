@@ -85,6 +85,17 @@ const deps: AgentGatewayDeps = {
     accessedAt: TIMESTAMP
   }),
   readRemoteFile: async () => ({ bytes: Buffer.from("hello world"), truncated: false }),
+  getSessionHistory: () => null,
+  execCommand: async () => ({ stdout: "", stderr: "", exitCode: 0, executedAt: TIMESTAMP }),
+  retainConnection: () => () => undefined,
+  closeConnectionIfIdle: async () => undefined,
+  promptUser: async () => ({
+    id: "00000000-0000-4000-8000-000000000000",
+    canceled: false,
+    value: "approved"
+  }),
+  notifyUser: () => undefined,
+  emitActivity: () => undefined,
   listSavedCommands: () => [
     {
       id: "cmd-1",
@@ -123,28 +134,59 @@ const structured = (result: unknown): { ok: boolean; data?: any; error?: any } =
   (result as { structuredContent: { ok: boolean; data?: unknown; error?: unknown } })
     .structuredContent as { ok: boolean; data?: any; error?: any };
 
-describe("tier 0 tool registration", () => {
-  test("exposes the read-only tool set with honest annotations", async () => {
+describe("phase 1 tool registration", () => {
+  test("exposes read, exec and interaction tools with honest annotations", async () => {
     const listed = await client.listTools();
 
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      "ask_user",
       "command_search",
+      "exec",
       "file_list",
       "file_read",
       "file_stat",
       "host_describe",
       "host_list",
       "monitor_snapshot",
+      "notify_user",
+      "session_history",
       "session_list"
     ]);
-    for (const tool of listed.tools) {
+    const readOnly = listed.tools.filter((tool) =>
+      [
+        "command_search",
+        "file_list",
+        "file_read",
+        "file_stat",
+        "host_describe",
+        "host_list",
+        "monitor_snapshot",
+        "session_history",
+        "session_list"
+      ].includes(tool.name)
+    );
+    for (const tool of readOnly) {
       expect(tool.annotations?.readOnlyHint).toBe(true);
       expect(tool.annotations?.destructiveHint).toBe(false);
     }
+    expect(listed.tools.find((tool) => tool.name === "exec")?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true
+    });
   });
 });
 
 describe("tool responses", () => {
+  test("exec reaches the policy-gated gateway and returns structured output", async () => {
+    const result = await client.callTool({
+      name: "exec",
+      arguments: { target: "prod-hk", command: "pwd" }
+    });
+    const payload = structured(result);
+    expect(payload.ok).toBe(true);
+    expect(payload.data).toMatchObject({ exitCode: 0, command: "pwd", risk: { level: "readonly" } });
+  });
+
   test("host_list returns granted hosts and no credential material", async () => {
     const result = await client.callTool({ name: "host_list", arguments: {} });
     const payload = structured(result);

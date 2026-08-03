@@ -35,6 +35,19 @@ const baseDeps = (
   },
   readRemoteFile: async () => ({ bytes: Buffer.alloc(0), truncated: false }),
   listSavedCommands: () => [],
+  getSessionHistory: () => null,
+  execCommand: async () => ({
+    stdout: "",
+    stderr: "",
+    exitCode: 0,
+    executedAt: new Date().toISOString()
+  }),
+  retainConnection: () => () => undefined,
+  closeConnectionIfIdle: async () => undefined,
+  promptUser: async () => ({ id: randomUUID(), canceled: true }),
+  notifyUser: () => undefined,
+  emitActivity: () => undefined,
+  respondToPrompt: () => undefined,
   appendAuditLog: () => undefined,
   getPreferences: preferences,
   ...overrides

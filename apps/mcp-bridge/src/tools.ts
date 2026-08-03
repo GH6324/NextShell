@@ -22,6 +22,12 @@ export const BRIDGE_STATUS_TOOL_DESCRIPTOR: ToolDescriptor = {
   annotations: { readOnlyHint: true, openWorldHint: false }
 };
 
+const targetSchema = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+  type: "object",
+  properties: { target: { type: "string" }, ...extra },
+  required: ["target"]
+});
+
 /**
  * Fallback manifest used only while NextShell is unreachable, so that a client
  * that starts before the app still completes `initialize` / `tools/list`. The
@@ -38,42 +44,55 @@ export const STATIC_TOOLS: ToolDescriptor[] = [
     annotations: { readOnlyHint: true }
   },
   {
-    name: "host_search",
-    title: "搜索主机",
-    description: "按名称、主机地址、分组或标签搜索已授权的 NextShell 主机。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "搜索关键词" },
-        limit: { type: "integer", minimum: 1, maximum: 100 }
-      },
-      required: ["query"]
-    },
+    name: "host_describe",
+    title: "查看主机",
+    description: "查看一台已授权主机、活动会话与监控摘要。",
+    inputSchema: targetSchema(),
     annotations: { readOnlyHint: true }
   },
   {
-    name: "session_open",
-    title: "打开会话",
-    description: "对已授权主机建立一个可复用的 SSH 会话，返回会话 id。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        target: { type: "string", description: "主机 nameId、名称或地址" }
-      },
-      required: ["target"]
-    }
+    name: "session_list",
+    title: "列出会话",
+    description: "列出已授权主机的活动会话与 OSC 跟踪的 cwd。",
+    inputSchema: emptySchema(),
+    annotations: { readOnlyHint: true }
   },
   {
-    name: "session_close",
-    title: "关闭会话",
-    description: "关闭之前打开的 SSH 会话。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        sessionId: { type: "string" }
-      },
-      required: ["sessionId"]
-    }
+    name: "session_history",
+    title: "读取会话历史",
+    description: "读取活动会话的命令、退出码与有界输出。",
+    inputSchema: targetSchema(),
+    annotations: { readOnlyHint: true }
+  },
+  {
+    name: "file_list",
+    title: "列出远端目录",
+    inputSchema: targetSchema({ path: { type: "string" } }),
+    annotations: { readOnlyHint: true }
+  },
+  {
+    name: "file_stat",
+    title: "查看远端文件属性",
+    inputSchema: targetSchema({ path: { type: "string" } }),
+    annotations: { readOnlyHint: true }
+  },
+  {
+    name: "file_read",
+    title: "读取远端文件",
+    inputSchema: targetSchema({ path: { type: "string" } }),
+    annotations: { readOnlyHint: true }
+  },
+  {
+    name: "monitor_snapshot",
+    title: "读取监控快照",
+    inputSchema: targetSchema(),
+    annotations: { readOnlyHint: true }
+  },
+  {
+    name: "command_search",
+    title: "检索命令库",
+    inputSchema: emptySchema(),
+    annotations: { readOnlyHint: true }
   },
   {
     name: "exec",
@@ -82,12 +101,31 @@ export const STATIC_TOOLS: ToolDescriptor[] = [
     inputSchema: {
       type: "object",
       properties: {
-        target: { type: "string", description: "主机 nameId、名称或地址" },
-        sessionId: { type: "string", description: "复用已有会话时提供" },
+        target: { type: "string", description: "主机或活动会话 id" },
         command: { type: "string" },
+        cwd: { type: "string" },
         timeoutSec: { type: "integer", minimum: 1, maximum: 3600 }
       },
-      required: ["command"]
+      required: ["target", "command"]
+    }
+  },
+  {
+    name: "ask_user",
+    title: "询问用户",
+    description: "在 NextShell 内弹出确认、选择或文本问询。",
+    inputSchema: {
+      type: "object",
+      properties: { question: { type: "string" }, choices: { type: "array", items: { type: "string" } } },
+      required: ["question"]
+    }
+  },
+  {
+    name: "notify_user",
+    title: "通知用户",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, message: { type: "string" } },
+      required: ["title", "message"]
     }
   }
 ];

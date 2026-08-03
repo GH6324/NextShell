@@ -50,19 +50,35 @@ describe("script assets", () => {
     expect(new Set(texts).size).toBe(texts.length);
   });
 
-  test("bash and zsh emit the full mark set, POSIX sh only OSC 7", () => {
-    for (const family of ["bash", "zsh"] as const) {
+  test("bash, zsh and fish emit command marks, while POSIX sh explicitly degrades to OSC 7", () => {
+    for (const family of ["bash", "zsh", "fish"] as const) {
       const text = shellIntegrationScriptText(family);
       expect(text).toContain("133;A");
-      expect(text).toContain("133;B");
       expect(text).toContain("133;C");
       expect(text).toContain("133;D");
       expect(text).toContain("]7;file://");
     }
 
+    for (const family of ["bash", "zsh"] as const) {
+      expect(shellIntegrationScriptText(family)).toContain("133;B");
+    }
+
     const posix = shellIntegrationScriptText("sh");
     expect(posix).toContain("]7;file://");
     expect(posix).not.toContain("133;");
+  });
+
+  test("command-bearing shells keep raw text but sanitize OSC control bytes", () => {
+    const bash = shellIntegrationScriptText("bash");
+    const zsh = shellIntegrationScriptText("zsh");
+    const fish = shellIntegrationScriptText("fish");
+
+    expect(bash).toContain("__nextshell_sanitize_command");
+    expect(zsh).toContain("__nextshell_sanitize_command");
+    expect(fish).toContain("string replace --all --regex '[[:cntrl:]]'");
+    for (const text of [bash, zsh, fish]) {
+      expect(text).toContain("133;C;");
+    }
   });
 
   test("POSIX sh script stays free of bash/zsh-only syntax", () => {
@@ -79,6 +95,7 @@ describe("script assets", () => {
     expect(code).not.toMatch(/\blocal\b/);
     expect(code).not.toMatch(/\bfunction\b/);
   });
+
 });
 
 describe("posixSingleQuote", () => {

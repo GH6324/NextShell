@@ -1,6 +1,6 @@
 # NextShell Agent 接入（MCP）—— 调研报告与实施方案
 
-> 状态：**Phase 0 已落地（未提交）** / Phase 1–5 待实施
+> 状态：**Phase 0 已落地（已提交 138c655）** / **Phase 1 已落地（本次提交）** / Phase 2–5 待实施
 > 日期：2026-08-03
 > 范围：`apps/desktop`(main / preload / renderer)、`packages/{shared,core,terminal,ssh,storage}`、`apps/mcp-ssh-proxy` 与 `packages/runtime`(已删除)、新增 `apps/mcp-bridge` 与独立插件仓库
 
@@ -19,6 +19,20 @@
 **Phase 0 未做**（有意）：`session_read` / `session_history`（依赖 Phase 1 OscTap 与 Phase 3 ScreenMirror，`tools/index.ts` 的 `AGENT_TOOL_REGISTRARS` 已留扩展位）；全部写类工具；应用内确认弹窗（偏好里的 `confirmWrites` / `confirmUnknownCommands` / `allowedLocalRoots` 暂未被消费，写类工具落地时必须接上）。
 
 **已知遗留**（详见 §十）：`extraResources` 打包路径只做了配置接入，首次发版前需实跑一次 `dist` 确认 `resources/mcp-bridge/index.js` 落位；跨进程契约测试在 `pnpm run test:mcp-bridge` 下，根 `pnpm test` 不覆盖，CI 需单独接入；Windows 命名管道仍未实测。
+
+**Phase 1 已完成**（typecheck 0 error / lint 0 error / 529 单测 + 34 契约测试全绿）。落地内容与本文档的偏差：
+
+| 项 | 计划 | 实际 |
+| --- | --- | --- |
+| 1.0b bash 命令文本 | DEBUG trap | 改用 **PS0 + `__nextshell_preexec`**：PS0 在 bash 读完完整命令后展开一次，整条 pipeline 保留（DEBUG trap 对每个简单命令触发，会截断 pipeline）；`fc -ln -0` 取历史条目，`HISTCMD` 对比处理 `ignorespace` 下"不写入历史"的命令（避免回放上一条）。三套脚本均对命令文本做控制字符消毒（`__nextshell_sanitize_command` / fish `string replace`），命令只作数据、绝不作为 shell 源码求值 |
+| 1.4 确认弹窗 | `nMessageBox` 模式 | 主进程 `AgentPromptBroker`（`confirm.ts`，显式 id 关联 + 5 分钟超时防悬挂）+ 渲染进程 antd `modal.confirm`，支持 confirm / select / text 三种 kind、`sensitive` 输入与「本客户端会话内始终允许」 |
+| 1.5 连接建立 | 2FA 走 `ask_user` | 交互认证重试仅对 `password` / `interactive` 认证类型、且错误文本匹配 `auth|password|permission denied|userauth` 时触发，经 `promptUser`（`sensitive: true`，值不落库、不返回 agent）；钥匙串/主密码失败经 `classifyError` 快速返回固定错误码 |
+| 1.7 活动面板 | renderer 新 slice | `useAgentActivityStore`（按 id 合并运行中条目，上限 100）+ `AgentActivityPanel` 挂在工作区侧边栏；事件经 `AgentActivityEvent` IPC 通道广播 |
+| exec 审计 | 复用 `command.exec` | Gateway 写 `agent.exec`（redact 后的命令/输出），`CommandService.execCommand` 支持 `audit: false` 跳过双重记录 |
+| exec cwd 回显 | 回显实际执行目录 | 经 `printf '\036NEXTSHELL_CWD=%s\037' "$PWD" >&2` 标记从 stderr 提取并剥离，agent 只见 `actualCwd` |
+| 客户端审批 | 未明确 | `ensureClientApproved`：首次调用弹「新的 Agent 客户端请求接入」确认，同 MCP session 内记忆，断连即遗忘 |
+
+**Phase 1 未做**（有意）：`session_read`（依赖 Phase 3 ScreenMirror）；`session_send_keys` / `session_open` 等 PTY 接管（Phase 4）；`notify_user` 只做了系统通知，未接入应用内消息中心。
 
 ---
 

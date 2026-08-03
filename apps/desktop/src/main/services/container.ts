@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, clipboard } from "electron";
+import { app, BrowserWindow, clipboard, Notification } from "electron";
 import type { WebContents } from "electron";
 import type {
   ConnectionProfile,
@@ -60,6 +60,8 @@ import { SftpService } from "./sftp-service";
 import { SessionService } from "./session-service";
 import { forgetShellIntegrationInstalls } from "./terminal-shell-integration";
 import { createAgentMcpService, type AgentRemoteFileStat, type AgentSessionInfo } from "./mcp";
+import { AgentPromptBroker } from "./mcp/confirm";
+import { OscTapRegistry } from "./mcp/osc-tap";
 
 const cloudSyncWorkspacePasswordRef = (workspaceId: string): string =>
   `secret://cloud-sync-ws-${workspaceId}`;
@@ -196,6 +198,13 @@ export const createServiceContainer = async (
       if (!window.isDestroyed()) window.webContents.send(channel, payload);
     }
   };
+  const agentPromptBroker = new AgentPromptBroker({
+    send: (request) => {
+      const target = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      if (!target || target.isDestroyed()) throw new Error("No renderer is available for prompt");
+      target.webContents.send(IPCChannel.AgentPromptRequest, request);
+    }
+  });
 
   // Audit purge
   const purgeExpiredAuditLogs = (allowWhenDisabled = false): void => {
@@ -227,6 +236,7 @@ export const createServiceContainer = async (
 
   // ─── Shared State ────────────────────────────────────────────────────────
   const activeSessions = new Map<string, ActiveSession>();
+  const oscTaps = new OscTapRegistry();
 
   /**
    * Last system-monitor snapshot per connection. MonitorService only pushes;
@@ -762,7 +772,15 @@ export const createServiceContainer = async (
     ensureSystemMonitorRuntime: (id) => monitorSvc.ensureSystemMonitorRuntime(id),
     clearMonitorSuspension: (id) => monitorSvc.clearMonitorSuspension(id),
     warmupSftp: (id, conn) => sftpSvc.warmupSftp(id, conn),
-    persistAuthOverride: (id, override) => connectionSvc.persistSuccessfulAuthOverride(id, override)
+    persistAuthOverride: (id, override) => connectionSvc.persistSuccessfulAuthOverride(id, override),
+    tapAgentSessionData: (sessionId, connectionId, data) => {
+      if ((connections.getById(connectionId)?.agentAccess ?? "off") === "off") {
+        oscTaps.dispose(sessionId);
+        return;
+      }
+      oscTaps.feed(sessionId, data);
+    },
+    disposeAgentSessionData: (sessionId) => oscTaps.dispose(sessionId)
   });
 
   // Cloud Sync Manager
@@ -856,9 +874,8 @@ export const createServiceContainer = async (
         status: session.descriptor.status,
         type: session.descriptor.type,
         createdAt: session.descriptor.createdAt,
-        // Both require the Phase 1 OSC tap.
-        cwd: null,
-        lastCommand: null
+        cwd: oscTaps.get(session.descriptor.id)?.cwd ?? null,
+        lastCommand: oscTaps.get(session.descriptor.id)?.lastCommand ?? null
       })),
     getMonitorSnapshot: async (connectionId) => latestMonitorSnapshots.get(connectionId) ?? null,
     listRemoteFiles: (connectionId, remotePath) =>
@@ -900,6 +917,34 @@ export const createServiceContainer = async (
     // Deliberately no listCommandHistory: shell history has no connection id,
     // so it cannot be scoped to the hosts the user granted.
     listSavedCommands: (query) => connections.listSavedCommands(query),
+    getSessionHistory: (sessionId) => {
+      const snapshot = oscTaps.get(sessionId);
+      if (!snapshot) return null;
+      return {
+        integrationAvailable:
+          snapshot.lastCommand !== null || snapshot.history.some((entry) => entry.command !== null),
+        entries: snapshot.history.map((entry) => ({
+          command: entry.command,
+          exitCode: entry.exitCode,
+          startedAt: entry.startedAt,
+          finishedAt: entry.endedAt,
+          output: entry.output,
+          truncated: entry.truncated
+        }))
+      };
+    },
+    execCommand: (connectionId, command, options) =>
+      commandSvc.execCommand(connectionId, command, { ...options, audit: false }),
+    retainConnection,
+    closeConnectionIfIdle,
+    promptUser: (request) => agentPromptBroker.request(request),
+    respondToPrompt: (response) => {
+      agentPromptBroker.respond(response);
+    },
+    notifyUser: (title, body) => {
+      if (Notification.isSupported()) new Notification({ title, body }).show();
+    },
+    emitActivity: (event) => broadcastToAllWindows(IPCChannel.AgentActivityEvent, event),
     // Unconditional on purpose: agent activity is audited even when the user
     // turned audit capture off (isAuditCaptureEnabled also forces it on).
     appendAuditLog: appendAuditLogDirect,
@@ -936,6 +981,8 @@ export const createServiceContainer = async (
     await agentMcpSvc.dispose().catch((error) => {
       logger.warn("[Agent] failed to dispose the MCP endpoint", normalizeError(error));
     });
+    agentPromptBroker.dispose();
+    oscTaps.disposeAll();
 
     const allMonitorIds = monitorSvc.getAllConnectionIds();
     await Promise.all(allMonitorIds.map((id) => monitorSvc.disposeAllMonitorSessions(id)));

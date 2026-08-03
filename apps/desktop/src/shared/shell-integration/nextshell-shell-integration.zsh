@@ -19,6 +19,24 @@ __nextshell_emit_cwd() {
   printf '\033]7;file://%s%s\007' "$__nextshell_hostname" "$PWD"
 }
 
+# Remove terminal control bytes with zsh builtins only. Printable command text
+# remains verbatim for OscTap and is never evaluated as shell source.
+__nextshell_sanitize_command() {
+  emulate -L zsh
+  local LC_ALL=C
+  local __nextshell_value=${1-}
+  local __nextshell_char
+
+  while (( ${#__nextshell_value} > 0 )); do
+    __nextshell_char=${__nextshell_value[1]}
+    __nextshell_value=${__nextshell_value[2,-1]}
+    case "$__nextshell_char" in
+      [[:cntrl:]]) ;;
+      *) printf '%s' "$__nextshell_char" ;;
+    esac
+  done
+}
+
 # Runs FIRST among precmd hooks so `$?` is still the user's command status, and
 # returns that same status so later hooks (starship, powerlevel10k, …) still
 # observe the exit code they expect.
@@ -47,7 +65,9 @@ __nextshell_prompt_end() {
 }
 
 __nextshell_preexec() {
-  printf '\033]133;C\007'
+  printf '\033]133;C;'
+  __nextshell_sanitize_command "${1-}"
+  printf '\007'
 }
 
 # `${array[(I)pattern]}` yields the index of the last match, 0 when absent.

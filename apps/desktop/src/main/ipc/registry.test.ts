@@ -17,7 +17,9 @@ const expectedEventChannelNames = [
   "CloudSyncAppliedEvent",
   "TracerouteData",
   "DebugLogEvent",
-  "TerminalNotificationAction"
+  "TerminalNotificationAction",
+  "AgentPromptRequest",
+  "AgentActivityEvent"
 ] as const;
 
 function assert(condition: boolean, message: string): void {

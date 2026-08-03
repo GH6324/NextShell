@@ -123,6 +123,12 @@ describe("server summaries", () => {
 });
 
 describe("connection target resolution", () => {
+  test("resolves an exact connection id", () => {
+    expect(resolveConnectionTarget(connections, connections[0]!.id).connection.id).toBe(
+      connections[0]!.id
+    );
+  });
+
   test("resolves an exact nameId", () => {
     expect(resolveConnectionTarget(connections, "server1--11111111").connection.id).toBe(
       "11111111-1111-1111-1111-111111111111"

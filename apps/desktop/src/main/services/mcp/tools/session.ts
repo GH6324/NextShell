@@ -36,4 +36,37 @@ export const registerSessionTools = (server: McpServer, ctx: AgentToolContext): 
     async (args) =>
       toCallToolResult(await ctx.gateway.listSessions(ctx.client, { target: args.target }))
   );
+
+  server.registerTool(
+    "session_history",
+    {
+      title: "读取会话命令记录",
+      description:
+        "Read OSC-tracked commands, exit codes and bounded raw output for one live authorized session. Sessions without shell integration report limited capability instead of guessed command text.",
+      inputSchema: {
+        target: z.string().min(1).describe("Live session id returned by session_list"),
+        limit: z.number().int().min(1).max(200).optional(),
+        stripAnsi: z.boolean().optional()
+      },
+      outputSchema: outputShape(
+        z.object({
+          sessionId: z.string(),
+          integrationAvailable: z.boolean(),
+          entries: z.array(
+            z.object({
+              command: z.string().nullable(),
+              exitCode: z.number().nullable(),
+              startedAt: z.string(),
+              finishedAt: z.string().nullable(),
+              output: z.string(),
+              truncated: z.boolean()
+            })
+          ),
+          truncated: z.boolean()
+        })
+      ),
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async (args) => toCallToolResult(await ctx.gateway.sessionHistory(ctx.client, args))
+  );
 };

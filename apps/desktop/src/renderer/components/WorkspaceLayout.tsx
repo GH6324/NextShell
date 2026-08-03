@@ -33,6 +33,7 @@ import { SystemInfoPanel } from "./SystemInfoPanel";
 import { SystemStaticInfoPane } from "./SystemStaticInfoPane";
 import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
 import { TransferQueuePanel } from "./TransferQueuePanel";
+import { AgentActivityPanel } from "./AgentActivityPanel";
 import { TraceroutePane } from "./TraceroutePane";
 import { useCommandHistory } from "../hooks/useCommandHistory";
 import { recordSentCommand } from "../hooks/commandHistoryBus";
@@ -873,6 +874,7 @@ const WorkspaceLayoutComponent = ({
                   }
                 }}
               />
+              <AgentActivityPanel />
               <LiveEditPane
                 connections={connections}
                 active={!liveEditPanelCollapsed}

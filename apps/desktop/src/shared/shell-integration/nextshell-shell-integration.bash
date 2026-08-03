@@ -23,6 +23,51 @@ __nextshell_emit_cwd() {
   printf '\033]7;file://%s%s\007' "$__nextshell_hostname" "$PWD"
 }
 
+# Remove terminal control bytes with shell builtins only. Printable command text
+# (including semicolons, quotes and Unicode) remains verbatim for OscTap; the
+# value is always handled as data and is never evaluated as shell source.
+__nextshell_sanitize_command() {
+  local LC_ALL=C
+  local __nextshell_value=${1-}
+  local __nextshell_char
+
+  while [ -n "$__nextshell_value" ]; do
+    __nextshell_char=${__nextshell_value:0:1}
+    __nextshell_value=${__nextshell_value:1}
+    case "$__nextshell_char" in
+      [[:cntrl:]]) ;;
+      *) printf '%s' "$__nextshell_char" ;;
+    esac
+  done
+}
+
+# PS0 is expanded exactly once after bash has read a complete interactive
+# command and before it executes. The current history entry therefore retains
+# the whole command (including pipelines), unlike a DEBUG trap which fires for
+# every simple command. `fc -ln -0` prefixes its entry with TAB+SPACE. When a
+# command was intentionally excluded from history (for example `ignorespace`),
+# emit an empty command field instead of replaying the previous command text.
+__nextshell_preexec() {
+  local __nextshell_command
+  if [ "$#" -gt 0 ]; then
+    __nextshell_command=$1
+  elif [ "${HISTCMD:-}" = "${__nextshell_last_histcmd:-}" ]; then
+    __nextshell_command=
+  else
+    __nextshell_command=$(builtin fc -ln -0 2>/dev/null) || __nextshell_command=
+    case "$__nextshell_command" in
+      $'\t '*) __nextshell_command=${__nextshell_command:2} ;;
+      $'\t'*) __nextshell_command=${__nextshell_command:1} ;;
+    esac
+  fi
+
+  printf '\033]133;C;'
+  if [ -n "$__nextshell_command" ]; then
+    __nextshell_sanitize_command "$__nextshell_command"
+  fi
+  printf '\007'
+}
+
 # Runs FIRST in PROMPT_COMMAND so `$?` is still the user's command status, and
 # returns that same status so later PROMPT_COMMAND entries (starship, powerline,
 # …) still observe the exit code they expect.
@@ -47,6 +92,7 @@ __nextshell_prompt_end() {
     *'133;B'*) ;;
     *) PS1="${PS1:-}\[\033]133;B\007\]" ;;
   esac
+  __nextshell_last_histcmd=${HISTCMD:-}
   return "$__nextshell_exit_code"
 }
 
@@ -88,12 +134,12 @@ unset -f __nextshell_install_prompt_hooks
 
 # PS0 is printed right after a command is read and before it runs, which is
 # exactly the C mark (output start). bash >= 4.4 only. Appended, never
-# overwritten — PS0 goes through prompt expansion, so `\nnn` octal escapes
-# produce the raw control bytes.
+# overwritten. Command substitution is left literal here so bash evaluates it
+# for each future command rather than while sourcing this file.
 if [ "${BASH_VERSINFO[0]:-0}" -gt 4 ] ||
   { [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 4 ]; }; then
   case "${PS0:-}" in
-    *'133;C'*) ;;
-    *) PS0="${PS0:-}\033]133;C\007" ;;
+    *__nextshell_preexec*) ;;
+    *) PS0="${PS0:-}"'$(__nextshell_preexec)' ;;
   esac
 fi

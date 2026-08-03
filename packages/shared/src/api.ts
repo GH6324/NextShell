@@ -58,9 +58,12 @@ import type {
   CredentialStoreReauthorizeResult,
   AgentClientConfigResult,
   AgentCopyClientConfigInput,
+  AgentActivityEvent,
   AgentDisableInput,
   AgentEnableInput,
   AgentEndpointStatus,
+  AgentPromptRequest,
+  AgentPromptResponse,
   AgentRotateTokenInput,
   AgentStatusInput,
   MasterPasswordSetInput,
@@ -331,6 +334,10 @@ export interface NextShellApi {
     rotateToken: (payload?: AgentRotateTokenInput) => Promise<AgentEndpointStatus>;
     /** 把客户端接入配置（`claude mcp add` 命令与 JSON 片段）写入剪贴板 */
     copyClientConfig: (payload?: AgentCopyClientConfigInput) => Promise<AgentClientConfigResult>;
+    /** 回应主进程发起的确认、选择或文本问询。 */
+    respondPrompt: (payload: AgentPromptResponse) => Promise<{ ok: true }>;
+    onPrompt: (listener: (event: AgentPromptRequest) => void) => SessionEventUnsubscribe;
+    onActivity: (listener: (event: AgentActivityEvent) => void) => SessionEventUnsubscribe;
   };
   sshKey: {
     list: (payload?: SshKeyListInput) => Promise<SshKeyProfile[]>;
@@ -452,6 +459,7 @@ export interface IpcInvokeMethods {
   [IPCChannel.AgentDisable]: NextShellApi["agent"]["disable"];
   [IPCChannel.AgentRotateToken]: NextShellApi["agent"]["rotateToken"];
   [IPCChannel.AgentCopyClientConfig]: NextShellApi["agent"]["copyClientConfig"];
+  [IPCChannel.AgentPromptResponse]: NextShellApi["agent"]["respondPrompt"];
   [IPCChannel.CloudSyncWorkspaceList]: NextShellApi["cloudSync"]["workspaceList"];
   [IPCChannel.CloudSyncWorkspaceAdd]: NextShellApi["cloudSync"]["workspaceAdd"];
   [IPCChannel.CloudSyncWorkspaceUpdate]: NextShellApi["cloudSync"]["workspaceUpdate"];

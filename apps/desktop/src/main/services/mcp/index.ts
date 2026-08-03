@@ -4,7 +4,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   AgentClientConfigResult,
   AgentClientKind,
-  AgentEndpointStatus
+  AgentEndpointStatus,
+  AgentPromptResponse
 } from "@nextshell/shared";
 
 import {
@@ -41,6 +42,7 @@ export interface AgentMcpServiceDeps extends AgentGatewayDeps {
   /** Runtime that executes the bridge; defaults to the current executable. */
   bridgeRuntimePath?: string;
   writeClipboard?: (text: string) => void;
+  respondToPrompt: (response: AgentPromptResponse) => void;
   logger?: AgentLogger;
 }
 
@@ -55,6 +57,7 @@ export interface AgentMcpService {
   /** Issues a new bearer token and drops every connected client. */
   rotateToken: () => Promise<AgentEndpointStatus>;
   buildClientConfig: (client: AgentClientKind) => AgentClientConfigResult;
+  respondToPrompt: (response: AgentPromptResponse) => void;
   dispose: () => Promise<void>;
 }
 
@@ -94,7 +97,7 @@ export const createAgentMcpService = (deps: AgentMcpServiceDeps): AgentMcpServic
       { name: MCP_SERVER_NAME, version: deps.appVersion },
       {
         instructions:
-          "NextShell exposes the hosts the user explicitly granted to agents. Resolve a host with host_list before calling other tools; ambiguous targets return candidates instead of guessing. Every tool here is read-only."
+          "NextShell exposes only hosts the user explicitly granted. Resolve targets with host_list/session_list; ambiguous targets return candidates instead of guessing. exec is policy-gated and may open a NextShell-owned confirmation dialog."
       }
     );
     registerAgentTools(server, { gateway, client: identity });
@@ -105,6 +108,7 @@ export const createAgentMcpService = (deps: AgentMcpServiceDeps): AgentMcpServic
   // dropped, so reconnecting cannot hand a client a fresh budget.
   const onClientsChanged = (): void => {
     gateway.pruneRateLimits();
+    gateway.pruneClientSessions(new Set(endpoint?.getClients().map((client) => client.id) ?? []));
   };
 
   const getStatus = (): AgentEndpointStatus => {
@@ -256,6 +260,7 @@ export const createAgentMcpService = (deps: AgentMcpServiceDeps): AgentMcpServic
       deps.writeClipboard?.(client === "claude-code" ? command : json);
       return { ok: true, command, json };
     },
+    respondToPrompt: (response) => deps.respondToPrompt(response),
     dispose: () => enqueue(stopEndpoint).then(() => undefined)
   };
 };
