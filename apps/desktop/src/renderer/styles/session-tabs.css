@@ -95,6 +95,35 @@
   box-shadow: 0 0 4px color-mix(in srgb, var(--warn) 50%, transparent);
 }
 
+/* Agent 正在驱动该会话。用强调色 + 呼吸动画，而不是一个安静的小点——
+   有别的东西在往你的终端里打字，这件事值得被看见。 */
+.tab-agent-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--accent);
+  animation: tab-agent-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes tab-agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-agent-badge {
+    animation: none;
+  }
+}
+
 .tab-action {
   display: inline-flex;
   align-items: center;

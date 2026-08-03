@@ -65,6 +65,9 @@ import type {
   AgentPromptRequest,
   AgentPromptResponse,
   AgentRotateTokenInput,
+  AgentSessionControlEvent,
+  AgentSessionFocusEvent,
+  AgentSetHaltedInput,
   AgentStatusInput,
   MasterPasswordSetInput,
   MasterPasswordStatusInput,
@@ -336,8 +339,16 @@ export interface NextShellApi {
     copyClientConfig: (payload?: AgentCopyClientConfigInput) => Promise<AgentClientConfigResult>;
     /** 回应主进程发起的确认、选择或文本问询。 */
     respondPrompt: (payload: AgentPromptResponse) => Promise<{ ok: true }>;
+    /** 全局断闸：拉下后所有 Agent 工具调用立即被拒，并遗忘全部「本会话始终允许」。 */
+    setHalted: (payload: AgentSetHaltedInput) => Promise<AgentEndpointStatus>;
     onPrompt: (listener: (event: AgentPromptRequest) => void) => SessionEventUnsubscribe;
     onActivity: (listener: (event: AgentActivityEvent) => void) => SessionEventUnsubscribe;
+    /** 某个会话正被 / 不再被 Agent 驱动，用于标签徽标。 */
+    onSessionControl: (
+      listener: (event: AgentSessionControlEvent) => void
+    ) => SessionEventUnsubscribe;
+    /** Agent 请求把界面切到某个标签并置顶窗口。 */
+    onSessionFocus: (listener: (event: AgentSessionFocusEvent) => void) => SessionEventUnsubscribe;
   };
   sshKey: {
     list: (payload?: SshKeyListInput) => Promise<SshKeyProfile[]>;
@@ -460,6 +471,7 @@ export interface IpcInvokeMethods {
   [IPCChannel.AgentRotateToken]: NextShellApi["agent"]["rotateToken"];
   [IPCChannel.AgentCopyClientConfig]: NextShellApi["agent"]["copyClientConfig"];
   [IPCChannel.AgentPromptResponse]: NextShellApi["agent"]["respondPrompt"];
+  [IPCChannel.AgentSetHalted]: NextShellApi["agent"]["setHalted"];
   [IPCChannel.CloudSyncWorkspaceList]: NextShellApi["cloudSync"]["workspaceList"];
   [IPCChannel.CloudSyncWorkspaceAdd]: NextShellApi["cloudSync"]["workspaceAdd"];
   [IPCChannel.CloudSyncWorkspaceUpdate]: NextShellApi["cloudSync"]["workspaceUpdate"];

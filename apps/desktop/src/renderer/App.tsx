@@ -105,8 +105,27 @@ export const App = () => {
   const markTransferSuccess = useTransferQueueStore((state) => state.markSuccess);
   const clearFinishedTransfers = useTransferQueueStore((state) => state.clearFinished);
   const applyAgentActivity = useAgentActivityStore((state) => state.applyEvent);
+  const applyAgentSessionControl = useAgentActivityStore((state) => state.applySessionControl);
+  const setAgentHalted = useAgentActivityStore((state) => state.setHalted);
 
   useEffect(() => window.nextshell.agent.onActivity(applyAgentActivity), [applyAgentActivity]);
+  useEffect(
+    () => window.nextshell.agent.onSessionControl(applyAgentSessionControl),
+    [applyAgentSessionControl]
+  );
+  // `session_focus`: the agent is handing something back that wants a human.
+  useEffect(
+    () => window.nextshell.agent.onSessionFocus(({ sessionId }) => setActiveSession(sessionId)),
+    [setActiveSession]
+  );
+  // The breaker lives in the main process; mirror its state on mount so a
+  // reload does not present a halted endpoint as running.
+  useEffect(() => {
+    void window.nextshell.agent
+      .status()
+      .then((status) => setAgentHalted(status.halted))
+      .catch(() => undefined);
+  }, [setAgentHalted]);
 
   useEffect(() => {
     const showPrompt = (request: AgentPromptRequest): void => {

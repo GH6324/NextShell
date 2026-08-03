@@ -29,13 +29,21 @@ const CLIENT_OPTIONS: Array<{ label: string; value: AgentClientKind }> = [
 export const formatClientCount = (count: number): string =>
   count > 0 ? `${count} 个客户端已连接` : "暂无客户端连接";
 
-/** Exported for unit testing — maps live endpoint status to the running-state badge copy. */
+/**
+ * Exported for unit testing — maps live endpoint status to the running-state
+ * badge copy. A halted endpoint is still listening, so reporting it as "监听中"
+ * would tell the user the opposite of what is true.
+ */
 export const formatRunningState = (
   enabled: boolean,
-  listening: boolean
-): { status: "success" | "error" | "default"; text: string } => {
+  listening: boolean,
+  halted = false
+): { status: "success" | "error" | "warning" | "default"; text: string } => {
   if (!enabled) return { status: "default", text: "未启用" };
-  return listening ? { status: "success", text: "监听中" } : { status: "error", text: "已启用但未监听" };
+  if (!listening) return { status: "error", text: "已启用但未监听" };
+  return halted
+    ? { status: "warning", text: "监听中（调用已被切断）" }
+    : { status: "success", text: "监听中" };
 };
 
 export const AgentSection = () => {
@@ -155,7 +163,7 @@ export const AgentSection = () => {
 
   const enabled = status?.enabled ?? false;
   const listening = status?.listening ?? false;
-  const runningState = formatRunningState(enabled, listening);
+  const runningState = formatRunningState(enabled, listening, status?.halted ?? false);
   const hasToken = Boolean(status?.token);
 
   return (

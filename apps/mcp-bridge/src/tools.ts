@@ -192,6 +192,47 @@ export const STATIC_TOOLS: ToolDescriptor[] = [
     annotations: { idempotentHint: true }
   },
   {
+    name: "session_send_keys",
+    title: "向会话注入输入",
+    description:
+      "像用户一样往活动会话的 PTY 里打字。除非状态就活在那个 shell 里（TUI、交互式提示、已进入的 venv 或容器），否则优先用 exec。始终需要用户确认；用户正在该会话里打字时会被拒绝。",
+    inputSchema: targetSchema({
+      text: { type: "string" },
+      submit: { type: "boolean" },
+      waitForPrompt: { type: "boolean" },
+      timeoutSec: { type: "integer", minimum: 1, maximum: 600 }
+    }),
+    annotations: { destructiveHint: true }
+  },
+  {
+    name: "session_send_signal",
+    title: "向会话发送控制信号",
+    description: "向活动会话发送控制字符：interrupt（Ctrl-C）/ eof / suspend / quit。",
+    inputSchema: targetSchema({
+      signal: { type: "string", enum: ["interrupt", "eof", "suspend", "quit"] }
+    }),
+    annotations: { destructiveHint: true }
+  },
+  {
+    name: "session_open",
+    title: "打开终端标签",
+    description: "在主机上打开一个真实可见的终端标签，并标记为 Agent 控制中。",
+    inputSchema: targetSchema()
+  },
+  {
+    name: "session_close",
+    title: "关闭终端标签",
+    inputSchema: targetSchema(),
+    annotations: { destructiveHint: true }
+  },
+  {
+    name: "session_focus",
+    title: "聚焦终端标签",
+    description: "把 NextShell 窗口置顶并切到该会话的标签，用于把事情交回给人。",
+    inputSchema: targetSchema(),
+    annotations: { idempotentHint: true }
+  },
+  {
     name: "ask_user",
     title: "询问用户",
     description: "在 NextShell 内弹出确认、选择或文本问询。",

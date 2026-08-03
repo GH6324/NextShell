@@ -1,6 +1,6 @@
 # NextShell Agent 接入（MCP）—— 调研报告与实施方案
 
-> 状态：**Phase 0 / 1 / 2 / 3 已落地** / Phase 4–5 待实施
+> 状态：**Phase 0 / 1 / 2 / 3 / 4 已落地** / Phase 5 待实施
 > 日期：2026-08-03
 > 范围：`apps/desktop`(main / preload / renderer)、`packages/{shared,core,terminal,ssh,storage}`、`apps/mcp-ssh-proxy` 与 `packages/runtime`(已删除)、新增 `apps/mcp-bridge` 与独立插件仓库
 
@@ -71,6 +71,20 @@
 | 3.3 与 OscTap 合流 | OSC 处理器注册到 headless 实例上，避免扫两遍 | **有意不做**。省下的是 OscTap 那点状态机开销（可忽略），代价是丢掉 `session_history` 的能力：`registerOscHandler` 只给 OSC 载荷，拿不到 C 与 D 之间的原始输出字节，而终端网格也无法还原它。两层职责因此保持分离——OscTap 管命令语义与原始输出，镜像管渲染后的那一帧 |
 | 3.4 负载复核 | 定 scrollback 上限与降级阈值 | 实测每实例 **0.79 MB heap / 3.12 MB RSS**（140×40、scrollback 打满 1000 行带色内容），与附录 A.2 预测吻合。据此定：scrollback 1000、**同时最多镜像 16 个会话**（超出按最近写入时间淘汰最旧的），最坏约 50 MB 常驻 |
 | 打包 | 不要 external | 已实跑 `bun run build` 复核：产物内含 `BufferService` 等内部符号、无 `@xterm/headless` 的外部 require——确实被打进 bundle |
+
+**Phase 4 已完成**（typecheck 0 error / lint 0 error / 618 单测 + 34 契约测试全绿）。落地内容与本文档的偏差：
+
+| 项 | 计划 | 实际 |
+| --- | --- | --- |
+| 4.1 `origin` 加 `"agent"` | 契约里加一个值 | 加了，但**主进程拒绝渲染进程发来的 `"agent"`**——它只在主进程内部产生。`origin: "user"` 现在会给会话盖一个「真人敲键」时间戳，这正是输入抢占的判据 |
+| 4.1 命令回显去重 | 对齐 `recordSentCommand` | **无需处理**：`recordSentCommand` / `consumeSentCommandEcho` 全在渲染进程，而 agent 的注入根本不经过渲染进程，也不会调 `recordCommandHistoryEntry`。OSC 133 回显只被记一次，本来就是对的——真要去重反而会把 agent 跑过的命令从历史里抹掉 |
+| 4.1 `waitForPrompt` | 等下一个 OSC 133 D | `OscTap.waitForCommandCompletion(timeoutMs)`：在注入**之前**就挂上等待者，否则快命令会在「写完」和「开始监听」之间跑完。超时或远端没装集成时返回 `waitTimedOut: true` + `completed: null`，绝不编造退出码。等待上限被压在调用超时之下，否则慢命令会以 `timeout` 错误而不是诚实的 `waitTimedOut` 返回 |
+| 4.2 `session_open` | agent 开的标签真实可见 | 绑定到真实窗口的 `webContents`，标签真实出现在 UI 里 |
+| 4.3 标签徽标 | 「Agent 控制中」 | 区分**持有**与**驱动**：agent 自己开的会话终身带徽标；注入用户自己的会话只在写入期间带，且在 `finally` 里落下——写失败还挂着徽标等于告诉用户有个 agent 还在操作一个它根本没够到的终端 |
+| 4.3 全局断闸 | 状态栏断闸 | 放在工作区侧边栏的 Agent 活动面板里（折叠时也在），拉下后所有工具调用**不弹窗直接拒绝**，并作废全部「本会话始终允许」——用户按停止就是在撤回授权。设置页的运行状态徽标也会显示「监听中（调用已被切断）」，否则会告诉用户与事实相反的话 |
+| 4.3 输入抢占 | 人一敲键盘即暂停注入 | 3 秒窗口内有真人击键则注入返回 `busy`。人赢，agent 让路——两股输入流交织进同一个行编辑器，轻则命令乱码，重则拼出一条谁也没打算执行的命令 |
+| 确认策略 | 未明确 | `session_send_keys` / `session_open` / `session_close` **始终确认**（`confirmWrites` 管不着）；`session_send_signal` 里只有 `interrupt` 免确认——那是人叫停失控 agent 的手段，不该反过来被 agent 的确认框挡住 |
+| — | 未提及 | 注入确认框里控制字节按名字显示（`<Ctrl-C>`）：藏在一行看似无害的文本中间的不可见 `` 正是这个弹窗要暴露的东西 |
 
 ---
 

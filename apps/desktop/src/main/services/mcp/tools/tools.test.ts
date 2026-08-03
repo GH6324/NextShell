@@ -108,6 +108,14 @@ const deps: AgentGatewayDeps = {
     }
   ],
   readSessionScreen: async () => null,
+  writeSession: () => undefined,
+  lastUserInputAt: () => null,
+  waitForCommandCompletion: async () => null,
+  openSession: async () => ({ id: "sess-agent", title: "agent", status: "connected" as const }),
+  closeSession: async () => undefined,
+  focusSession: () => undefined,
+  setSessionAgentControlled: () => undefined,
+  clearSessionAgentControlled: () => undefined,
   writeRemoteFile: async () => undefined,
   makeRemoteDirectory: async () => undefined,
   renameRemotePath: async () => undefined,
@@ -197,9 +205,14 @@ describe("tool registration", () => {
       "host_list",
       "monitor_snapshot",
       "notify_user",
+      "session_close",
+      "session_focus",
       "session_history",
       "session_list",
+      "session_open",
       "session_read",
+      "session_send_keys",
+      "session_send_signal",
       "transfer_cancel",
       "transfer_download",
       "transfer_status",
@@ -231,7 +244,13 @@ describe("tool registration", () => {
         .filter((tool) => tool.annotations?.destructiveHint === true)
         .map((tool) => tool.name)
         .sort()
-    ).toEqual(["exec", "file_delete"]);
+    ).toEqual([
+      "exec",
+      "file_delete",
+      "session_close",
+      "session_send_keys",
+      "session_send_signal"
+    ]);
     for (const name of ["file_write", "file_mkdir", "file_rename", "transfer_upload"]) {
       expect(listed.tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
         readOnlyHint: false,

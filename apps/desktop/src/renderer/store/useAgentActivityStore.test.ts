@@ -11,7 +11,9 @@ const event = (id: string, status: "running" | "succeeded" | "failed" = "running
 });
 
 describe("useAgentActivityStore", () => {
-  beforeEach(() => useAgentActivityStore.setState({ activities: [] }));
+  beforeEach(() =>
+    useAgentActivityStore.setState({ activities: [], controlledSessions: {}, halted: false })
+  );
 
   test("updates an in-flight activity in place", () => {
     useAgentActivityStore.getState().applyEvent(event("1"));
@@ -24,5 +26,31 @@ describe("useAgentActivityStore", () => {
     useAgentActivityStore.getState().applyEvent(event("2"));
     useAgentActivityStore.getState().clearFinished();
     expect(useAgentActivityStore.getState().activities.map((item) => item.id)).toEqual(["2"]);
+  });
+
+  test("tracks which sessions an agent is driving, and releases them", () => {
+    const store = useAgentActivityStore.getState();
+    store.applySessionControl({ sessionId: "s1", clientName: "codex", controlled: true });
+    store.applySessionControl({ sessionId: "s2", clientName: null, controlled: true });
+    expect(useAgentActivityStore.getState().controlledSessions).toEqual({
+      s1: "codex",
+      s2: null
+    });
+
+    store.applySessionControl({ sessionId: "s1", clientName: null, controlled: false });
+    expect(useAgentActivityStore.getState().controlledSessions).toEqual({ s2: null });
+  });
+
+  test("halting drops every badge — nothing is being driven any more", () => {
+    const store = useAgentActivityStore.getState();
+    store.applySessionControl({ sessionId: "s1", clientName: "codex", controlled: true });
+    store.setHalted(true);
+
+    expect(useAgentActivityStore.getState().halted).toBe(true);
+    expect(useAgentActivityStore.getState().controlledSessions).toEqual({});
+
+    // Resuming does not resurrect stale badges.
+    store.setHalted(false);
+    expect(useAgentActivityStore.getState().controlledSessions).toEqual({});
   });
 });

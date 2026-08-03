@@ -19,7 +19,9 @@ const expectedEventChannelNames = [
   "DebugLogEvent",
   "TerminalNotificationAction",
   "AgentPromptRequest",
-  "AgentActivityEvent"
+  "AgentActivityEvent",
+  "AgentSessionControlEvent",
+  "AgentSessionFocusEvent"
 ] as const;
 
 function assert(condition: boolean, message: string): void {

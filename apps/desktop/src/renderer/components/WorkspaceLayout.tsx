@@ -37,6 +37,7 @@ import { AgentActivityPanel } from "./AgentActivityPanel";
 import { TraceroutePane } from "./TraceroutePane";
 import { useCommandHistory } from "../hooks/useCommandHistory";
 import { recordSentCommand } from "../hooks/commandHistoryBus";
+import { useAgentActivityStore } from "../store/useAgentActivityStore";
 import { useEditorTabStore } from "../store/useEditorTabStore";
 import { usePreferencesStore } from "../store/usePreferencesStore";
 import { useSessionOscStore } from "../store/useSessionOscStore";
@@ -114,6 +115,24 @@ const EditorTabDirtyDot = ({ sessionId }: { sessionId: string }) => {
   }
 
   return <span className="tab-dirty-dot" title="有未保存的修改" aria-hidden="true" />;
+};
+
+// 同样按 sessionId 粒度订阅：Agent 注入输入期间给标签打标，让人一眼看出
+// 这个终端此刻不是只有自己在敲。
+const AgentControlBadge = ({ sessionId }: { sessionId: string }) => {
+  const controlledBy = useAgentActivityStore((state) =>
+    sessionId in state.controlledSessions ? (state.controlledSessions[sessionId] ?? "未知客户端") : null
+  );
+
+  if (controlledBy === null) {
+    return null;
+  }
+
+  return (
+    <span className="tab-agent-badge" title={`${controlledBy} 正在控制该会话`}>
+      <i className="ri-robot-2-line" aria-hidden="true" />
+    </span>
+  );
 };
 
 // 按 sessionId 粒度订阅 OSC 标题,会话存活期间优先展示远端设置的标题,
@@ -935,6 +954,7 @@ const WorkspaceLayoutComponent = ({
                       >
                         <i className={`tab-type-icon ${iconClass}`} aria-hidden="true" />
                         <SessionTabTitle session={session} />
+                        <AgentControlBadge sessionId={session.id} />
                         {session.type === "editor" ? (
                           <EditorTabDirtyDot sessionId={session.id} />
                         ) : null}

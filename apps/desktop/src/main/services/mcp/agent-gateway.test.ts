@@ -208,6 +208,14 @@ const createHarness = (overrides: Partial<AgentGatewayDeps> = {}, limits = {}): 
     readRemoteFile: async () => ({ bytes: Buffer.from("127.0.0.1 x"), truncated: false }),
     listSavedCommands: () => [],
     readSessionScreen: async () => null,
+    writeSession: () => undefined,
+    lastUserInputAt: () => null,
+    waitForCommandCompletion: async () => null,
+    openSession: async () => ({ id: "sess-agent", title: "agent", status: "connected" as const }),
+    closeSession: async () => undefined,
+    focusSession: () => undefined,
+    setSessionAgentControlled: () => undefined,
+    clearSessionAgentControlled: () => undefined,
     getSessionHistory: () => null,
     execCommand: async (_connectionId, _command) => ({
       stdout: "",
@@ -1159,5 +1167,323 @@ describe("upload destination resolution", () => {
     });
 
     expect(started).toEqual([{ remotePath: "/opt/app/release.tar.gz", packed: false }]);
+  });
+});
+
+describe("tier 3 session takeover", () => {
+  const liveSession: AgentSessionInfo = {
+    id: "sess-full",
+    connectionId: grantedFull.id,
+    title: "prod-hk",
+    status: "connected",
+    type: "terminal",
+    createdAt: TIMESTAMP,
+    cwd: "/var/www",
+    lastCommand: "pwd"
+  };
+
+  const takeoverHarness = (overrides: Partial<AgentGatewayDeps> = {}, limits = {}) => {
+    const prompts: Array<{ title: string; details?: string }> = [];
+    const written: Array<{ sessionId: string; data: string }> = [];
+    const badges: Array<{ sessionId: string; controlled: boolean }> = [];
+    const harness = createHarness(
+      {
+        listSessions: () => [liveSession],
+        writeSession: (sessionId, data) => {
+          written.push({ sessionId, data });
+        },
+        setSessionAgentControlled: (sessionId) => badges.push({ sessionId, controlled: true }),
+        clearSessionAgentControlled: (sessionId) => badges.push({ sessionId, controlled: false }),
+        promptUser: async (request) => {
+          prompts.push({ title: request.title, details: request.details });
+          return {
+            id: "00000000-0000-4000-8000-000000000000",
+            canceled: false,
+            value: "approved"
+          };
+        },
+        ...overrides
+      },
+      limits
+    );
+    return { ...harness, prompts, written, badges };
+  };
+
+  test("injection asks first, shows the keys, and badges the tab", async () => {
+    const { gateway, prompts, written, badges } = takeoverHarness();
+
+    const result = await gateway.sendKeys(CLIENT, {
+      target: "sess-full",
+      text: "make deploy",
+      submit: true
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data).toMatchObject({ sessionId: "sess-full", submitted: true });
+    expect(written).toEqual([{ sessionId: "sess-full", data: "make deploy\r" }]);
+    expect(prompts.at(-1)?.title).toBe("Agent 请求向终端注入输入");
+    expect(prompts.at(-1)?.details).toContain("make deploy");
+    // The badge goes up before the write and comes back down afterwards.
+    expect(badges).toEqual([
+      { sessionId: "sess-full", controlled: true },
+      { sessionId: "sess-full", controlled: false }
+    ]);
+  });
+
+  test("control bytes hidden inside the text are named in the dialog", async () => {
+    const { gateway, prompts } = takeoverHarness();
+
+    await gateway.sendKeys(CLIENT, {
+      target: "sess-full",
+      text: "echo saferm -rf /tmp/x"
+    });
+
+    const details = prompts.at(-1)?.details ?? "";
+    expect(details).toContain("<Ctrl-C>");
+    expect(details).not.toContain("");
+  });
+
+  test("a denied injection writes nothing", async () => {
+    const { gateway, written } = takeoverHarness({
+      promptUser: async () => ({ id: "00000000-0000-4000-8000-000000000000", canceled: true })
+    });
+
+    const result = await gateway.sendKeys(CLIENT, { target: "sess-full", text: "rm -rf /" });
+    expect(result.ok).toBe(false);
+    expect(written).toEqual([]);
+  });
+
+  test("the user typing preempts injection", async () => {
+    let clock = 1_000_000;
+    // A single keystroke half a second ago; the clock moves, the keystroke does not.
+    const lastKeystrokeAt = clock - 500;
+    const { gateway, written } = takeoverHarness(
+      { lastUserInputAt: () => lastKeystrokeAt, now: () => clock },
+      { userInputPreemptionMs: 3000 }
+    );
+
+    const blocked = await gateway.sendKeys(CLIENT, { target: "sess-full", text: "ls" });
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.error.code).toBe("busy");
+    expect(written).toEqual([]);
+
+    // Once the person has stopped typing, injection is allowed again.
+    clock += 5000;
+    const allowed = await gateway.sendKeys(CLIENT, { target: "sess-full", text: "ls" });
+    expect(allowed.ok).toBe(true);
+  });
+
+  test("waitForPrompt reports the shell's own completion, and times out honestly", async () => {
+    const completed = await takeoverHarness({
+      waitForCommandCompletion: async () => ({
+        command: "make deploy",
+        exitCode: 0,
+        output: "done\n",
+        truncated: false
+      })
+    }).gateway.sendKeys(CLIENT, {
+      target: "sess-full",
+      text: "make deploy",
+      submit: true,
+      waitForPrompt: true
+    });
+
+    expect(completed.ok).toBe(true);
+    if (completed.ok) {
+      expect(completed.data.completed).toEqual({
+        command: "make deploy",
+        exitCode: 0,
+        output: "done\n",
+        truncated: false
+      });
+      expect(completed.data.waitTimedOut).toBe(false);
+    }
+
+    // No shell integration: no mark ever arrives, and the result says so rather
+    // than inventing an exit code.
+    const timedOut = await takeoverHarness({
+      waitForCommandCompletion: async () => null
+    }).gateway.sendKeys(CLIENT, {
+      target: "sess-full",
+      text: "make deploy",
+      submit: true,
+      waitForPrompt: true
+    });
+
+    expect(timedOut.ok).toBe(true);
+    if (timedOut.ok) {
+      expect(timedOut.data.completed).toBeNull();
+      expect(timedOut.data.waitTimedOut).toBe(true);
+    }
+  });
+
+  test("send_signal maps names to control bytes; only interrupt skips the dialog", async () => {
+    const { gateway, prompts, written } = takeoverHarness();
+
+    await gateway.sendSignal(CLIENT, { target: "sess-full", signal: "interrupt" });
+    await gateway.sendSignal(CLIENT, { target: "sess-full", signal: "eof" });
+
+    expect(written.map((entry) => entry.data)).toEqual(["", ""]);
+    expect(prompts.map((prompt) => prompt.title)).toEqual([
+      "新的 Agent 客户端请求接入",
+      "Agent 请求向终端发送控制信号"
+    ]);
+  });
+
+  test("takeover is refused on a readonly host and on a disconnected session", async () => {
+    const readonlySession: AgentSessionInfo = {
+      ...liveSession,
+      id: "sess-readonly",
+      connectionId: grantedReadonly.id
+    };
+    const readonly = takeoverHarness({ listSessions: () => [readonlySession] });
+    const onReadonly = await readonly.gateway.sendKeys(CLIENT, {
+      target: "sess-readonly",
+      text: "ls"
+    });
+    expect(onReadonly.ok).toBe(false);
+    if (!onReadonly.ok) expect(onReadonly.error.code).toBe("forbidden");
+
+    const dead = takeoverHarness({
+      listSessions: () => [{ ...liveSession, status: "disconnected" }]
+    });
+    const onDead = await dead.gateway.sendKeys(CLIENT, { target: "sess-full", text: "ls" });
+    expect(onDead.ok).toBe(false);
+    if (!onDead.ok) expect(onDead.error.code).toBe("unavailable");
+  });
+
+  test("session_open produces a visible tab and marks it agent-controlled", async () => {
+    const { gateway, badges, prompts } = takeoverHarness({
+      openSession: async () => ({ id: "sess-new", title: "prod-hk", status: "connected" as const })
+    });
+
+    const result = await gateway.openSession(CLIENT, { target: "prod-hk" });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.sessionId).toBe("sess-new");
+    expect(badges).toEqual([{ sessionId: "sess-new", controlled: true }]);
+    expect(prompts.at(-1)?.title).toBe("Agent 请求打开终端标签");
+  });
+
+  test("session_focus works on a readonly host — it only moves the user's window", async () => {
+    const focused: string[] = [];
+    const { gateway } = takeoverHarness({
+      listSessions: () => [{ ...liveSession, id: "sess-ro", connectionId: grantedReadonly.id }],
+      focusSession: (sessionId) => focused.push(sessionId)
+    });
+
+    const result = await gateway.focusSession(CLIENT, { target: "sess-ro" });
+    expect(result.ok).toBe(true);
+    expect(focused).toEqual(["sess-ro"]);
+  });
+});
+
+describe("global halt", () => {
+  test("halting rejects every call without a dialog and forgets remembered approvals", async () => {
+    const prompts: string[] = [];
+    const { gateway } = createHarness({
+      promptUser: async (request) => {
+        prompts.push(request.title);
+        return {
+          id: "00000000-0000-4000-8000-000000000000",
+          canceled: false,
+          value: "approved",
+          rememberForSession: true
+        };
+      }
+    });
+
+    // Approve the client and remember a dangerous command.
+    const before = await gateway.execCommand(CLIENT, { target: "prod-hk", command: "rm -rf /" });
+    expect(before.ok).toBe(true);
+    const promptsBeforeHalt = prompts.length;
+
+    gateway.setHalted(true);
+    expect(gateway.isHalted).toBe(true);
+
+    const halted = await gateway.execCommand(CLIENT, { target: "prod-hk", command: "rm -rf /" });
+    expect(halted.ok).toBe(false);
+    if (!halted.ok) expect(halted.error.code).toBe("forbidden");
+    const listBlocked = await gateway.listHosts(CLIENT, {});
+    expect(listBlocked.ok).toBe(false);
+    expect(prompts).toHaveLength(promptsBeforeHalt);
+
+    // Resuming must not silently restore "always allow this command".
+    gateway.setHalted(false);
+    const after = await gateway.execCommand(CLIENT, { target: "prod-hk", command: "rm -rf /" });
+    expect(after.ok).toBe(true);
+    expect(prompts.length).toBeGreaterThan(promptsBeforeHalt);
+  });
+});
+
+describe("agent-controlled tab badges", () => {
+  const openedSession: AgentSessionInfo = {
+    id: "sess-agent",
+    connectionId: grantedFull.id,
+    title: "prod-hk",
+    status: "connected",
+    type: "terminal",
+    createdAt: TIMESTAMP,
+    cwd: "/root",
+    lastCommand: null
+  };
+
+  const badgeHarness = (overrides: Partial<AgentGatewayDeps> = {}) => {
+    const badges: Array<{ sessionId: string; controlled: boolean }> = [];
+    const harness = createHarness({
+      listSessions: () => [openedSession],
+      writeSession: () => undefined,
+      openSession: async () => ({ id: "sess-agent", title: "prod-hk", status: "connected" }),
+      setSessionAgentControlled: (sessionId) => badges.push({ sessionId, controlled: true }),
+      clearSessionAgentControlled: (sessionId) => badges.push({ sessionId, controlled: false }),
+      promptUser: async () => ({
+        id: "00000000-0000-4000-8000-000000000000",
+        canceled: false,
+        value: "approved"
+      }),
+      ...overrides
+    });
+    return { ...harness, badges };
+  };
+
+  test("a session the agent opened stays badged across injections", async () => {
+    const { gateway, badges } = badgeHarness();
+
+    await gateway.openSession(CLIENT, { target: "prod-hk" });
+    badges.length = 0;
+    await gateway.sendKeys(CLIENT, { target: "sess-agent", text: "ls", submit: true });
+
+    // Owned session: injecting neither re-raises nor lowers the badge.
+    expect(badges).toEqual([]);
+
+    await gateway.closeSession(CLIENT, { target: "sess-agent" });
+    expect(badges).toEqual([{ sessionId: "sess-agent", controlled: false }]);
+  });
+
+  test("a failed injection into a user's session still lowers the badge", async () => {
+    const { gateway, badges } = badgeHarness({
+      writeSession: () => {
+        throw new Error("channel closed");
+      }
+    });
+
+    const result = await gateway.sendKeys(CLIENT, { target: "sess-agent", text: "ls" });
+
+    expect(result.ok).toBe(false);
+    expect(badges).toEqual([
+      { sessionId: "sess-agent", controlled: true },
+      { sessionId: "sess-agent", controlled: false }
+    ]);
+  });
+
+  test("halting lowers the badge on every session the agent owns", async () => {
+    const { gateway, badges } = badgeHarness();
+
+    await gateway.openSession(CLIENT, { target: "prod-hk" });
+    badges.length = 0;
+    gateway.setHalted(true);
+
+    expect(badges).toEqual([{ sessionId: "sess-agent", controlled: false }]);
   });
 });

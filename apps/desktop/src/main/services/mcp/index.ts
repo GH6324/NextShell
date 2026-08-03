@@ -58,6 +58,8 @@ export interface AgentMcpService {
   rotateToken: () => Promise<AgentEndpointStatus>;
   buildClientConfig: (client: AgentClientKind) => AgentClientConfigResult;
   respondToPrompt: (response: AgentPromptResponse) => void;
+  /** Global breaker: rejects every tool call without tearing the endpoint down. */
+  setHalted: (halted: boolean) => AgentEndpointStatus;
   dispose: () => Promise<void>;
 }
 
@@ -123,7 +125,8 @@ export const createAgentMcpService = (deps: AgentMcpServiceDeps): AgentMcpServic
       token: listening && tcpPort !== null ? token : null,
       endpointFilePath: discovery.primaryPath,
       clients: endpoint?.getClients() ?? [],
-      lastError
+      lastError,
+      halted: gateway.isHalted
     };
   };
 
@@ -261,6 +264,13 @@ export const createAgentMcpService = (deps: AgentMcpServiceDeps): AgentMcpServic
       return { ok: true, command, json };
     },
     respondToPrompt: (response) => deps.respondToPrompt(response),
+    // Deliberately not `enqueue`d: a kill switch that waits behind whatever the
+    // endpoint queue is doing is not a kill switch.
+    setHalted: (halted) => {
+      gateway.setHalted(halted);
+      deps.logger?.warn?.(halted ? "Agent access halted by the user" : "Agent access resumed");
+      return getStatus();
+    },
     dispose: () => enqueue(stopEndpoint).then(() => undefined)
   };
 };

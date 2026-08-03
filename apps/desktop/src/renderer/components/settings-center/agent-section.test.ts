@@ -24,4 +24,15 @@ describe("formatRunningState", () => {
   test("reports a stalled state when enabled but not listening (e.g. bind failure)", () => {
     expect(formatRunningState(true, false)).toEqual({ status: "error", text: "已启用但未监听" });
   });
+
+  test("a halted endpoint is not reported as plain 监听中 — it still listens but refuses", () => {
+    expect(formatRunningState(true, true, true)).toEqual({
+      status: "warning",
+      text: "监听中（调用已被切断）"
+    });
+    expect(formatRunningState(true, false, true)).toEqual({
+      status: "error",
+      text: "已启用但未监听"
+    });
+  });
 });

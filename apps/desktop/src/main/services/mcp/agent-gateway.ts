@@ -227,6 +227,34 @@ export interface AgentSessionScreenPayload extends ScreenReadResult {
   sessionId: string;
 }
 
+export interface AgentSendKeysPayload {
+  sessionId: string;
+  bytes: number;
+  submitted: boolean;
+  /**
+   * Populated only when `waitForPrompt` was requested *and* the remote reported
+   * an OSC 133 `D` mark. `null` means the wait timed out or the remote has no
+   * shell integration — never a guessed result.
+   */
+  completed: {
+    command: string | null;
+    exitCode: number | null;
+    output: string;
+    truncated: boolean;
+  } | null;
+  /** True when `waitForPrompt` was asked for but no completion mark arrived. */
+  waitTimedOut: boolean;
+}
+
+export interface AgentSessionOpenPayload {
+  sessionId: string;
+  connectionId: string;
+  title: string;
+  status: SessionStatus;
+}
+
+export type AgentControlSignal = "interrupt" | "eof" | "suspend" | "quit";
+
 export interface AgentExecPayload {
   connectionId: string;
   command: string;
@@ -295,6 +323,31 @@ export interface AgentGatewayDeps {
     sessionId: string,
     options: ScreenReadOptions
   ) => Promise<ScreenReadResult | null>;
+  // ── Tier 3: PTY takeover ──
+  writeSession: (sessionId: string, data: string) => void;
+  /** Epoch millis of the last real keystroke in that session, or `null`. */
+  lastUserInputAt: (sessionId: string) => number | null;
+  /** Resolves on the next OSC 133 `D`; `null` on timeout or missing integration. */
+  waitForCommandCompletion: (
+    sessionId: string,
+    timeoutMs: number
+  ) => Promise<{
+    command: string | null;
+    exitCode: number | null;
+    output: string;
+    truncated: boolean;
+  } | null>;
+  openSession: (connectionId: string) => Promise<{
+    id: string;
+    title: string;
+    status: SessionStatus;
+  }>;
+  closeSession: (sessionId: string) => Promise<void>;
+  /** Brings the tab to the front and raises the window. */
+  focusSession: (sessionId: string) => void;
+  /** Tells the GUI which sessions an agent is driving, so tabs can be badged. */
+  setSessionAgentControlled: (sessionId: string, clientName: string | null) => void;
+  clearSessionAgentControlled: (sessionId: string) => void;
   execCommand: (
     connectionId: string,
     command: string,
@@ -360,6 +413,13 @@ export interface AgentGatewayLimits {
   maxWriteBytes: number;
   /** Concurrent transfers one client may have in flight. */
   maxConcurrentTransfers: number;
+  /**
+   * How recently a human keystroke blocks agent injection into the same PTY.
+   * The agent stands down; it does not race the person at the keyboard.
+   */
+  userInputPreemptionMs: number;
+  /** Ceiling on `session_send_keys` `waitForPrompt`. */
+  maxWaitForPromptMs: number;
 }
 
 export const DEFAULT_AGENT_GATEWAY_LIMITS: AgentGatewayLimits = {
@@ -369,7 +429,9 @@ export const DEFAULT_AGENT_GATEWAY_LIMITS: AgentGatewayLimits = {
   maxListItems: 500,
   maxFileBytes: 256 * 1024,
   maxWriteBytes: 1024 * 1024,
-  maxConcurrentTransfers: 4
+  maxConcurrentTransfers: 4,
+  userInputPreemptionMs: 3_000,
+  maxWaitForPromptMs: 120_000
 };
 
 export interface AgentGatewayOptions {
@@ -389,6 +451,8 @@ export interface AgentResolvedTarget {
 
 const AGENT_REDACTED = "«redacted»";
 const RATE_WINDOW_MS = 60_000;
+/** Slack between a `waitForPrompt` deadline and the enclosing call timeout. */
+const WAIT_FOR_PROMPT_HEADROOM_MS = 5_000;
 const BINARY_SNIFF_BYTES = 4096;
 const ANSI_ESCAPE_PATTERN = /[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\x2f#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
 
@@ -538,6 +602,39 @@ export const normalizeRemotePath = (input: string): AgentToolResult<string> => {
   return { ok: true, data: `/${resolved.join("/")}` };
 };
 
+const CONTROL_KEY_NAMES: Record<string, string> = {
+  "\u0003": "<Ctrl-C>",
+  "\u0004": "<Ctrl-D>",
+  "\u001a": "<Ctrl-Z>",
+  "\u001c": "<Ctrl-\\>",
+  "\r": "<Enter>",
+  "\n": "<LF>",
+  "\t": "<Tab>",
+  "\u001b": "<Esc>",
+  "\u007f": "<Backspace>"
+};
+
+/**
+ * Renders injected keystrokes for the confirmation dialog. Control bytes are
+ * named rather than shown: an invisible `` in the middle of an otherwise
+ * innocent-looking line is exactly what the dialog exists to expose, and a raw
+ * escape sequence in a dialog is unreadable anyway.
+ */
+export const describeInjectedKeys = (text: string): string => {
+  if (text.length === 0) return "（空输入）";
+  let out = "";
+  for (const char of text) {
+    const named = CONTROL_KEY_NAMES[char];
+    if (named) {
+      out += named;
+      continue;
+    }
+    const code = char.codePointAt(0) ?? 0;
+    out += code < 0x20 || code === 0x7f ? `<0x${code.toString(16).padStart(2, "0")}>` : char;
+  }
+  return out;
+};
+
 const looksBinary = (bytes: Buffer): boolean => {
   const window = bytes.subarray(0, BINARY_SNIFF_BYTES);
   for (const byte of window) {
@@ -569,8 +666,20 @@ export class AgentGateway {
    * them to click "allow" — the exact failure mode the gate exists to prevent.
    */
   private readonly deniedClients = new Set<string>();
+  /**
+   * Sessions the agent opened itself. Their tab badge is persistent — the
+   * session belongs to the agent for its whole life — whereas injecting into a
+   * session the *user* opened only badges it for the duration of the write.
+   */
+  private readonly agentOwnedSessions = new Set<string>();
   private readonly pendingClientApprovals = new Map<string, Promise<boolean>>();
   private activitySequence = 0;
+  /**
+   * The global breaker. Once tripped every tool call fails immediately, without
+   * a dialog, until the user re-arms it — the point of a kill switch is that it
+   * does not negotiate.
+   */
+  private halted = false;
 
   constructor(deps: AgentGatewayDeps, options: AgentGatewayOptions = {}) {
     this.deps = deps;
@@ -579,6 +688,30 @@ export class AgentGateway {
 
   get gatewayLimits(): AgentGatewayLimits {
     return this.limits;
+  }
+
+  get isHalted(): boolean {
+    return this.halted;
+  }
+
+  /**
+   * Trips or re-arms the breaker. Halting also forgets every remembered
+   * approval: a user who hits stop is withdrawing consent, and "always allow
+   * this command" must not survive that.
+   */
+  setHalted(halted: boolean): void {
+    this.halted = halted;
+    if (!halted) return;
+    this.rememberedApprovals.clear();
+    // Nothing is agent-driven any more, so no tab should still claim it is.
+    for (const sessionId of this.agentOwnedSessions) {
+      try {
+        this.deps.clearSessionAgentControlled(sessionId);
+      } catch {
+        // Badge updates are best-effort; the breaker itself must not fail.
+      }
+    }
+    this.agentOwnedSessions.clear();
   }
 
   /**
@@ -820,6 +953,17 @@ export class AgentGateway {
     const commandSummary = typeof params.command === "string" ? redactText(params.command) : undefined;
     this.emitActivity(client, activityId, tool, "running", connectionId, commandSummary);
 
+    if (this.halted) {
+      const error: AgentToolError = {
+        code: "forbidden",
+        message:
+          "Agent access is halted from NextShell's Agent panel. Ask the user to resume it before retrying."
+      };
+      this.audit(client, tool, params, { code: error.code, connectionId, level: "warn" });
+      this.emitActivity(client, activityId, tool, "failed", connectionId, "halted");
+      return { ok: false, error };
+    }
+
     const rateError = this.checkRateLimit(client.rateKey);
     if (rateError) {
       this.audit(client, tool, params, { code: rateError.code, connectionId, level: "warn" });
@@ -929,6 +1073,15 @@ export class AgentGateway {
     error: AgentToolError,
     connectionId?: string
   ): AgentToolResult<T> {
+    if (this.halted) {
+      const halted: AgentToolError = {
+        code: "forbidden",
+        message:
+          "Agent access is halted from NextShell's Agent panel. Ask the user to resume it before retrying."
+      };
+      this.audit(client, tool, params, { code: halted.code, connectionId, level: "warn" });
+      return { ok: false, error: halted };
+    }
     const reported = this.checkRateLimit(client.rateKey) ?? error;
     this.audit(client, tool, params, { code: reported.code, connectionId, level: "warn" });
     return { ok: false, error: reported };
@@ -2026,6 +2179,364 @@ export class AgentGateway {
         cancelRequested: this.deps.cancelTransfer(input.taskId)
       };
     });
+  }
+
+  // ─── Tier 3: session control and takeover ─────────────────────────────────
+
+  /** Control characters, named rather than raw so the agent cannot smuggle bytes. */
+  private static readonly CONTROL_BYTES: Record<
+    AgentControlSignal,
+    { byte: string; label: string }
+  > = {
+    interrupt: { byte: "\u0003", label: "Ctrl-C（中断当前前台进程）" },
+    eof: { byte: "\u0004", label: "Ctrl-D（发送 EOF，可能会结束 shell）" },
+    suspend: { byte: "\u001a", label: "Ctrl-Z（挂起当前前台进程）" },
+    quit: { byte: "\u001c", label: "Ctrl-\\（退出并转储核心）" }
+  };
+
+
+  /**
+   * Resolves a session id for a takeover tool: the session must exist, be live,
+   * be on a host granted `full` access, and not be one a human is typing into
+   * right now.
+   */
+  private resolveLiveSession(
+    sessionId: string
+  ):
+    | { ok: true; session: AgentSessionInfo; connection: ConnectionProfile }
+    | { ok: false; error: AgentToolError } {
+    const session = this.authorizedSessions().find((candidate) => candidate.id === sessionId);
+    if (!session || !session.connectionId) {
+      return {
+        ok: false,
+        error: {
+          code: "not_found",
+          message: "No active authorized session matches that id; call session_list first"
+        }
+      };
+    }
+    if (session.status !== "connected") {
+      return {
+        ok: false,
+        error: { code: "unavailable", message: `Session is ${session.status}, not connected` }
+      };
+    }
+    const resolved = this.resolveTarget(session.connectionId, "write");
+    if (!resolved.ok) {
+      return { ok: false, error: resolved.error };
+    }
+    return { ok: true, session, connection: resolved.data.connection };
+  }
+
+  /**
+   * The person at the keyboard wins. Injecting into a PTY someone is actively
+   * typing in interleaves two input streams into one line editor, which at best
+   * garbles the command and at worst runs a spliced one.
+   */
+  /** Forgets sessions the user closed behind the agent's back. */
+  private pruneOwnedSessions(): void {
+    if (this.agentOwnedSessions.size === 0) return;
+    const live = new Set(this.deps.listSessions().map((session) => session.id));
+    for (const sessionId of this.agentOwnedSessions) {
+      if (!live.has(sessionId)) this.agentOwnedSessions.delete(sessionId);
+    }
+  }
+
+  private userIsTyping(sessionId: string): boolean {
+    const last = this.deps.lastUserInputAt(sessionId);
+    if (last === null) return false;
+    return this.now() - last < this.limits.userInputPreemptionMs;
+  }
+
+  /**
+   * Injection into a live PTY always asks, regardless of `confirmWrites`. It is
+   * the one tool that runs inside the user's own shell — inheriting their cwd,
+   * their sudo timestamp, their virtualenv — so the command-risk classifier
+   * cannot bound what it does, and `exec` exists precisely so this stays rare.
+   */
+  async sendKeys(
+    client: AgentClientIdentity,
+    input: {
+      target: string;
+      text: string;
+      submit?: boolean;
+      waitForPrompt?: boolean;
+      timeoutSec?: number;
+    }
+  ): Promise<AgentToolResult<AgentSendKeysPayload>> {
+    const params = {
+      target: input.target,
+      command: input.text,
+      submit: input.submit ?? false,
+      waitForPrompt: input.waitForPrompt ?? false
+    };
+    if (input.text.length === 0 && !input.submit) {
+      return this.failed(client, "session_send_keys", params, {
+        code: "invalid_argument",
+        message: "text must not be empty unless submit is true"
+      });
+    }
+    const live = this.resolveLiveSession(input.target);
+    if (!live.ok) {
+      return this.failed(client, "session_send_keys", params, live.error);
+    }
+    if (this.userIsTyping(live.session.id)) {
+      return this.failed(
+        client,
+        "session_send_keys",
+        params,
+        {
+          code: "busy",
+          message: "The user is typing in this session right now; retry shortly or use exec"
+        },
+        live.connection.id
+      );
+    }
+
+    const { session, connection } = live;
+    const risk = classifyCommandRisk(input.text);
+    const payload = input.submit ? `${input.text}\r` : input.text;
+    // Kept strictly under the call ceiling: if the wait could outlive the call,
+    // a slow command would surface as a `timeout` error instead of the honest
+    // `waitTimedOut: true` the tool promises.
+    const waitMs = Math.min(
+      clampInt(input.timeoutSec, 30, 1, 3600) * 1000,
+      this.limits.maxWaitForPromptMs,
+      Math.max(1_000, this.limits.maxCallTimeoutMs - WAIT_FOR_PROMPT_HEADROOM_MS)
+    );
+    const approvalKey = `send_keys\0${session.id}\0${payload}`;
+
+    return this.execute(
+      client,
+      "session_send_keys",
+      params,
+      async () => {
+        // Subscribed before the write so a fast command cannot complete in the
+        // gap between injecting and starting to listen.
+        const completion = input.waitForPrompt
+          ? this.deps.waitForCommandCompletion(session.id, waitMs)
+          : null;
+        // A session the agent owns is badged for its whole life; a session the
+        // user owns only while the agent is actually driving it.
+        const owned = this.agentOwnedSessions.has(session.id);
+        if (!owned) this.deps.setSessionAgentControlled(session.id, client.name);
+        try {
+          this.deps.writeSession(session.id, payload);
+          const settled = completion ? await completion : null;
+          return {
+            sessionId: session.id,
+            bytes: Buffer.byteLength(payload, "utf8"),
+            submitted: input.submit ?? false,
+            completed: settled
+              ? {
+                  command: settled.command === null ? null : redactText(settled.command),
+                  exitCode: settled.exitCode,
+                  output: redactText(settled.output),
+                  truncated: settled.truncated
+                }
+              : null,
+            waitTimedOut: Boolean(input.waitForPrompt) && settled === null
+          };
+        } finally {
+          // In a finally: a badge that survives a failed write would tell the
+          // user an agent is still driving a terminal it never reached.
+          if (!owned) this.deps.clearSessionAgentControlled(session.id);
+        }
+      },
+      {
+        connectionId: connection.id,
+        // The wait is the point of the call, so it gets the whole budget.
+        requestedTimeoutMs: input.waitForPrompt
+          ? waitMs + WAIT_FOR_PROMPT_HEADROOM_MS
+          : undefined,
+        preflight: async () => {
+          if (this.rememberedApprovals.get(client.id)?.has(approvalKey)) return;
+          const response = await this.deps.promptUser({
+            kind: "confirm",
+            title: "Agent 请求向终端注入输入",
+            message: `${client.name ?? "未知客户端"} 请求向 ${connection.name} 的会话「${session.title}」注入输入：`,
+            details: [
+              describeInjectedKeys(input.text),
+              input.submit ? "并按下回车执行" : "不按回车（仅输入）",
+              `风险判定：${risk.reason}`,
+              "该输入会在你自己的 shell 里执行，继承当前目录、环境与 sudo 状态。"
+            ].join("\n"),
+            allowRemember: true
+          });
+          if (response.canceled || response.value !== "approved") {
+            throw new AgentToolFailure({
+              code: "forbidden",
+              message: "The user denied the injection"
+            });
+          }
+          if (response.rememberForSession) {
+            const approvals = this.rememberedApprovals.get(client.id) ?? new Set<string>();
+            approvals.add(approvalKey);
+            this.rememberedApprovals.set(client.id, approvals);
+          }
+        }
+      }
+    );
+  }
+
+  async sendSignal(
+    client: AgentClientIdentity,
+    input: { target: string; signal: AgentControlSignal }
+  ): Promise<AgentToolResult<{ sessionId: string; signal: AgentControlSignal }>> {
+    const params = { target: input.target, signal: input.signal };
+    const control = AgentGateway.CONTROL_BYTES[input.signal];
+    if (!control) {
+      return this.failed(client, "session_send_signal", params, {
+        code: "invalid_argument",
+        message: "signal must be one of interrupt, eof, suspend, quit"
+      });
+    }
+    const live = this.resolveLiveSession(input.target);
+    if (!live.ok) {
+      return this.failed(client, "session_send_signal", params, live.error);
+    }
+
+    const { session, connection } = live;
+    return this.execute(
+      client,
+      "session_send_signal",
+      params,
+      async () => {
+        this.deps.writeSession(session.id, control.byte);
+        return { sessionId: session.id, signal: input.signal };
+      },
+      {
+        connectionId: connection.id,
+        preflight: async () => {
+          // Interrupting is how a human stops a runaway agent command, so it is
+          // the one control byte that does not need its own dialog.
+          if (input.signal === "interrupt") return;
+          const response = await this.deps.promptUser({
+            kind: "confirm",
+            title: "Agent 请求向终端发送控制信号",
+            message: `${client.name ?? "未知客户端"} 请求向会话「${session.title}」发送：`,
+            details: control.label
+          });
+          if (response.canceled || response.value !== "approved") {
+            throw new AgentToolFailure({
+              code: "forbidden",
+              message: "The user denied the control signal"
+            });
+          }
+        }
+      }
+    );
+  }
+
+  /** Opens a real, visible GUI tab — not a hidden channel the user cannot see. */
+  async openSession(
+    client: AgentClientIdentity,
+    input: { target: string }
+  ): Promise<AgentToolResult<AgentSessionOpenPayload>> {
+    const params = { target: input.target };
+    const resolved = this.resolveTarget(input.target, "write");
+    if (!resolved.ok) {
+      return this.failed(client, "session_open", params, resolved.error);
+    }
+    const connection = resolved.data.connection;
+    if (!this.safeOnline(connection.id) && !connection.hostFingerprint?.trim()) {
+      return this.failed(
+        client,
+        "session_open",
+        params,
+        {
+          code: "unavailable",
+          message:
+            "This host has no pinned host key. Open it in NextShell once so the user can establish trust before an agent connects."
+        },
+        connection.id
+      );
+    }
+
+    return this.execute(
+      client,
+      "session_open",
+      params,
+      async () => {
+        const opened = await this.deps.openSession(connection.id);
+        this.pruneOwnedSessions();
+        this.agentOwnedSessions.add(opened.id);
+        this.deps.setSessionAgentControlled(opened.id, client.name);
+        return {
+          sessionId: opened.id,
+          connectionId: connection.id,
+          title: opened.title,
+          status: opened.status
+        };
+      },
+      {
+        connectionId: connection.id,
+        preflight: async () => {
+          const response = await this.deps.promptUser({
+            kind: "confirm",
+            title: "Agent 请求打开终端标签",
+            message: `${client.name ?? "未知客户端"} 请求在 ${connection.name} 上打开一个新的终端会话。`,
+            details: "该标签会真实出现在 NextShell 里并标记为 Agent 控制中，你随时可以关闭它。"
+          });
+          if (response.canceled || response.value !== "approved") {
+            throw new AgentToolFailure({
+              code: "forbidden",
+              message: "The user denied opening a session"
+            });
+          }
+        }
+      }
+    );
+  }
+
+  async closeSession(
+    client: AgentClientIdentity,
+    input: { target: string }
+  ): Promise<AgentToolResult<{ sessionId: string }>> {
+    const params = { target: input.target };
+    const live = this.resolveLiveSession(input.target);
+    if (!live.ok) {
+      return this.failed(client, "session_close", params, live.error);
+    }
+
+    const { session, connection } = live;
+    return this.execute(
+      client,
+      "session_close",
+      params,
+      async () => {
+        await this.deps.closeSession(session.id);
+        this.agentOwnedSessions.delete(session.id);
+        this.deps.clearSessionAgentControlled(session.id);
+        return { sessionId: session.id };
+      },
+      { connectionId: connection.id }
+    );
+  }
+
+  /** Read-only for the host; it only moves the user's own window. */
+  async focusSession(
+    client: AgentClientIdentity,
+    input: { target: string }
+  ): Promise<AgentToolResult<{ sessionId: string }>> {
+    const params = { target: input.target };
+    const session = this.authorizedSessions().find((candidate) => candidate.id === input.target);
+    if (!session) {
+      return this.failed(client, "session_focus", params, {
+        code: "not_found",
+        message: "No active authorized session matches that id; call session_list first"
+      });
+    }
+    return this.execute(
+      client,
+      "session_focus",
+      params,
+      async () => {
+        this.deps.focusSession(session.id);
+        return { sessionId: session.id };
+      },
+      { connectionId: session.connectionId ?? undefined }
+    );
   }
 
   async askUser(

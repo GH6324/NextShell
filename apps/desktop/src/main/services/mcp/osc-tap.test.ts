@@ -205,3 +205,67 @@ describe("session retention budget", () => {
     expect(tap.getSnapshot().history[0]?.output).toHaveLength(4096);
   });
 });
+
+describe("waiting on command completion", () => {
+  test("resolves with the entry the shell just finished", async () => {
+    const tap = new OscTap("session-wait");
+    const pending = tap.waitForCommandCompletion(5_000);
+
+    tap.feed(oscBel("133;C;make deploy"));
+    tap.feed("building...\r\n");
+    tap.feed(oscBel("133;D;0"));
+
+    await expect(pending).resolves.toMatchObject({
+      command: "make deploy",
+      exitCode: 0,
+      output: "building...\r\n",
+      truncated: false
+    });
+  });
+
+  test("a waiter sees the output even though the budget evicts it right after", async () => {
+    const tap = new OscTap("session-wait-evict", {
+      maxOutputBytes: 64,
+      maxSessionOutputBytes: 1
+    });
+    const pending = tap.waitForCommandCompletion(5_000);
+
+    tap.feed(oscBel("133;C;echo hi"));
+    tap.feed("hi\r\n");
+    tap.feed(oscBel("133;D;0"));
+
+    await expect(pending).resolves.toMatchObject({ output: "hi\r\n" });
+  });
+
+  test("resolves null on timeout rather than inventing an exit code", async () => {
+    const tap = new OscTap("session-timeout");
+    await expect(tap.waitForCommandCompletion(1)).resolves.toBeNull();
+  });
+
+  test("disposal releases every waiter", async () => {
+    const tap = new OscTap("session-disposed");
+    const pending = tap.waitForCommandCompletion(60_000);
+    tap.dispose();
+    await expect(pending).resolves.toBeNull();
+    // A tap disposed before the wait cannot hang either.
+    await expect(tap.waitForCommandCompletion(60_000)).resolves.toBeNull();
+  });
+
+  test("every concurrent waiter is resolved by the same mark", async () => {
+    const tap = new OscTap("session-multi");
+    const first = tap.waitForCommandCompletion(5_000);
+    const second = tap.waitForCommandCompletion(5_000);
+
+    tap.feed(oscBel("133;C;uptime"));
+    tap.feed(oscBel("133;D;3"));
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a?.exitCode).toBe(3);
+    expect(b?.exitCode).toBe(3);
+  });
+
+  test("a registry wait on an unseen session resolves null instead of hanging", async () => {
+    const registry = new OscTapRegistry();
+    await expect(registry.waitForCommandCompletion("nobody", 5_000)).resolves.toBeNull();
+  });
+});

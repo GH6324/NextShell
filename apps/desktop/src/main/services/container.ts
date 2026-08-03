@@ -958,6 +958,56 @@ export const createServiceContainer = async (
     listSavedCommands: (query) => connections.listSavedCommands(query),
     readSessionScreen: async (sessionId, options) =>
       (await screenMirrors.get(sessionId)?.read(options)) ?? null,
+    writeSession: (sessionId, data) => {
+      sessionSvc.writeSession(sessionId, data, "agent");
+    },
+    lastUserInputAt: (sessionId) => sessionSvc.lastUserInputAt(sessionId),
+    waitForCommandCompletion: async (sessionId, timeoutMs) => {
+      const entry = await oscTaps.waitForCommandCompletion(sessionId, timeoutMs);
+      if (!entry) return null;
+      return {
+        command: entry.command,
+        exitCode: entry.exitCode,
+        output: entry.output,
+        truncated: entry.truncated
+      };
+    },
+    openSession: async (connectionId) => {
+      // Bound to a real window: an agent-opened tab must be one the user can
+      // see and close, not an invisible channel.
+      const target = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      if (!target || target.isDestroyed()) {
+        throw new Error("No NextShell window is available to host the session");
+      }
+      const descriptor = await sessionSvc.openSession(
+        { target: "remote", connectionId },
+        target.webContents
+      );
+      return { id: descriptor.id, title: descriptor.title, status: descriptor.status };
+    },
+    closeSession: async (sessionId) => {
+      await sessionSvc.closeSession(sessionId);
+    },
+    focusSession: (sessionId) => {
+      const target = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      if (!target || target.isDestroyed()) return;
+      if (target.isMinimized()) target.restore();
+      target.show();
+      target.focus();
+      target.webContents.send(IPCChannel.AgentSessionFocusEvent, { sessionId });
+    },
+    setSessionAgentControlled: (sessionId, clientName) =>
+      broadcastToAllWindows(IPCChannel.AgentSessionControlEvent, {
+        sessionId,
+        clientName,
+        controlled: true
+      }),
+    clearSessionAgentControlled: (sessionId) =>
+      broadcastToAllWindows(IPCChannel.AgentSessionControlEvent, {
+        sessionId,
+        clientName: null,
+        controlled: false
+      }),
     getSessionHistory: (sessionId) => {
       const snapshot = oscTaps.get(sessionId);
       if (!snapshot) return null;

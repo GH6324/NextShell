@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { registerCommandTools } from "./command";
+import { registerControlTools } from "./control";
 import { registerExecTools } from "./exec";
 import { registerFileTools } from "./file";
 import { registerHostTools } from "./host";
@@ -12,11 +13,7 @@ import type { AgentToolContext } from "./shared";
 
 export type AgentToolRegistrar = (server: McpServer, ctx: AgentToolContext) => void;
 
-/**
- * Every tool the endpoint exposes, in registration order. Later phases append
- * their own registrar here: session_read (Tier 0, needs ScreenMirror) and
- * session_send_keys and friends (Tier 3).
- */
+/** Every tool the endpoint exposes, in registration order. */
 export const AGENT_TOOL_REGISTRARS: readonly AgentToolRegistrar[] = [
   registerHostTools,
   registerSessionTools,
@@ -25,6 +22,7 @@ export const AGENT_TOOL_REGISTRARS: readonly AgentToolRegistrar[] = [
   registerCommandTools,
   registerExecTools,
   registerTransferTools,
+  registerControlTools,
   registerInteractionTools
 ];
 
@@ -37,6 +35,7 @@ export const registerAgentTools = (server: McpServer, ctx: AgentToolContext): vo
 export type { AgentToolContext } from "./shared";
 export {
   registerCommandTools,
+  registerControlTools,
   registerExecTools,
   registerFileTools,
   registerHostTools,

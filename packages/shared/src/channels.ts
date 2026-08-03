@@ -93,6 +93,9 @@ export const IPCChannel = {
   AgentPromptRequest: "nextshell:agent:prompt:request",
   AgentPromptResponse: "nextshell:agent:prompt:response",
   AgentActivityEvent: "nextshell:agent:activity:event",
+  AgentSetHalted: "nextshell:agent:set-halted",
+  AgentSessionControlEvent: "nextshell:agent:session:control:event",
+  AgentSessionFocusEvent: "nextshell:agent:session:focus:event",
 
   ConnectionRevealPassword: "nextshell:connection:reveal-password",
   SshKeyList: "nextshell:ssh-key:list",

@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AgentActivityEvent,
   AgentPromptRequest,
+  AgentSessionControlEvent,
+  AgentSessionFocusEvent,
   CloudSyncManagerStatusEvent,
   DebugLogEntry,
   SessionDataEvent,
@@ -267,12 +269,27 @@ const api: NextShellApi = {
       ipcRenderer.on(IPCChannel.AgentPromptRequest, handler);
       return () => ipcRenderer.off(IPCChannel.AgentPromptRequest, handler);
     },
+    setHalted: (payload) => invoke(IPCChannel.AgentSetHalted, payload),
     onActivity: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: AgentActivityEvent) => {
         listener(payload);
       };
       ipcRenderer.on(IPCChannel.AgentActivityEvent, handler);
       return () => ipcRenderer.off(IPCChannel.AgentActivityEvent, handler);
+    },
+    onSessionControl: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: AgentSessionControlEvent) => {
+        listener(payload);
+      };
+      ipcRenderer.on(IPCChannel.AgentSessionControlEvent, handler);
+      return () => ipcRenderer.off(IPCChannel.AgentSessionControlEvent, handler);
+    },
+    onSessionFocus: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: AgentSessionFocusEvent) => {
+        listener(payload);
+      };
+      ipcRenderer.on(IPCChannel.AgentSessionFocusEvent, handler);
+      return () => ipcRenderer.off(IPCChannel.AgentSessionFocusEvent, handler);
     }
   },
   sshKey: {

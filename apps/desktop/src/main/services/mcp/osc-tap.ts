@@ -146,6 +146,7 @@ export class OscTap {
   private history: OscTapCommandHistoryEntry[] = [];
   private historyOutputBytes = 0;
   private disposed = false;
+  private readonly completionWaiters = new Set<(entry: OscTapCommandHistoryEntry | null) => void>();
 
   constructor(sessionId: string, options: OscTapOptions = {}) {
     this.sessionId = sessionId;
@@ -271,8 +272,38 @@ export class OscTap {
     };
   }
 
+  /**
+   * Resolves on the next OSC 133 `D` mark — that is, when the shell finishes
+   * whatever is running and reports its exit code. This is what lets injected
+   * keys be awaited without diffing the screen: the shell tells us when it is
+   * done. Resolves `null` on timeout or disposal, which is the honest answer
+   * when the remote has no shell integration and no mark will ever arrive.
+   */
+  waitForCommandCompletion(timeoutMs: number): Promise<OscTapCommandHistoryEntry | null> {
+    if (this.disposed) {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (entry: OscTapCommandHistoryEntry | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.completionWaiters.delete(finish);
+        resolve(entry);
+      };
+      const timer = setTimeout(() => finish(null), Math.max(1, timeoutMs));
+      timer.unref?.();
+      this.completionWaiters.add(finish);
+    });
+  }
+
   dispose(): void {
     this.disposed = true;
+    for (const waiter of [...this.completionWaiters]) {
+      this.completionWaiters.delete(waiter);
+      waiter(null);
+    }
     this.parserState = "text";
     this.oscPayload = "";
     this.oscPayloadBytes = 0;
@@ -371,6 +402,15 @@ export class OscTap {
     };
     this.history.push(entry);
     this.historyOutputBytes += active.retainedOutputBytes;
+    if (this.completionWaiters.size > 0) {
+      const settled = cloneHistoryEntry(entry);
+      // Copied out first: a waiter's continuation may run before the eviction
+      // below, and it must see the output the command actually produced.
+      for (const waiter of [...this.completionWaiters]) {
+        this.completionWaiters.delete(waiter);
+        waiter(settled);
+      }
+    }
     if (this.history.length > this.maxHistoryEntries) {
       for (const dropped of this.history.splice(0, this.history.length - this.maxHistoryEntries)) {
         this.historyOutputBytes -= Buffer.byteLength(dropped.output, "utf8");
@@ -454,6 +494,17 @@ export class OscTapRegistry {
   /** Use instead of {@link get} when only cwd / last command are needed. */
   getSummary(sessionId: string): OscTapSummary | undefined {
     return this.taps.get(sessionId)?.getSummary();
+  }
+
+  /**
+   * Waits for the session's next OSC 133 `D` mark. A session with no tap yet has
+   * produced no output at all, so there is nothing to wait for.
+   */
+  waitForCommandCompletion(
+    sessionId: string,
+    timeoutMs: number
+  ): Promise<OscTapCommandHistoryEntry | null> {
+    return this.taps.get(sessionId)?.waitForCommandCompletion(timeoutMs) ?? Promise.resolve(null);
   }
 
   list(): OscTapSnapshot[] {

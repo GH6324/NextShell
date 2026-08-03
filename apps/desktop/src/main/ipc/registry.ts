@@ -105,7 +105,8 @@ import {
   agentDisableSchema,
   agentRotateTokenSchema,
   agentCopyClientConfigSchema,
-  agentPromptResponseSchema
+  agentPromptResponseSchema,
+  agentSetHaltedSchema
 } from "../../../../../packages/shared/src/index";
 import type { ServiceContainer } from "../services/container-types";
 
@@ -284,7 +285,15 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     channel: IPCChannel.SessionWrite,
     schema: sessionWriteSchema,
     label: "会话写入",
-    dispatch: (services, input) => services.sessions.writeSession(input.sessionId, input.data)
+    dispatch: (services, input) =>
+      // "agent" is not accepted from a renderer: it is produced inside the main
+      // process, and honouring it here would let the UI dodge the keystroke
+      // stamp that preempts agent injection.
+      services.sessions.writeSession(
+        input.sessionId,
+        input.data,
+        input.origin === "protocol" ? "protocol" : "user"
+      )
   }),
   define({
     channel: IPCChannel.SessionResize,
@@ -975,5 +984,11 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
       services.agentMcp.respondToPrompt(input);
       return { ok: true as const };
     }
+  }),
+  define({
+    channel: IPCChannel.AgentSetHalted,
+    schema: agentSetHaltedSchema,
+    label: "Agent 全局断闸",
+    dispatch: (services, input) => services.agentMcp.setHalted(input.halted)
   })
 ];

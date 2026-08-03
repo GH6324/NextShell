@@ -92,6 +92,8 @@ export class SessionService {
   private readonly tapAgentSessionData: SessionServiceOptions["tapAgentSessionData"];
   private readonly disposeAgentSessionData: SessionServiceOptions["disposeAgentSessionData"];
   private readonly onSessionResized: SessionServiceOptions["onSessionResized"];
+  /** Last real keystroke per session; drives agent-injection preemption. */
+  private readonly userInputAt = new Map<string, number>();
 
   constructor(options: SessionServiceOptions) {
     this.connections = options.connections;
@@ -108,7 +110,10 @@ export class SessionService {
     this.warmupSftp = options.warmupSftp;
     this.persistAuthOverride = options.persistAuthOverride;
     this.tapAgentSessionData = options.tapAgentSessionData;
-    this.disposeAgentSessionData = options.disposeAgentSessionData;
+    this.disposeAgentSessionData = (sessionId) => {
+      this.userInputAt.delete(sessionId);
+      options.disposeAgentSessionData(sessionId);
+    };
     this.onSessionResized = options.onSessionResized;
   }
 
@@ -454,10 +459,25 @@ export class SessionService {
     }
   }
 
-  writeSession(sessionId: string, data: string): { ok: true } {
+  /**
+   * `origin` is what makes agent injection safe to allow at all: a real
+   * keystroke stamps the session, and {@link lastUserInputAt} lets the agent
+   * gateway stand down while a human is actively typing into the same PTY.
+   * Anything the renderer sends is a human or a protocol reply on their behalf;
+   * "agent" only ever originates inside the main process.
+   */
+  writeSession(
+    sessionId: string,
+    data: string,
+    origin: "user" | "protocol" | "agent" = "user"
+  ): { ok: true } {
     const active = this.activeSessions.get(sessionId);
     if (!active) {
       throw new Error("Session not found");
+    }
+
+    if (origin === "user") {
+      this.userInputAt.set(sessionId, Date.now());
     }
 
     if (active.kind === "local") {
@@ -468,6 +488,11 @@ export class SessionService {
     const buffer = encodeTerminalData(data, active.terminalEncoding);
     active.channel.write(buffer);
     return { ok: true };
+  }
+
+  /** Epoch millis of the last real keystroke, or `null` if there has been none. */
+  lastUserInputAt(sessionId: string): number | null {
+    return this.userInputAt.get(sessionId) ?? null;
   }
 
   resizeSession(sessionId: string, cols: number, rows: number): { ok: true } {

@@ -175,11 +175,14 @@ export const sessionWriteSchema = z.object({
   data: z.string().max(1024 * 1024),
   /**
    * "protocol" marks writes the client generates on the user's behalf (OSC
-   * query replies, clipboard read answers). Only "user" writes represent real
-   * keystrokes, which is what shell-integration injection must not collide with.
+   * query replies, clipboard read answers). "agent" marks MCP-driven injection,
+   * which the main process never accepts over this channel — it is produced
+   * inside the main process and only ever appears on the outbound audit path.
+   * Only "user" writes represent real keystrokes, which is what shell-integration
+   * injection must not collide with, and what preempts agent injection.
    * Optional so every existing caller keeps defaulting to "user".
    */
-  origin: z.enum(["user", "protocol"]).optional()
+  origin: z.enum(["user", "protocol", "agent"]).optional()
 });
 
 export const sessionResizeSchema = z.object({
@@ -940,6 +943,24 @@ export const agentPromptResponseSchema = z.object({
   rememberForSession: z.boolean().optional()
 });
 
+/** 全局断闸：把 Agent 的所有工具调用立刻掐断，或重新放行。 */
+export const agentSetHaltedSchema = z.object({
+  halted: z.boolean()
+});
+
+/** 主进程 → 渲染进程：某个会话正被 Agent 驱动（或不再被驱动），用于标签徽标。 */
+export const agentSessionControlEventSchema = z.object({
+  sessionId: z.string().min(1),
+  /** null 表示 Agent 已交还控制权 */
+  clientName: z.string().nullable(),
+  controlled: z.boolean()
+});
+
+/** 主进程 → 渲染进程：切到该标签并把窗口置顶（`session_focus`）。 */
+export const agentSessionFocusEventSchema = z.object({
+  sessionId: z.string().min(1)
+});
+
 export const agentActivityEventSchema = z.object({
   id: z.string().min(1),
   clientName: z.string().nullable(),
@@ -959,6 +980,9 @@ export type AgentCopyClientConfigInput = z.infer<typeof agentCopyClientConfigSch
 export type AgentPromptRequest = z.infer<typeof agentPromptRequestSchema>;
 export type AgentPromptResponse = z.infer<typeof agentPromptResponseSchema>;
 export type AgentActivityEvent = z.infer<typeof agentActivityEventSchema>;
+export type AgentSetHaltedInput = z.infer<typeof agentSetHaltedSchema>;
+export type AgentSessionControlEvent = z.infer<typeof agentSessionControlEventSchema>;
+export type AgentSessionFocusEvent = z.infer<typeof agentSessionFocusEventSchema>;
 
 export interface AgentConnectedClient {
   /** MCP session id */
@@ -989,6 +1013,8 @@ export interface AgentEndpointStatus {
   clients: AgentConnectedClient[];
   /** 上一次启动 / 监听失败的原因，无错误时为 null */
   lastError: string | null;
+  /** 全局断闸是否已拉下：为 true 时端点仍在监听，但所有工具调用立即被拒 */
+  halted: boolean;
 }
 
 export interface AgentClientConfigResult {
