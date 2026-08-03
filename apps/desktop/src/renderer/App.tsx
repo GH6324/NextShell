@@ -107,6 +107,7 @@ export const App = () => {
   const applyAgentActivity = useAgentActivityStore((state) => state.applyEvent);
   const applyAgentSessionControl = useAgentActivityStore((state) => state.applySessionControl);
   const setAgentHalted = useAgentActivityStore((state) => state.setHalted);
+  const setAgentEnabled = useAgentActivityStore((state) => state.setEnabled);
 
   useEffect(() => window.nextshell.agent.onActivity(applyAgentActivity), [applyAgentActivity]);
   useEffect(
@@ -123,9 +124,12 @@ export const App = () => {
   useEffect(() => {
     void window.nextshell.agent
       .status()
-      .then((status) => setAgentHalted(status.halted))
+      .then((status) => {
+        setAgentHalted(status.halted);
+        setAgentEnabled(status.enabled);
+      })
       .catch(() => undefined);
-  }, [setAgentHalted]);
+  }, [setAgentHalted, setAgentEnabled]);
 
   useEffect(() => {
     const showPrompt = (request: AgentPromptRequest): void => {

@@ -14,6 +14,7 @@ import {
   Typography
 } from "antd";
 import type { AgentClientKind, AgentEndpointStatus } from "@nextshell/shared";
+import { useAgentActivityStore } from "../../store/useAgentActivityStore";
 import { usePreferencesStore } from "../../store/usePreferencesStore";
 import { formatErrorMessage } from "../../utils/errorMessage";
 import { SettingsCard, SettingsRow, SettingsSwitchRow } from "./shared-components";
@@ -62,18 +63,29 @@ export const AgentSection = () => {
   const [copyingConfig, setCopyingConfig] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [configResult, setConfigResult] = useState<{ command: string; json: string } | null>(null);
+  const setPanelEnabled = useAgentActivityStore((s) => s.setEnabled);
+
+  // The sidebar's Agent panel hides itself while agent access is off; keep its
+  // mirrored flag in step with every fresh status this section receives.
+  const applyStatus = useCallback(
+    (result: AgentEndpointStatus) => {
+      setStatus(result);
+      setPanelEnabled(result.enabled);
+    },
+    [setPanelEnabled]
+  );
 
   const refreshStatus = useCallback(async (): Promise<void> => {
     setStatusLoading(true);
     try {
       const result = await window.nextshell.agent.status();
-      setStatus(result);
+      applyStatus(result);
     } catch (error) {
       message.error(`获取 Agent 状态失败：${formatErrorMessage(error, "请稍后重试")}`);
     } finally {
       setStatusLoading(false);
     }
-  }, [message]);
+  }, [message, applyStatus]);
 
   useEffect(() => {
     void refreshStatus();
@@ -96,7 +108,7 @@ export const AgentSection = () => {
       const result = checked
         ? await window.nextshell.agent.enable()
         : await window.nextshell.agent.disable();
-      setStatus(result);
+      applyStatus(result);
       setTokenVisible(false);
       if (checked && result.lastError) {
         message.warning(`Agent 接入已开启，但监听未能建立：${result.lastError}`);
@@ -114,7 +126,7 @@ export const AgentSection = () => {
     setRotating(true);
     try {
       const result = await window.nextshell.agent.rotateToken();
-      setStatus(result);
+      applyStatus(result);
       setTokenVisible(false);
       message.success("令牌已轮换，所有已连接客户端已断开");
     } catch (error) {

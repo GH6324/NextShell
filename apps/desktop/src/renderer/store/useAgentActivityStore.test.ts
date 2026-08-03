@@ -53,4 +53,14 @@ describe("useAgentActivityStore", () => {
     store.setHalted(false);
     expect(useAgentActivityStore.getState().controlledSessions).toEqual({});
   });
+
+  test("agent access starts disabled and mirrors the endpoint status", () => {
+    // Opt-in default: the sidebar panel must render nothing until a real
+    // endpoint status reporting enabled=true arrives.
+    expect(useAgentActivityStore.getState().enabled).toBe(false);
+    useAgentActivityStore.getState().setEnabled(true);
+    expect(useAgentActivityStore.getState().enabled).toBe(true);
+    useAgentActivityStore.getState().setEnabled(false);
+    expect(useAgentActivityStore.getState().enabled).toBe(false);
+  });
 });

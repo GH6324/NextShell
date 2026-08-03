@@ -13,9 +13,16 @@ interface AgentActivityState {
   controlledSessions: Record<string, string | null>;
   /** Mirrors the main-process breaker so the panel can show and toggle it. */
   halted: boolean;
+  /**
+   * Mirrors `preferences.agent.enabled`. Agent access is opt-in, so the sidebar
+   * panel renders nothing at all until this is true — synced on app mount and
+   * by the settings section whenever it receives a fresh endpoint status.
+   */
+  enabled: boolean;
   applyEvent: (event: AgentActivityEvent) => void;
   applySessionControl: (event: AgentSessionControlEvent) => void;
   setHalted: (halted: boolean) => void;
+  setEnabled: (enabled: boolean) => void;
   clearFinished: () => void;
 }
 
@@ -23,6 +30,7 @@ export const useAgentActivityStore = create<AgentActivityState>((set) => ({
   activities: [],
   controlledSessions: {},
   halted: false,
+  enabled: false,
   applyEvent: (event) =>
     set((state) => {
       const existing = state.activities.findIndex((item) => item.id === event.id);
@@ -47,6 +55,7 @@ export const useAgentActivityStore = create<AgentActivityState>((set) => ({
   // Halting drops every badge: no agent is driving anything any more.
   setHalted: (halted) =>
     set(() => (halted ? { halted, controlledSessions: {} } : { halted })),
+  setEnabled: (enabled) => set({ enabled }),
   clearFinished: () =>
     set((state) => ({
       activities: state.activities.filter((activity) => activity.status === "running")
