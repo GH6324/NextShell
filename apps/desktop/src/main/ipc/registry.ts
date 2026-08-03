@@ -84,7 +84,6 @@ import {
   masterPasswordClearRememberedSchema,
   masterPasswordStatusSchema,
   masterPasswordGetCachedSchema,
-  mcpProxyCopyConfigSchema,
   credentialStoreReauthorizeSchema,
   sshKeyListSchema,
   sshKeyUpsertSchema,
@@ -100,7 +99,12 @@ import {
   recycleBinRestoreSchema,
   recycleBinPurgeSchema,
   recycleBinClearSchema,
-  rendererErrorReportSchema
+  rendererErrorReportSchema,
+  agentStatusSchema,
+  agentEnableSchema,
+  agentDisableSchema,
+  agentRotateTokenSchema,
+  agentCopyClientConfigSchema
 } from "../../../../../packages/shared/src/index";
 import type { ServiceContainer } from "../services/container-types";
 
@@ -237,7 +241,14 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     channel: IPCChannel.SettingsUpdate,
     schema: settingsUpdateSchema,
     label: "设置更新",
-    dispatch: (services, input) => services.preferences.updateAppPreferences(input)
+    dispatch: async (services, input) => {
+      const saved = services.preferences.updateAppPreferences(input);
+      // Listener-shape changes (enabled / socket / tcp / port) only take effect
+      // once the endpoint is reconciled against the freshly persisted values.
+      // Awaited so a status() that follows this save reports the new listeners.
+      if (input.agent) await services.agentMcp.applyPreferences();
+      return saved;
+    }
   }),
   define({
     channel: IPCChannel.DialogOpenFiles,
@@ -685,13 +696,6 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     dispatch: (services) => services.backupPassword.masterPasswordGetCached()
   }),
   define({
-    channel: IPCChannel.McpProxyCopyConfig,
-    schema: mcpProxyCopyConfigSchema,
-    label: "复制 MCP 代理配置",
-    coerceEmptyPayload: true,
-    dispatch: (services, input) => services.backupPassword.mcpProxyCopyConfig(input.masterPassword)
-  }),
-  define({
     channel: IPCChannel.CredentialStoreReauthorize,
     schema: credentialStoreReauthorizeSchema,
     label: "重新授权凭据库",
@@ -916,5 +920,50 @@ export const ipcInvokeRegistry: ReadonlyArray<IpcInvokeEntry> = [
     label: "清空回收站",
     coerceEmptyPayload: true,
     dispatch: (services) => services.recycleBinClear()
+  }),
+
+  // ─── Agent (MCP) ──────────────────────────────────────────────────────────
+  define({
+    channel: IPCChannel.AgentStatus,
+    schema: agentStatusSchema,
+    label: "Agent 端点状态",
+    coerceEmptyPayload: true,
+    dispatch: (services) => services.agentMcp.getStatus()
+  }),
+  define({
+    channel: IPCChannel.AgentEnable,
+    schema: agentEnableSchema,
+    label: "启用 Agent 端点",
+    coerceEmptyPayload: true,
+    // Persist first, then reconcile: the endpoint reads the stored preference.
+    dispatch: (services) => {
+      services.preferences.updateAppPreferences({ agent: { enabled: true } });
+      return services.agentMcp.applyPreferences();
+    }
+  }),
+  define({
+    channel: IPCChannel.AgentDisable,
+    schema: agentDisableSchema,
+    label: "关闭 Agent 端点",
+    coerceEmptyPayload: true,
+    dispatch: (services) => {
+      services.preferences.updateAppPreferences({ agent: { enabled: false } });
+      return services.agentMcp.applyPreferences();
+    }
+  }),
+  define({
+    channel: IPCChannel.AgentRotateToken,
+    schema: agentRotateTokenSchema,
+    label: "轮换 Agent 令牌",
+    coerceEmptyPayload: true,
+    dispatch: (services) => services.agentMcp.rotateToken()
+  }),
+  define({
+    channel: IPCChannel.AgentCopyClientConfig,
+    schema: agentCopyClientConfigSchema,
+    label: "复制 Agent 接入配置",
+    coerceEmptyPayload: true,
+    // buildClientConfig writes the clipboard itself.
+    dispatch: (services, input) => services.agentMcp.buildClientConfig(input.client)
   })
 ];

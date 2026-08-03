@@ -36,7 +36,6 @@ const masterPasswordApi: NextShellApi["masterPassword"] = {
   clearRemembered: () => invoke(IPCChannel.MasterPasswordClearRemembered, {}),
   passwordStatus: () => invoke(IPCChannel.MasterPasswordStatus, {}),
   getCached: () => invoke(IPCChannel.MasterPasswordGetCached, {}),
-  copyMcpProxyConfig: (payload) => invoke(IPCChannel.McpProxyCopyConfig, payload ?? {}),
   reauthorizeCredentialStore: () => invoke(IPCChannel.CredentialStoreReauthorize, {})
 };
 
@@ -251,6 +250,14 @@ const api: NextShellApi = {
     }
   },
   masterPassword: masterPasswordApi,
+  agent: {
+    status: () => invoke(IPCChannel.AgentStatus, {}),
+    enable: () => invoke(IPCChannel.AgentEnable, {}),
+    disable: () => invoke(IPCChannel.AgentDisable, {}),
+    rotateToken: () => invoke(IPCChannel.AgentRotateToken, {}),
+    copyClientConfig: (payload) =>
+      invoke(IPCChannel.AgentCopyClientConfig, payload ?? { client: "claude-code" })
+  },
   sshKey: {
     list: (payload) => invoke(IPCChannel.SshKeyList, payload ?? {}),
     upsert: (payload) => invoke(IPCChannel.SshKeyUpsert, payload),

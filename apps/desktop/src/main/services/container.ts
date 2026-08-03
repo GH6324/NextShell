@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow, clipboard } from "electron";
 import type { WebContents } from "electron";
 import type {
   ConnectionProfile,
@@ -59,9 +59,13 @@ import { MonitorService } from "./monitor-service";
 import { SftpService } from "./sftp-service";
 import { SessionService } from "./session-service";
 import { forgetShellIntegrationInstalls } from "./terminal-shell-integration";
+import { createAgentMcpService, type AgentRemoteFileStat, type AgentSessionInfo } from "./mcp";
 
 const cloudSyncWorkspacePasswordRef = (workspaceId: string): string =>
   `secret://cloud-sync-ws-${workspaceId}`;
+
+/** SQLite and backups live here; the MCP discovery file deliberately does not. */
+const STORAGE_DIRECTORY_NAME = "storage";
 
 // Re-export for consumers (index.ts, register.ts)
 export type { ServiceContainer, CreateServiceContainerOptions } from "./container-types";
@@ -69,10 +73,11 @@ export type { ServiceContainer, CreateServiceContainerOptions } from "./containe
 export const createServiceContainer = async (
   options: import("./container-types").CreateServiceContainerOptions
 ): Promise<import("./container-types").ServiceContainer> => {
-  fs.mkdirSync(options.dataDir, { recursive: true });
-  const dbPath = path.join(options.dataDir, "nextshell.db");
+  const dataDir = path.join(options.userDataDir, STORAGE_DIRECTORY_NAME);
+  fs.mkdirSync(dataDir, { recursive: true });
+  const dbPath = path.join(dataDir, "nextshell.db");
 
-  applyPendingRestore(options.dataDir, dbPath);
+  applyPendingRestore(dataDir, dbPath);
 
   const rawRepo = new SQLiteConnectionRepository(dbPath);
   const connections = new CachedConnectionRepository(rawRepo);
@@ -157,13 +162,21 @@ export const createServiceContainer = async (
   };
 
   const backupService = new BackupService({
-    dataDir: options.dataDir,
+    dataDir,
     repo: connections,
     getMasterPassword: () => masterPassword
   });
 
   // ─── Audit ───────────────────────────────────────────────────────────────
-  const auditEnabledForSession = connections.getAppPreferences().audit.enabled;
+  /**
+   * Read per call rather than captured at boot, so toggling audit no longer
+   * needs a restart. An enabled agent endpoint forces capture on: exposing the
+   * hosts to an agent without a trail is not an option the user gets.
+   */
+  const isAuditCaptureEnabled = (): boolean => {
+    const prefs = connections.getAppPreferences();
+    return prefs.audit.enabled || prefs.agent.enabled;
+  };
   const auditRuntime = resolveAuditRuntime(connections.getAppPreferences().audit);
   const appendAuditLogDirect = connections.appendAuditLog.bind(connections);
 
@@ -174,7 +187,7 @@ export const createServiceContainer = async (
     message: string;
     metadata?: Record<string, unknown>;
   }): void => {
-    if (!auditEnabledForSession) return;
+    if (!isAuditCaptureEnabled()) return;
     appendAuditLogDirect(payload);
   };
 
@@ -187,7 +200,7 @@ export const createServiceContainer = async (
   // Audit purge
   const purgeExpiredAuditLogs = (allowWhenDisabled = false): void => {
     try {
-      if (!auditEnabledForSession && !allowWhenDisabled) return;
+      if (!isAuditCaptureEnabled() && !allowWhenDisabled) return;
       const prefs = connections.getAppPreferences();
       const days = prefs.audit.retentionDays;
       if (days > 0) {
@@ -204,12 +217,23 @@ export const createServiceContainer = async (
     const prefs = connections.getAppPreferences();
     if (prefs.audit.retentionDays > 0) purgeExpiredAuditLogs(true);
   }
-  const auditPurgeTimer = auditRuntime.runPeriodicPurge
-    ? setInterval(purgeExpiredAuditLogs, 6 * 3600_000)
-    : undefined;
+  // `runStartupPurge` is exactly "a retention window is configured"; the timer
+  // hangs off that alone because every tick re-reads the capture state, so
+  // enabling audit (or the agent endpoint) at runtime starts purging too.
+  const auditPurgeTimer =
+    auditRuntime.runStartupPurge || auditRuntime.runPeriodicPurge
+      ? setInterval(purgeExpiredAuditLogs, 6 * 3600_000)
+      : undefined;
 
   // ─── Shared State ────────────────────────────────────────────────────────
   const activeSessions = new Map<string, ActiveSession>();
+
+  /**
+   * Last system-monitor snapshot per connection. MonitorService only pushes;
+   * the agent gateway needs a pull, and must never be able to start a monitor
+   * session of its own.
+   */
+  const latestMonitorSnapshots = new Map<string, MonitorSnapshot>();
 
   // ─── Connection Pool State ───────────────────────────────────────────────
   // One connection profile is backed by *several* ssh2 clients. Every shell,
@@ -471,6 +495,7 @@ export const createServiceContainer = async (
       remainingClients: clients.length
     });
     if (isLastClient) {
+      latestMonitorSnapshots.delete(connectionId);
       void remoteEditManager.cleanupByConnectionId(connectionId);
       // Reconnects must re-probe/re-install: the remote cache dir may be gone.
       forgetShellIntegrationInstalls(connectionId);
@@ -642,7 +667,7 @@ export const createServiceContainer = async (
   // ─── Sub-Service Instantiation ───────────────────────────────────────────
   const prefsSvc = new PreferencesDialogService({
     connections,
-    auditEnabledForSession
+    auditEnabledForSession: isAuditCaptureEnabled()
   });
 
   const terminalIntegrationSvc = new TerminalIntegrationService();
@@ -657,7 +682,10 @@ export const createServiceContainer = async (
     appendAuditLogIfEnabled,
     debugSenders: prefsSvc.debugSenders,
     emitDebugLog: (entry) => prefsSvc.emitDebugLog(entry),
-    emitSystemSnapshot: emitSystemMonitorSnapshot,
+    emitSystemSnapshot: (sender, snapshot) => {
+      latestMonitorSnapshots.set(snapshot.connectionId, snapshot);
+      emitSystemMonitorSnapshot(sender, snapshot);
+    },
     emitProcessSnapshot: emitProcessMonitorSnapshot,
     emitNetworkSnapshot: emitNetworkMonitorSnapshot
   });
@@ -810,11 +838,104 @@ export const createServiceContainer = async (
     appendAuditLog: (payload) => appendAuditLogIfEnabled(payload)
   });
 
+  // ─── Agent (MCP) Endpoint ────────────────────────────────────────────────
+  // Every dependency below is read-only by construction: the gateway is handed
+  // no writer, no vault handle and no connect path, so a compromised MCP client
+  // cannot reach a credential even if it reaches the gateway.
+  const agentMcpSvc = createAgentMcpService({
+    userDataDir: options.userDataDir,
+    appVersion: app.getVersion(),
+    listConnections: () => connections.list({}),
+    isConnectionOnline: (connectionId) => listPooledClients(connectionId).length > 0,
+    listSessions: () =>
+      Array.from(activeSessions.values()).map<AgentSessionInfo>((session) => ({
+        id: session.descriptor.id,
+        // Local shells have no connection and are therefore invisible to agents.
+        connectionId: session.kind === "remote" ? session.connectionId : null,
+        title: session.descriptor.title,
+        status: session.descriptor.status,
+        type: session.descriptor.type,
+        createdAt: session.descriptor.createdAt,
+        // Both require the Phase 1 OSC tap.
+        cwd: null,
+        lastCommand: null
+      })),
+    getMonitorSnapshot: async (connectionId) => latestMonitorSnapshots.get(connectionId) ?? null,
+    listRemoteFiles: (connectionId, remotePath) =>
+      sftpSvc.listRemoteFiles(connectionId, remotePath),
+    statRemoteFile: async (connectionId, remotePath) => {
+      const connection = await ensureConnection(connectionId);
+      const stats = await connection.stat(remotePath);
+      // Anything that is not a plain file, directory or symlink must report
+      // "other": calling a character device a regular file is exactly what
+      // would let an agent ask for /dev/zero.
+      const type: AgentRemoteFileStat["type"] = stats.isDirectory()
+        ? "directory"
+        : stats.isSymbolicLink()
+          ? "link"
+          : stats.isFile()
+            ? "file"
+            : "other";
+      return {
+        path: remotePath,
+        type,
+        size: stats.size,
+        permissions: (stats.mode & 0o777).toString(8).padStart(4, "0"),
+        uid: stats.uid,
+        gid: stats.gid,
+        modifiedAt: new Date(stats.mtime * 1000).toISOString(),
+        accessedAt: new Date(stats.atime * 1000).toISOString()
+      };
+    },
+    readRemoteFile: async (connectionId, remotePath, maxBytes, signal) => {
+      const connection = await ensureConnection(connectionId);
+      // Bounded inside the SFTP stream, not after the fact: a stat-based check
+      // cannot protect against procfs files that report size 0.
+      const content = await connection.readFileContent(remotePath, { maxBytes, signal });
+      return {
+        bytes: content.subarray(0, maxBytes),
+        truncated: content.byteLength > maxBytes
+      };
+    },
+    // Deliberately no listCommandHistory: shell history has no connection id,
+    // so it cannot be scoped to the hosts the user granted.
+    listSavedCommands: (query) => connections.listSavedCommands(query),
+    // Unconditional on purpose: agent activity is audited even when the user
+    // turned audit capture off (isAuditCaptureEnabled also forces it on).
+    appendAuditLog: appendAuditLogDirect,
+    getPreferences: () => prefsSvc.getAppPreferences(),
+    tokenStore: {
+      read: () => connections.getJsonSetting<string>("agent.mcp.token") ?? null,
+      write: (value) => connections.saveJsonSetting("agent.mcp.token", value)
+    },
+    // Packaged: build/electron-builder.yml copies apps/mcp-bridge/dist here as
+    // an extraResource. Dev: the workspace build output. The bridge is not on
+    // npm, so `npx @nextshell/mcp-bridge` would simply 404 for the user.
+    resolveBridgeEntry: () => {
+      const candidate = app.isPackaged
+        ? path.join(process.resourcesPath, "mcp-bridge", "index.js")
+        : path.resolve(app.getAppPath(), "..", "mcp-bridge", "dist", "index.js");
+      return fs.existsSync(candidate) ? candidate : null;
+    },
+    writeClipboard: (text) => clipboard.writeText(text),
+    logger: {
+      info: (message, meta) => logger.info(`[Agent] ${message}`, meta),
+      warn: (message, meta) => logger.warn(`[Agent] ${message}`, meta),
+      error: (message, meta) => logger.error(`[Agent] ${message}`, meta)
+    }
+  });
+
   // ─── Dispose ─────────────────────────────────────────────────────────────
   const dispose = async (): Promise<void> => {
     connections.flush();
     if (auditPurgeTimer) clearInterval(auditPurgeTimer);
     prefsSvc.dispose();
+
+    // First: stop accepting agent traffic, and unlink the socket plus the
+    // discovery file before the rest of the teardown can stall.
+    await agentMcpSvc.dispose().catch((error) => {
+      logger.warn("[Agent] failed to dispose the MCP endpoint", normalizeError(error));
+    });
 
     const allMonitorIds = monitorSvc.getAllConnectionIds();
     await Promise.all(allMonitorIds.map((id) => monitorSvc.disposeAllMonitorSessions(id)));
@@ -852,6 +973,7 @@ export const createServiceContainer = async (
     terminalIntegration: terminalIntegrationSvc,
     cloudSync: cloudSyncManager,
     resourceOps: resourceOpsSvc,
+    agentMcp: agentMcpSvc,
 
     // Orchestration
     removeConnection: async (id) => {

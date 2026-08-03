@@ -23,7 +23,8 @@ NextShell 是一个基于 Electron + React + TypeScript 的桌面运维客户端
 ## 项目结构
 
 - `apps/desktop`: Electron 应用入口
-- `apps/desktop/src/main`: 主进程服务、IPC 注册、系统集成
+- `apps/desktop/src/main`: 主进程服务、IPC 注册、系统集成、Agent（MCP）端点
+- `apps/mcp-bridge`: MCP stdio 桥接进程，把 MCP 客户端接到运行中的桌面端
 - `apps/desktop/src/preload`: 安全桥接 API（`window.nextshell`）
 - `apps/desktop/src/renderer`: 前端 UI、状态管理、业务逻辑
 - `packages/core`: 核心领域类型与偏好模型
@@ -74,8 +75,8 @@ pnpm run dev
 3. 在 Node.js / Electron 版本变化后再次执行 `pnpm run setup`
 
 Electron 与独立 Node.js 进程使用不同 ABI。`pnpm run dev` 会先切换到 Electron ABI，
-`pnpm run test:node` 会先恢复 Node.js ABI；手动运行 MCP 产物前可执行
-`pnpm run rebuild:native:node`。
+`pnpm run test:node` 会先恢复 Node.js ABI；在 Node.js 下手动运行主进程相关产物前可执行
+`pnpm run rebuild:native:node`。（`apps/mcp-bridge` 不含原生依赖，不受此影响。）
 
 若本地终端打开时报错 `posix_spawnp failed`：
 

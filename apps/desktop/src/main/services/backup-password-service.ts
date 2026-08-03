@@ -1,5 +1,3 @@
-import { clipboard } from "electron";
-import { DEVICE_KEY_ENV_VAR } from "@nextshell/core";
 import type {
   BackupArchiveMeta,
   BackupConflictPolicy,
@@ -238,45 +236,6 @@ export class BackupPasswordService {
       });
       return { ok: true, authorized: false };
     }
-  }
-
-  /**
-   * Put the MCP proxy's server config on the clipboard, device key included.
-   *
-   * The proxy is a separate headless process launched by an MCP client, so it
-   * cannot read the keychain itself — a macOS authorization dialog would have
-   * nobody to answer it, and its code identity differs from the desktop app's.
-   * Handing the key over through the client's config is the only path that keeps
-   * the proxy out of the keychain entirely.
-   *
-   * Gated on the master password like `revealConnectionPassword`: this key opens
-   * every stored credential, so it is at least as sensitive as any one of them.
-   * The config never passes through the renderer.
-   */
-  async mcpProxyCopyConfig(providedMasterPassword?: string): Promise<{ ok: true; dbPath: string }> {
-    await this.resolveMasterPassword(providedMasterPassword);
-    const deviceKeyHex = await this.options.getDeviceKeyHex();
-    const dbPath = this.options.connections.getDbPath();
-
-    const config = {
-      mcpServers: {
-        "nextshell-ssh": {
-          command: "nextshell-mcp-ssh-proxy",
-          env: {
-            NEXTSHELL_DB_PATH: dbPath,
-            [DEVICE_KEY_ENV_VAR]: deviceKeyHex
-          }
-        }
-      }
-    };
-    clipboard.writeText(JSON.stringify(config, null, 2));
-
-    this.options.appendAuditLogIfEnabled({
-      action: "mcp_proxy.config_copied",
-      level: "warn",
-      message: "Copied MCP proxy config (device key included) to the clipboard"
-    });
-    return { ok: true, dbPath };
   }
 
   async revealConnectionPassword(

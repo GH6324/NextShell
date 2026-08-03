@@ -273,7 +273,7 @@ app.whenReady().then(async () => {
   // between them makes macOS re-prompt every time the other binary touches it,
   // so give dev its own item and adopt the shared one on first run.
   const serviceContainerPromise = createServiceContainer({
-    dataDir: path.join(app.getPath("userData"), "storage"),
+    userDataDir: app.getPath("userData"),
     keytarServiceName: app.isPackaged ? "NextShell" : "NextShell (Dev)",
     keytarFallbackServiceName: app.isPackaged ? undefined : "NextShell",
     // macOS is the only platform that shows an authorization dialog here
@@ -333,6 +333,26 @@ app.whenReady().then(async () => {
   services = await serviceContainerPromise;
   applyAppearanceToAllWindows(services.getAppPreferences().window.appearance);
 
+  // Off by default: start() listens on nothing unless preferences.agent.enabled
+  // is true. Never awaited — a broken endpoint must not hold up the app, and
+  // the failure reason is surfaced through agent.status() instead.
+  void services.agentMcp
+    .start()
+    .then((status) => {
+      if (status.listening) {
+        logger.info("[Agent] MCP endpoint listening", {
+          socket: status.socketPath !== null,
+          tcpPort: status.tcpPort
+        });
+      }
+      if (status.lastError) {
+        logger.warn("[Agent] MCP endpoint reported an error", { error: status.lastError });
+      }
+    })
+    .catch((error) => {
+      logger.error("[Agent] failed to start the MCP endpoint", error);
+    });
+
   if (process.platform === "win32") {
     nativeTheme.on("updated", () => {
       const appearance = services?.getAppPreferences().window.appearance ?? "system";
@@ -387,11 +407,33 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
+/** Hard cap on the quit delay; endpoint teardown never holds the app hostage. */
+const AGENT_TEARDOWN_GRACE_MS = 1_500;
+let agentTeardown: Promise<void> | undefined;
+
+app.on("before-quit", (event) => {
   isQuitting = true;
   destroyTray();
-  if (services) {
-    void services.dispose();
-  }
   logger.info("[App] before quit");
+
+  const container = services;
+  if (!container) return;
+  // Second pass after the deferred quit below: teardown is already in flight.
+  if (agentTeardown) return;
+
+  // The quit is deferred once, and only for the MCP endpoint: closing the
+  // listeners and unlinking the socket plus the discovery file has to finish
+  // before the process goes away, or the next launch inherits the leftovers.
+  // The rest of the teardown stays fire-and-forget, as it always was.
+  agentTeardown = Promise.race([
+    container.agentMcp.dispose().catch((error) => {
+      logger.warn("[Agent] failed to stop the MCP endpoint on quit", error);
+    }),
+    new Promise<void>((resolve) => setTimeout(resolve, AGENT_TEARDOWN_GRACE_MS))
+  ]);
+  event.preventDefault();
+  void agentTeardown.then(() => {
+    void container.dispose();
+    app.quit();
+  });
 });

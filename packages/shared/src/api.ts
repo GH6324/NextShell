@@ -56,8 +56,13 @@ import type {
   MasterPasswordGetCachedInput,
   CredentialStoreReauthorizeInput,
   CredentialStoreReauthorizeResult,
-  McpProxyCopyConfigInput,
-  McpProxyCopyConfigResult,
+  AgentClientConfigResult,
+  AgentCopyClientConfigInput,
+  AgentDisableInput,
+  AgentEnableInput,
+  AgentEndpointStatus,
+  AgentRotateTokenInput,
+  AgentStatusInput,
   MasterPasswordSetInput,
   MasterPasswordStatusInput,
   MasterPasswordStatusResult,
@@ -312,12 +317,20 @@ export interface NextShellApi {
     clearRemembered: (payload?: MasterPasswordClearRememberedInput) => Promise<{ ok: true }>;
     passwordStatus: (payload?: MasterPasswordStatusInput) => Promise<MasterPasswordStatusResult>;
     getCached: (payload?: MasterPasswordGetCachedInput) => Promise<MasterPasswordCachedResult>;
-    /** Copies the MCP proxy server config (device key included) to the clipboard. */
-    copyMcpProxyConfig: (payload?: McpProxyCopyConfigInput) => Promise<McpProxyCopyConfigResult>;
     /** Retry a keychain read that was previously refused. */
     reauthorizeCredentialStore: (
       payload?: CredentialStoreReauthorizeInput
     ) => Promise<CredentialStoreReauthorizeResult>;
+  };
+  agent: {
+    /** 端点状态：是否启用、socket 路径、TCP 端口、token、已连客户端、endpoint.json 路径 */
+    status: (payload?: AgentStatusInput) => Promise<AgentEndpointStatus>;
+    enable: (payload?: AgentEnableInput) => Promise<AgentEndpointStatus>;
+    disable: (payload?: AgentDisableInput) => Promise<AgentEndpointStatus>;
+    /** 轮换 TCP Bearer token，并断开所有已连客户端 */
+    rotateToken: (payload?: AgentRotateTokenInput) => Promise<AgentEndpointStatus>;
+    /** 把客户端接入配置（`claude mcp add` 命令与 JSON 片段）写入剪贴板 */
+    copyClientConfig: (payload?: AgentCopyClientConfigInput) => Promise<AgentClientConfigResult>;
   };
   sshKey: {
     list: (payload?: SshKeyListInput) => Promise<SshKeyProfile[]>;
@@ -433,8 +446,12 @@ export interface IpcInvokeMethods {
   [IPCChannel.MasterPasswordClearRemembered]: NextShellApi["masterPassword"]["clearRemembered"];
   [IPCChannel.MasterPasswordStatus]: NextShellApi["masterPassword"]["passwordStatus"];
   [IPCChannel.MasterPasswordGetCached]: NextShellApi["masterPassword"]["getCached"];
-  [IPCChannel.McpProxyCopyConfig]: NextShellApi["masterPassword"]["copyMcpProxyConfig"];
   [IPCChannel.CredentialStoreReauthorize]: NextShellApi["masterPassword"]["reauthorizeCredentialStore"];
+  [IPCChannel.AgentStatus]: NextShellApi["agent"]["status"];
+  [IPCChannel.AgentEnable]: NextShellApi["agent"]["enable"];
+  [IPCChannel.AgentDisable]: NextShellApi["agent"]["disable"];
+  [IPCChannel.AgentRotateToken]: NextShellApi["agent"]["rotateToken"];
+  [IPCChannel.AgentCopyClientConfig]: NextShellApi["agent"]["copyClientConfig"];
   [IPCChannel.CloudSyncWorkspaceList]: NextShellApi["cloudSync"]["workspaceList"];
   [IPCChannel.CloudSyncWorkspaceAdd]: NextShellApi["cloudSync"]["workspaceAdd"];
   [IPCChannel.CloudSyncWorkspaceUpdate]: NextShellApi["cloudSync"]["workspaceUpdate"];

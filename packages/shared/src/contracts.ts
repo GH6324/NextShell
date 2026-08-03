@@ -41,6 +41,7 @@ export const windowAppearanceSchema = z.enum(["system", "light", "dark"]);
 export const localShellModeSchema = z.enum(["preset", "custom"]);
 export const localShellPresetSchema = z.enum(["system", "powershell", "cmd", "zsh", "sh", "bash"]);
 export const shellIntegrationModeSchema = z.enum(["auto", "off", "manual"]);
+export const agentAccessLevelSchema = z.enum(["off", "readonly", "full"]);
 export const connectionListQuerySchema = z.object({
   keyword: z.string().trim().optional(),
   group: z.string().trim().optional(),
@@ -76,7 +77,11 @@ export const connectionUpsertSchema = z
     tags: z.preprocess(trimAndFilterStringArray, z.array(z.string().min(1)).default([])),
     notes: z.preprocess(trimToOptionalString, z.string().optional()),
     favorite: z.boolean().default(false),
-    monitorSession: z.boolean().default(false)
+    monitorSession: z.boolean().default(false),
+    // Optional on purpose: an omitted field must never grant access. The service keeps the
+    // already-stored level and falls back to "off", so callers that predate this field
+    // (quick connect, imports, auth-override rewrites) can never elevate a host silently.
+    agentAccess: agentAccessLevelSchema.optional()
   })
   .superRefine((value, ctx) => {
     if (value.authType === "privateKey" && !value.sshKeyId) {
@@ -625,7 +630,34 @@ export const appPreferencesSchema = z
           .max(365)
           .default(DEFAULT_APP_PREFERENCES.audit.retentionDays)
       })
-      .default(DEFAULT_APP_PREFERENCES.audit)
+      .default(DEFAULT_APP_PREFERENCES.audit),
+    agent: z
+      .object({
+        enabled: z.boolean().default(DEFAULT_APP_PREFERENCES.agent.enabled),
+        socketEnabled: z.boolean().default(DEFAULT_APP_PREFERENCES.agent.socketEnabled),
+        tcpEnabled: z.boolean().default(DEFAULT_APP_PREFERENCES.agent.tcpEnabled),
+        tcpPort: z.coerce
+          .number()
+          .int()
+          .min(0)
+          .max(65535)
+          .default(DEFAULT_APP_PREFERENCES.agent.tcpPort),
+        confirmWrites: z.boolean().default(DEFAULT_APP_PREFERENCES.agent.confirmWrites),
+        confirmUnknownCommands: z
+          .boolean()
+          .default(DEFAULT_APP_PREFERENCES.agent.confirmUnknownCommands),
+        allowedLocalRoots: z.preprocess(
+          trimAndFilterStringArray,
+          z.array(z.string().min(1)).default(DEFAULT_APP_PREFERENCES.agent.allowedLocalRoots)
+        ),
+        execTimeoutSec: z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(3600)
+          .default(DEFAULT_APP_PREFERENCES.agent.execTimeoutSec)
+      })
+      .default(DEFAULT_APP_PREFERENCES.agent)
   })
   .default(DEFAULT_APP_PREFERENCES);
 
@@ -738,6 +770,20 @@ export const appPreferencesPatchSchema = z.object({
       enabled: z.boolean().optional(),
       retentionDays: z.coerce.number().int().min(0).max(365).optional()
     })
+    .optional(),
+  agent: z
+    .object({
+      enabled: z.boolean().optional(),
+      socketEnabled: z.boolean().optional(),
+      tcpEnabled: z.boolean().optional(),
+      tcpPort: z.coerce.number().int().min(0).max(65535).optional(),
+      confirmWrites: z.boolean().optional(),
+      confirmUnknownCommands: z.boolean().optional(),
+      allowedLocalRoots: z
+        .preprocess(trimAndFilterStringArray, z.array(z.string().min(1)))
+        .optional(),
+      execTimeoutSec: z.coerce.number().int().min(1).max(3600).optional()
+    })
     .optional()
 });
 
@@ -847,9 +893,6 @@ export const masterPasswordGetCachedSchema = z.object({});
 
 export const credentialStoreReauthorizeSchema = z.object({});
 
-export const mcpProxyCopyConfigSchema = z.object({
-  masterPassword: z.string().optional()
-});
 export const masterPasswordChangeSchema = z
   .object({
     oldPassword: z.string().min(1, "原密码不能为空"),
@@ -860,6 +903,65 @@ export const masterPasswordChangeSchema = z
     message: "两次输入的新密码不一致",
     path: ["confirmPassword"]
   });
+
+// ─── Agent 接入（应用内 MCP 端点）────────────────────────────────────────────
+
+export const agentClientKindSchema = z.enum(["claude-code", "claude-desktop", "cursor", "generic"]);
+
+export const agentStatusSchema = z.object({});
+export const agentEnableSchema = z.object({});
+export const agentDisableSchema = z.object({});
+export const agentRotateTokenSchema = z.object({});
+export const agentCopyClientConfigSchema = z.object({
+  client: agentClientKindSchema.default("claude-code")
+});
+
+export type AgentClientKind = z.infer<typeof agentClientKindSchema>;
+export type AgentStatusInput = z.infer<typeof agentStatusSchema>;
+export type AgentEnableInput = z.infer<typeof agentEnableSchema>;
+export type AgentDisableInput = z.infer<typeof agentDisableSchema>;
+export type AgentRotateTokenInput = z.infer<typeof agentRotateTokenSchema>;
+export type AgentCopyClientConfigInput = z.infer<typeof agentCopyClientConfigSchema>;
+
+export interface AgentConnectedClient {
+  /** MCP session id */
+  id: string;
+  /** initialize 上报的客户端名称，未知时为 null */
+  name: string | null;
+  version: string | null;
+  transport: "socket" | "tcp";
+  connectedAt: string;
+}
+
+export interface AgentEndpointStatus {
+  /** 偏好里的总开关 */
+  enabled: boolean;
+  /** 端点当前是否真的在监听 */
+  listening: boolean;
+  /** Unix socket / 命名管道路径，未监听时为 null */
+  socketPath: string | null;
+  /** 实际生效的 loopback TCP 端口（0 端口偏好会被解析成真实端口），未监听时为 null */
+  tcpPort: number | null;
+  /**
+   * TCP 监听的 Bearer token。仅 TCP 开启时非空——socket 监听靠 0600 文件权限授权，
+   * 不签发 token。凭据（密码 / 私钥 / 设备密钥）永远不会出现在本结构里。
+   */
+  token: string | null;
+  /** 端点发现文件路径（<userData>/mcp/endpoint.json） */
+  endpointFilePath: string;
+  clients: AgentConnectedClient[];
+  /** 上一次启动 / 监听失败的原因，无错误时为 null */
+  lastError: string | null;
+}
+
+export interface AgentClientConfigResult {
+  /** 配置由主进程直接写入系统剪贴板 */
+  ok: true;
+  /** 可直接粘贴执行的 `claude mcp add` 命令 */
+  command: string;
+  /** MCP 客户端配置文件里的 mcpServers 片段 */
+  json: string;
+}
 
 // ─── SSH Key Management ─────────────────────────────────────────────────────
 
@@ -1039,7 +1141,6 @@ export type MasterPasswordClearRememberedInput = z.infer<
   typeof masterPasswordClearRememberedSchema
 >;
 export type MasterPasswordStatusInput = z.infer<typeof masterPasswordStatusSchema>;
-export type McpProxyCopyConfigInput = z.infer<typeof mcpProxyCopyConfigSchema>;
 export type CredentialStoreReauthorizeInput = z.infer<typeof credentialStoreReauthorizeSchema>;
 export type MasterPasswordGetCachedInput = z.infer<typeof masterPasswordGetCachedSchema>;
 export type MasterPasswordChangeInput = z.infer<typeof masterPasswordChangeSchema>;
@@ -1118,15 +1219,6 @@ export interface CredentialStoreReauthorizeResult {
   ok: true;
   /** False when the OS prompt was refused again. */
   authorized: boolean;
-}
-
-export interface McpProxyCopyConfigResult {
-  /**
-   * The config JSON is written straight to the system clipboard by the main
-   * process — it carries the device key, which must never reach the renderer.
-   */
-  ok: true;
-  dbPath: string;
 }
 
 export interface MasterPasswordCachedResult {

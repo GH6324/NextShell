@@ -82,8 +82,15 @@ export const IPCChannel = {
   MasterPasswordStatus: "nextshell:master-password:status",
   MasterPasswordGetCached: "nextshell:master-password:get-cached",
   MasterPasswordChange: "nextshell:master-password:change",
-  McpProxyCopyConfig: "nextshell:mcp-proxy:copy-config",
   CredentialStoreReauthorize: "nextshell:credential-store:reauthorize",
+
+  // ── Agent 接入（应用内 MCP 端点）──
+  AgentStatus: "nextshell:agent:status",
+  AgentEnable: "nextshell:agent:enable",
+  AgentDisable: "nextshell:agent:disable",
+  AgentRotateToken: "nextshell:agent:rotate-token",
+  AgentCopyClientConfig: "nextshell:agent:copy-client-config",
+
   ConnectionRevealPassword: "nextshell:connection:reveal-password",
   SshKeyList: "nextshell:ssh-key:list",
   SshKeyUpsert: "nextshell:ssh-key:upsert",

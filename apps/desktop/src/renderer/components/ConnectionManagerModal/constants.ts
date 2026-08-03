@@ -39,6 +39,7 @@ export const FIELD_TAB_MAP: Record<string, FormTab> = {
   tags: "property",
   notes: "property",
   favorite: "property",
+  agentAccess: "property",
   proxyId: "network",
   keepAliveEnabled: "network",
   keepAliveIntervalSec: "network",
@@ -61,5 +62,7 @@ export const DEFAULT_VALUES = {
   workspaceId: undefined,
   tags: [],
   favorite: false,
-  monitorSession: true
+  monitorSession: true,
+  // Hosts stay invisible to agents until the user grants access explicitly.
+  agentAccess: "off" as const
 };

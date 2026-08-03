@@ -1,8 +1,24 @@
 # NextShell Agent 接入（MCP）—— 调研报告与实施方案
 
-> 状态：提案 / 待实施
+> 状态：**Phase 0 已落地（未提交）** / Phase 1–5 待实施
 > 日期：2026-08-03
-> 范围：`apps/desktop`(main / preload / renderer)、`packages/{shared,core,terminal,ssh,storage,runtime}`、`apps/mcp-ssh-proxy`(废弃)、新增 `apps/mcp-bridge` 与独立插件仓库
+> 范围：`apps/desktop`(main / preload / renderer)、`packages/{shared,core,terminal,ssh,storage}`、`apps/mcp-ssh-proxy` 与 `packages/runtime`(已删除)、新增 `apps/mcp-bridge` 与独立插件仓库
+
+## 实施状态
+
+**Phase 0 已完成**（typecheck / lint 0 error / 460 + 34 测试全绿，均已独立复核）。落地内容与本文档的偏差：
+
+| 项 | 计划 | 实际 |
+| --- | --- | --- |
+| `packages/runtime` | 保留目标解析 | 整包删除，解析逻辑移植为 `main/services/mcp/target-resolver.ts`（纯函数，吃 `ConnectionProfile[]`，**不含授权感知**——Gateway 必须在调用前过滤） |
+| `command_search` | 检索命令历史 + 命令库 | **只返回命令库**。安全审查实测 `redactAuditMetadata` 对 8 种常见密码写法一字不脱敏，且 shell 历史无 connectionId 无法按主机限权，故 `listCommandHistory` 直接从 `AgentGatewayDeps` 移除（类型上够不着） |
+| shim 分发 | `npx @nextshell/mcp-bridge` | 随应用分发（electron-builder `extraResources`），配置指向安装包内绝对路径 + `ELECTRON_RUN_AS_NODE=1`。该包保持 `private: true` 不发 npm |
+| 限流键 | 每客户端 | `transport + clientInfo.name`（session id 会随重连刷新额度）。客户端自报名仍可伪造，真正的解法是 Phase 1 的按客户端审批 |
+| `agentAccess` 入口 | 未明确 | 连接编辑表单「属性」页新增「Agent 授权」下拉；表单缺省一律提交 `"off"`（不是"保留已存值"），避免往返把主机留在可见状态 |
+
+**Phase 0 未做**（有意）：`session_read` / `session_history`（依赖 Phase 1 OscTap 与 Phase 3 ScreenMirror，`tools/index.ts` 的 `AGENT_TOOL_REGISTRARS` 已留扩展位）；全部写类工具；应用内确认弹窗（偏好里的 `confirmWrites` / `confirmUnknownCommands` / `allowedLocalRoots` 暂未被消费，写类工具落地时必须接上）。
+
+**已知遗留**（详见 §十）：`extraResources` 打包路径只做了配置接入，首次发版前需实跑一次 `dist` 确认 `resources/mcp-bridge/index.js` 落位；跨进程契约测试在 `pnpm run test:mcp-bridge` 下，根 `pnpm test` 不覆盖，CI 需单独接入；Windows 命名管道仍未实测。
 
 ---
 

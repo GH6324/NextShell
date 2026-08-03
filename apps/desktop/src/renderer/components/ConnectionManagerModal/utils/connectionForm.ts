@@ -77,6 +77,7 @@ export const toQuickUpsertInput = (
   notes: connection.notes,
   favorite: connection.favorite,
   monitorSession: connection.monitorSession,
+  agentAccess: connection.agentAccess ?? "off",
   ...patch
 });
 
@@ -137,6 +138,9 @@ export const toConnectionPayload = (
     notes,
     favorite: values.favorite ?? false,
     monitorSession: values.monitorSession ?? false,
+    // Absent means "off", never "keep whatever was stored": a host must not
+    // stay agent-visible because a form round-trip dropped the field.
+    agentAccess: values.agentAccess ?? "off",
     workspaceId
   };
 };

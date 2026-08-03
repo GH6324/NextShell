@@ -17,6 +17,7 @@ import {
   NetworkSection,
   BackupSection,
   SecuritySection,
+  AgentSection,
   AboutSection
 } from "./settings-center";
 
@@ -278,15 +279,6 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
     }
   };
 
-  const handleCopyMcpProxyConfig = async (): Promise<void> => {
-    try {
-      await window.nextshell.masterPassword.copyMcpProxyConfig();
-      message.success("MCP 配置已复制到剪贴板，粘贴到 MCP 客户端配置后即可使用");
-    } catch (error) {
-      message.error(`复制 MCP 配置失败：${formatErrorMessage(error, "请稍后重试")}`);
-    }
-  };
-
   const handleChangePassword = async (): Promise<void> => {
     if (!changeOldPwd) {
       message.warning("请输入原密码。");
@@ -441,7 +433,6 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
             onUnlockPassword={() => void handleUnlockPassword()}
             onChangePassword={() => void handleChangePassword()}
             onClearRemembered={() => void handleClearRemembered()}
-            onCopyMcpProxyConfig={() => void handleCopyMcpProxyConfig()}
             onReauthorizeCredentialStore={() => void handleReauthorizeCredentialStore()}
             onClearAuditLogs={handleClearAuditLogs}
             save={save}
@@ -569,6 +560,9 @@ export const SettingsCenterModal = ({ open, onClose }: SettingsCenterModalProps)
             message={message}
           />
         );
+
+      case "agent":
+        return <AgentSection />;
 
       case "about":
         return <AboutSection message={message} />;

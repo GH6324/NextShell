@@ -18,7 +18,11 @@ const clonePreferences = (prefs: AppPreferences): AppPreferences => ({
   backup: { ...prefs.backup },
   window: { ...prefs.window },
   traceroute: { ...prefs.traceroute },
-  audit: { ...prefs.audit }
+  audit: { ...prefs.audit },
+  agent: {
+    ...prefs.agent,
+    allowedLocalRoots: [...prefs.agent.allowedLocalRoots]
+  }
 });
 
 const readLegacyValue = (key: string): string | undefined => {
@@ -158,7 +162,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       backup: { ...prev.backup, ...(patch.backup ?? {}) },
       window: { ...prev.window, ...(patch.window ?? {}) },
       traceroute: { ...prev.traceroute, ...(patch.traceroute ?? {}) },
-      audit: { ...prev.audit, ...(patch.audit ?? {}) }
+      audit: { ...prev.audit, ...(patch.audit ?? {}) },
+      agent: { ...prev.agent, ...(patch.agent ?? {}) }
     };
     set({ preferences: optimistic });
 

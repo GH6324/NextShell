@@ -424,6 +424,7 @@ export const ConnectionManagerModal = ({
         notes: connection.notes,
         favorite: connection.favorite,
         monitorSession: connection.monitorSession,
+        agentAccess: connection.agentAccess ?? "off",
         password: undefined
       });
     },

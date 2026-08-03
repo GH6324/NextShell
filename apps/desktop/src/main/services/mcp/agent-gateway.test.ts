@@ -1,0 +1,582 @@
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { DEFAULT_APP_PREFERENCES } from "@nextshell/core";
+import type { ConnectionProfile, MonitorSnapshot, SavedCommand } from "@nextshell/core";
+
+import {
+  AgentGateway,
+  normalizeRemotePath,
+  type AgentAuditEntry,
+  type AgentClientIdentity,
+  type AgentGatewayDeps,
+  type AgentRemoteFileStat,
+  type AgentSessionInfo
+} from "./agent-gateway";
+
+const TIMESTAMP = "2026-08-03T00:00:00.000Z";
+
+const createConnection = (
+  overrides: Partial<ConnectionProfile> & Pick<ConnectionProfile, "id" | "name" | "host">
+): ConnectionProfile => ({
+  port: 22,
+  username: "root",
+  authType: "password",
+  credentialRef: "secret://conn-secret",
+  sshKeyId: "key-1",
+  proxyId: "proxy-1",
+  hostFingerprint: "SHA256:deadbeef",
+  notes: "master password is hunter2",
+  strictHostKeyChecking: false,
+  terminalEncoding: "utf-8",
+  backspaceMode: "ascii-backspace",
+  deleteMode: "vt220-delete",
+  groupPath: "/server",
+  tags: [],
+  favorite: false,
+  monitorSession: false,
+  createdAt: TIMESTAMP,
+  updatedAt: TIMESTAMP,
+  ...overrides
+});
+
+const CLIENT: AgentClientIdentity = {
+  id: "session-1",
+  name: "claude-code",
+  version: "1.0.0",
+  transport: "socket",
+  rateKey: "socket:claude-code"
+};
+
+const grantedFull = createConnection({
+  id: "11111111-1111-1111-1111-111111111111",
+  name: "prod-hk",
+  host: "10.0.0.1",
+  agentAccess: "full",
+  resourceId: "local-default-11111111-1111-1111-1111-111111111111"
+});
+
+const grantedReadonly = createConnection({
+  id: "22222222-2222-2222-2222-222222222222",
+  name: "stage-hk",
+  host: "10.0.0.2",
+  agentAccess: "readonly",
+  resourceId: "local-default-22222222-2222-2222-2222-222222222222"
+});
+
+const deniedExplicit = createConnection({
+  id: "33333333-3333-3333-3333-333333333333",
+  name: "secret-vault",
+  host: "10.0.0.3",
+  agentAccess: "off",
+  resourceId: "local-default-33333333-3333-3333-3333-333333333333"
+});
+
+const deniedByOmission = createConnection({
+  id: "44444444-4444-4444-4444-444444444444",
+  name: "legacy-box",
+  host: "10.0.0.4",
+  resourceId: "local-default-44444444-4444-4444-4444-444444444444"
+});
+
+const ambiguousA = createConnection({
+  id: "55555555-5555-5555-5555-555555555555",
+  name: "shared",
+  host: "10.0.0.5",
+  agentAccess: "readonly",
+  resourceId: "local-default-55555555-5555-5555-5555-555555555555"
+});
+
+const ambiguousB = createConnection({
+  id: "66666666-6666-6666-6666-666666666666",
+  name: "shared",
+  host: "10.0.0.6",
+  agentAccess: "readonly",
+  resourceId: "local-default-66666666-6666-6666-6666-666666666666"
+});
+
+const SESSIONS: AgentSessionInfo[] = [
+  {
+    id: "sess-full",
+    connectionId: grantedFull.id,
+    title: "prod-hk",
+    status: "connected",
+    type: "terminal",
+    createdAt: TIMESTAMP,
+    cwd: null,
+    lastCommand: null
+  },
+  {
+    id: "sess-denied",
+    connectionId: deniedExplicit.id,
+    title: "secret-vault",
+    status: "connected",
+    type: "terminal",
+    createdAt: TIMESTAMP,
+    cwd: null,
+    lastCommand: null
+  }
+];
+
+const SNAPSHOT: MonitorSnapshot = {
+  connectionId: grantedFull.id,
+  loadAverage: [0.1, 0.2, 0.3],
+  cpuPercent: 12,
+  memoryPercent: 33,
+  memoryUsedMb: 1024,
+  memoryTotalMb: 4096,
+  swapPercent: 0,
+  swapUsedMb: 0,
+  swapTotalMb: 0,
+  diskPercent: 40,
+  diskUsedGb: 20,
+  diskTotalGb: 50,
+  networkInMbps: 1,
+  networkOutMbps: 2,
+  networkInterface: "eth0",
+  networkInterfaceOptions: ["eth0"],
+  processes: [],
+  capturedAt: TIMESTAMP
+};
+
+const fileStat = (overrides: Partial<AgentRemoteFileStat> = {}): AgentRemoteFileStat => ({
+  path: "/etc/hosts",
+  type: "file",
+  size: 12,
+  permissions: "0644",
+  uid: 0,
+  gid: 0,
+  modifiedAt: TIMESTAMP,
+  accessedAt: TIMESTAMP,
+  ...overrides
+});
+
+interface Harness {
+  gateway: AgentGateway;
+  audits: AgentAuditEntry[];
+  deps: AgentGatewayDeps;
+}
+
+const createHarness = (overrides: Partial<AgentGatewayDeps> = {}, limits = {}): Harness => {
+  const audits: AgentAuditEntry[] = [];
+  const deps: AgentGatewayDeps = {
+    listConnections: () => [
+      grantedFull,
+      grantedReadonly,
+      deniedExplicit,
+      deniedByOmission,
+      ambiguousA,
+      ambiguousB
+    ],
+    isConnectionOnline: (id) => id === grantedFull.id,
+    listSessions: () => SESSIONS,
+    getMonitorSnapshot: async () => SNAPSHOT,
+    listRemoteFiles: async () => [
+      {
+        name: "hosts",
+        path: "/etc/hosts",
+        type: "file",
+        size: 12,
+        permissions: "0644",
+        owner: "root",
+        group: "root",
+        modifiedAt: TIMESTAMP
+      }
+    ],
+    statRemoteFile: async () => fileStat(),
+    readRemoteFile: async () => ({ bytes: Buffer.from("127.0.0.1 x"), truncated: false }),
+    listSavedCommands: () => [],
+    appendAuditLog: (entry) => {
+      audits.push(entry);
+    },
+    getPreferences: () => DEFAULT_APP_PREFERENCES,
+    ...overrides
+  };
+  return { gateway: new AgentGateway(deps, { limits }), audits, deps };
+};
+
+describe("host authorization", () => {
+  test("host_list only exposes granted hosts and carries no credential fields", async () => {
+    const { gateway } = createHarness();
+    const result = await gateway.listHosts(CLIENT, {});
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.hosts.map((host) => host.name)).toEqual([
+      "prod-hk",
+      "stage-hk",
+      "shared",
+      "shared"
+    ]);
+
+    const serialized = JSON.stringify(result.data);
+    for (const forbidden of [
+      "credentialRef",
+      "secret://",
+      "sshKeyId",
+      "proxyId",
+      "hostFingerprint",
+      "password",
+      "privateKey",
+      "passphrase",
+      "hunter2"
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  test("an unauthorized host is not found even when addressed by exact name or host", async () => {
+    const { gateway } = createHarness();
+
+    for (const target of ["secret-vault", "10.0.0.3", "legacy-box", "10.0.0.4"]) {
+      const result = await gateway.describeHost(CLIENT, { target });
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      // "unauthorized" must be indistinguishable from "does not exist".
+      expect(result.error.code).toBe("not_found");
+      expect(result.error.message).not.toContain("access");
+    }
+  });
+
+  test("readonly hosts reject calls that require write access", () => {
+    const { gateway } = createHarness();
+
+    expect(gateway.resolveTarget("stage-hk", "read").ok).toBe(true);
+    const write = gateway.resolveTarget("stage-hk", "write");
+    expect(write.ok).toBe(false);
+    if (write.ok) return;
+    expect(write.error.code).toBe("forbidden");
+
+    const full = gateway.resolveTarget("prod-hk", "write");
+    expect(full.ok).toBe(true);
+  });
+
+  test("ambiguous targets return candidates instead of a guess", async () => {
+    const { gateway } = createHarness();
+    const result = await gateway.describeHost(CLIENT, { target: "shared" });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("ambiguous");
+    expect(result.error.candidates?.map((candidate) => candidate.host)).toEqual([
+      "10.0.0.5",
+      "10.0.0.6"
+    ]);
+  });
+
+  test("sessions on unauthorized hosts are invisible", async () => {
+    const { gateway } = createHarness();
+    const result = await gateway.listSessions(CLIENT, {});
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.sessions.map((session) => session.id)).toEqual(["sess-full"]);
+  });
+});
+
+describe("limits and failure paths", () => {
+  test("rate limiting kicks in per client and is audited", async () => {
+    const { gateway, audits } = createHarness({}, { callsPerMinute: 2 });
+
+    expect((await gateway.listHosts(CLIENT, {})).ok).toBe(true);
+    expect((await gateway.listHosts(CLIENT, {})).ok).toBe(true);
+    const third = await gateway.listHosts(CLIENT, {});
+
+    expect(third.ok).toBe(false);
+    if (third.ok) return;
+    expect(third.error.code).toBe("rate_limited");
+    expect(audits.at(-1)?.metadata?.result).toBe("rate_limited");
+
+    // Re-running `initialize` mints a new session id; the budget must not follow it.
+    const sameClientNewSession = await gateway.listHosts({ ...CLIENT, id: "session-2" }, {});
+    expect(sameClientNewSession.ok).toBe(false);
+
+    const otherClient = await gateway.listHosts(
+      { ...CLIENT, id: "session-3", name: "cursor", rateKey: "socket:cursor" },
+      {}
+    );
+    expect(otherClient.ok).toBe(true);
+  });
+
+  test("pruneRateLimits keeps a live budget and drops aged-out buckets", async () => {
+    let now = 1_000_000;
+    const { gateway } = createHarness({ now: () => now }, { callsPerMinute: 1 });
+
+    expect((await gateway.listHosts(CLIENT, {})).ok).toBe(true);
+    gateway.pruneRateLimits();
+    // A disconnect/reconnect inside the window must not refill the budget.
+    expect((await gateway.listHosts(CLIENT, {})).ok).toBe(false);
+
+    now += 61_000;
+    gateway.pruneRateLimits();
+    expect((await gateway.listHosts(CLIENT, {})).ok).toBe(true);
+  });
+
+  test("per-host concurrency is enforced", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { gateway } = createHarness(
+      {
+        listRemoteFiles: async () => {
+          await gate;
+          return [];
+        }
+      },
+      { perHostConcurrency: 1 }
+    );
+
+    const first = gateway.listFiles(CLIENT, { target: "prod-hk", path: "/etc" });
+    const second = await gateway.listFiles(CLIENT, { target: "prod-hk", path: "/etc" });
+
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.error.code).toBe("busy");
+    }
+    release?.();
+    expect((await first).ok).toBe(true);
+  });
+
+  test("call timeouts surface as a timeout error rather than hanging", async () => {
+    vi.useFakeTimers();
+    try {
+      const { gateway } = createHarness({
+        getPreferences: () => ({
+          ...DEFAULT_APP_PREFERENCES,
+          agent: { ...DEFAULT_APP_PREFERENCES.agent, execTimeoutSec: 1 }
+        }),
+        listRemoteFiles: () => new Promise(() => undefined)
+      });
+
+      const pending = gateway.listFiles(CLIENT, { target: "prod-hk", path: "/etc" });
+      await vi.advanceTimersByTimeAsync(1_500);
+      const result = await pending;
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("raw exception text never reaches the agent", async () => {
+    const { gateway } = createHarness({
+      listRemoteFiles: async () => {
+        throw new Error("connect ECONNREFUSED root@10.0.0.1:22 using /Users/me/.ssh/id_rsa");
+      }
+    });
+
+    const result = await gateway.listFiles(CLIENT, { target: "prod-hk", path: "/etc" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("unavailable");
+    expect(result.error.message).not.toContain("id_rsa");
+    expect(result.error.message).not.toContain("10.0.0.1");
+  });
+});
+
+describe("file reads", () => {
+  test("rejects non-regular files such as /dev/zero", async () => {
+    const { gateway } = createHarness({
+      statRemoteFile: async () => fileStat({ path: "/dev/zero", type: "other", size: 0 })
+    });
+
+    const result = await gateway.readFile(CLIENT, { target: "prod-hk", path: "/dev/zero" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("invalid_argument");
+  });
+
+  test("refuses files above the read limit before transferring them", async () => {
+    const readRemoteFile = vi.fn(async () => ({ bytes: Buffer.alloc(0), truncated: false }));
+    const { gateway } = createHarness({
+      statRemoteFile: async () => fileStat({ path: "/var/log/huge.log", size: 900 * 1024 }),
+      readRemoteFile
+    });
+
+    const result = await gateway.readFile(CLIENT, { target: "prod-hk", path: "/var/log/huge.log" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("too_large");
+    expect(readRemoteFile).not.toHaveBeenCalled();
+  });
+
+  test("a procfs file reporting size 0 is still bounded by the byte budget", async () => {
+    const budgets: number[] = [];
+    const { gateway } = createHarness({
+      // /proc and /sys report st_size = 0 for regular files of any length, so
+      // the stat gate lets them through: the budget has to reach the reader.
+      statRemoteFile: async () => fileStat({ path: "/proc/kallsyms", size: 0 }),
+      readRemoteFile: async (_connectionId, _remotePath, maxBytes) => {
+        budgets.push(maxBytes);
+        return { bytes: Buffer.alloc(maxBytes + 1, 0x41), truncated: true };
+      }
+    });
+
+    const result = await gateway.readFile(CLIENT, {
+      target: "prod-hk",
+      path: "/proc/kallsyms",
+      maxBytes: 128
+    });
+
+    expect(budgets).toEqual([128]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.bytes).toBe(128);
+    expect(result.data.truncated).toBe(true);
+  });
+
+  test("a timed-out read aborts the underlying transfer instead of leaving it running", async () => {
+    let aborted = false;
+    const { gateway } = createHarness(
+      {
+        readRemoteFile: (_connectionId, _remotePath, _maxBytes, signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              aborted = true;
+              reject(new Error("SFTP read aborted"));
+            });
+          })
+      },
+      { maxCallTimeoutMs: 20 }
+    );
+
+    const result = await gateway.readFile(CLIENT, { target: "prod-hk", path: "/etc/hosts" });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("timeout");
+    expect(aborted).toBe(true);
+  });
+
+  test("binary content comes back base64 encoded", async () => {
+    const { gateway } = createHarness({
+      readRemoteFile: async () => ({ bytes: Buffer.from([0x00, 0x01, 0x02]), truncated: false })
+    });
+
+    const result = await gateway.readFile(CLIENT, { target: "prod-hk", path: "/tmp/blob" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.encoding).toBe("base64");
+    expect(result.data.content).toBe(Buffer.from([0x00, 0x01, 0x02]).toString("base64"));
+  });
+
+  test("relative and empty paths are rejected", async () => {
+    const { gateway } = createHarness();
+
+    for (const path of ["etc/hosts", "~/.ssh/id_rsa", "   "]) {
+      const result = await gateway.readFile(CLIENT, { target: "prod-hk", path });
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.error.code).toBe("invalid_argument");
+    }
+  });
+
+  test("normalizeRemotePath collapses traversal segments", () => {
+    const result = normalizeRemotePath("/var/www/../log/./app.log");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data).toBe("/var/log/app.log");
+  });
+});
+
+describe("command search", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const savedCommand = (command: string, id = "cmd-1"): SavedCommand => ({
+    id,
+    name: "deploy",
+    group: "ops",
+    command,
+    isTemplate: false,
+    createdAt: TIMESTAMP,
+    updatedAt: TIMESTAMP
+  });
+
+  test("redacts secrets and drops commands naming unauthorized hosts", async () => {
+    const { gateway } = createHarness({
+      listSavedCommands: () => [
+        savedCommand("curl -H 'Authorization: Bearer abcdef123456' https://10.0.0.1/deploy"),
+        savedCommand("ssh ops@secret-vault", "cmd-2"),
+        savedCommand("ssh ops@10.0.0.3", "cmd-3")
+      ]
+    });
+
+    const result = await gateway.searchCommands(CLIENT, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.matches).toHaveLength(1);
+    const serialized = JSON.stringify(result.data);
+    expect(serialized).not.toContain("abcdef123456");
+    expect(serialized).not.toContain("secret-vault");
+    expect(serialized).not.toContain("10.0.0.3");
+    expect(result.data.source).toBe("library");
+  });
+
+  test("the global shell history is never a source", async () => {
+    const historyReader = vi.fn(() => [
+      { command: "export DB_PASSWORD=hunter2", useCount: 3, lastUsedAt: TIMESTAMP }
+    ]);
+    const { gateway } = createHarness({
+      // Not part of AgentGatewayDeps at all; the cast proves the gateway cannot
+      // reach shell history even when a caller tries to hand it over.
+      ...({ listCommandHistory: historyReader } as Partial<AgentGatewayDeps>)
+    });
+
+    const result = await gateway.searchCommands(CLIENT, { query: "export" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.matches).toEqual([]);
+    expect(historyReader).not.toHaveBeenCalled();
+  });
+
+  test("redacts the credential shapes the shared audit redactor lets through", async () => {
+    const leaky = [
+      "export DB_PASSWORD=hunter2",
+      "export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI",
+      "psql postgresql://app:S3cr3tOne@10.0.0.1:5432/prod",
+      "git clone https://oauth2:ghp_AbCdEf123@example.com/acme/private.git",
+      "sshpass -p 'S3cr3tTwo' ssh root@10.0.0.1",
+      "mysql -h db -u root -p'S3cr3tThree'",
+      "curl -u admin:S3cr3tFour https://api.example.com"
+    ];
+    const { gateway } = createHarness({
+      listSavedCommands: () => leaky.map((command, index) => savedCommand(command, `cmd-${index}`))
+    });
+
+    const result = await gateway.searchCommands(CLIENT, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.matches).toHaveLength(leaky.length);
+    const serialized = JSON.stringify(result.data);
+    for (const secret of [
+      "hunter2",
+      "wJalrXUtnFEMI",
+      "S3cr3tOne",
+      "ghp_AbCdEf123",
+      "S3cr3tTwo",
+      "S3cr3tThree",
+      "S3cr3tFour"
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+});
+
+describe("auditing", () => {
+  test("every call lands one agent.<tool> entry with redacted params", async () => {
+    const { gateway, audits } = createHarness();
+
+    await gateway.listHosts(CLIENT, { query: "prod" });
+    await gateway.describeHost(CLIENT, { target: "prod-hk" });
+
+    expect(audits.map((entry) => entry.action)).toEqual(["agent.host_list", "agent.host_describe"]);
+    expect(audits[1]?.connectionId).toBe(grantedFull.id);
+    expect(audits[1]?.metadata?.client).toBe("claude-code");
+    expect(audits[1]?.metadata?.result).toBe("ok");
+  });
+});

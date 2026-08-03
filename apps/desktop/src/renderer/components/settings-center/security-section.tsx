@@ -31,7 +31,6 @@ export const SecuritySection = ({
   onUnlockPassword,
   onChangePassword,
   onClearRemembered,
-  onCopyMcpProxyConfig,
   onReauthorizeCredentialStore,
   onClearAuditLogs,
   save
@@ -63,7 +62,6 @@ export const SecuritySection = ({
   onUnlockPassword: () => void;
   onChangePassword: () => void;
   onClearRemembered: () => void;
-  onCopyMcpProxyConfig: () => void;
   onReauthorizeCredentialStore: () => void;
   onClearAuditLogs: () => void;
   save: SaveFn;
@@ -133,15 +131,6 @@ export const SecuritySection = ({
           )}
           {pwdStatus.isSet && <Button onClick={onClearRemembered}>清除已记住的主密码</Button>}
         </Space>
-      </SettingsRow>
-
-      <SettingsRow
-        label="MCP 代理配置"
-        hint="复制 MCP SSH 代理的服务器配置（含解密凭据所需的设备密钥），需先解锁主密码"
-      >
-        <Button onClick={onCopyMcpProxyConfig} disabled={pwdBusy}>
-          复制 MCP 配置
-        </Button>
       </SettingsRow>
 
       <SettingsSwitchRow

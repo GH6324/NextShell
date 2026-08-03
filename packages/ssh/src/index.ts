@@ -1218,14 +1218,61 @@ export class SshConnection {
     return this.statPath(sftp, remotePath);
   }
 
-  async readFileContent(remotePath: string): Promise<Buffer> {
+  /**
+   * `maxBytes` bounds what is buffered in this process. It must not be derived
+   * from a prior `stat()`: procfs and sysfs report `st_size = 0` for regular
+   * files of arbitrary length, and `/proc/kmsg` never reaches EOF at all — an
+   * unbounded read of either grows until the process dies. At most
+   * `maxBytes + 1` bytes are returned, so the caller can detect truncation.
+   */
+  async readFileContent(
+    remotePath: string,
+    options: { maxBytes?: number; signal?: AbortSignal } = {}
+  ): Promise<Buffer> {
+    const { maxBytes, signal } = options;
     const sftp = await this.getSharedSftp();
     return new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = [];
-      const stream = sftp.createReadStream(remotePath);
-      stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-      stream.on("end", () => resolve(Buffer.concat(chunks)));
-      stream.on("error", reject);
+      let received = 0;
+      let settled = false;
+      // `end` is inclusive, so reading one byte past the budget is what makes
+      // truncation observable without buffering the whole file.
+      const stream =
+        maxBytes === undefined
+          ? sftp.createReadStream(remotePath)
+          : sftp.createReadStream(remotePath, { start: 0, end: maxBytes });
+
+      const settle = (action: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        action();
+      };
+
+      function onAbort(): void {
+        stream.destroy();
+        settle(() => reject(new Error("SFTP read aborted")));
+      }
+
+      if (signal?.aborted) {
+        stream.destroy();
+        reject(new Error("SFTP read aborted"));
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      stream.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+        received += chunk.byteLength;
+        if (maxBytes !== undefined && received > maxBytes) {
+          stream.destroy();
+          settle(() => resolve(Buffer.concat(chunks).subarray(0, maxBytes + 1)));
+        }
+      });
+      stream.on("end", () => settle(() => resolve(Buffer.concat(chunks))));
+      stream.on("error", (error: Error) => settle(() => reject(error)));
     });
   }
 

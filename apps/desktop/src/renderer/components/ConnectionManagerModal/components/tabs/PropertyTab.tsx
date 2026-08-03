@@ -73,6 +73,20 @@ export const PropertyTab = ({ workspaces, scopeLocked }: PropertyTabProps) => {
         </Form.Item>
       </div>
 
+      <Form.Item
+        label="Agent 授权"
+        name="agentAccess"
+        extra="控制「设置 - Agent 接入（MCP）」里的 AI Agent 能否看到这台主机。默认关闭，关闭时该主机对 Agent 完全不可见。Agent 永远拿不到密码、私钥等凭据。"
+      >
+        <Select
+          options={[
+            { label: "关闭（Agent 不可见）", value: "off" },
+            { label: "只读（可查看信息与文件）", value: "readonly" },
+            { label: "完全（预留给后续可写工具）", value: "full" }
+          ]}
+        />
+      </Form.Item>
+
       <Form.Item label="备注" name="notes" className="!mb-0">
         <Input.TextArea rows={2} placeholder="可选备注信息..." className="mgr-textarea" />
       </Form.Item>

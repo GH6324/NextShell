@@ -156,8 +156,33 @@ describe("ConnectionManagerModal connection form helpers", () => {
       tags: ["web", "ops"],
       notes: "note me",
       favorite: true,
-      monitorSession: true
+      monitorSession: true,
+      agentAccess: "off"
     });
+  });
+
+  test("agent access defaults to off and is carried through when set", () => {
+    const base: ConnectionFormValues = {
+      name: "box",
+      host: "10.0.0.9",
+      port: 22,
+      username: "root",
+      authType: "password",
+      strictHostKeyChecking: false,
+      terminalEncoding: "utf-8",
+      backspaceMode: "ascii-backspace",
+      deleteMode: "vt220-delete",
+      groupPath: "/server",
+      tags: [],
+      favorite: false,
+      monitorSession: false
+    };
+
+    expect(toConnectionPayload(base, { generateId: () => "id" }).agentAccess).toBe("off");
+    expect(
+      toConnectionPayload({ ...base, agentAccess: "readonly" }, { generateId: () => "id" })
+        .agentAccess
+    ).toBe("readonly");
   });
 
   test("creates quick upsert payloads by preserving existing fields", () => {
@@ -180,7 +205,8 @@ describe("ConnectionManagerModal connection form helpers", () => {
       sshKeyId: "key-1",
       notes: "before",
       favorite: true,
-      monitorSession: true
+      monitorSession: true,
+      agentAccess: "off"
     });
   });
 });

@@ -111,6 +111,25 @@ export const mergePreferences = (
     return value as number;
   };
 
+  const normalizeBoundedInt = (
+    value: number | undefined,
+    fallback: number,
+    min: number,
+    max: number
+  ): number => {
+    if (!Number.isInteger(value) || (value as number) < min || (value as number) > max) {
+      return fallback;
+    }
+    return value as number;
+  };
+
+  const normalizeLocalRoots = (value: string[] | undefined, fallback: string[]): string[] => {
+    if (!Array.isArray(value)) {
+      return fallback;
+    }
+    return value.map((root) => root.trim()).filter((root) => root.length > 0);
+  };
+
   return {
     transfer: {
       uploadDefaultDir:
@@ -279,6 +298,34 @@ export const mergePreferences = (
         patch.audit.retentionDays <= 365
           ? patch.audit.retentionDays
           : current.audit.retentionDays
+    },
+    agent: {
+      enabled: patch.agent?.enabled !== undefined ? patch.agent.enabled : current.agent.enabled,
+      socketEnabled:
+        patch.agent?.socketEnabled !== undefined
+          ? patch.agent.socketEnabled
+          : current.agent.socketEnabled,
+      tcpEnabled:
+        patch.agent?.tcpEnabled !== undefined ? patch.agent.tcpEnabled : current.agent.tcpEnabled,
+      tcpPort: normalizeBoundedInt(patch.agent?.tcpPort, current.agent.tcpPort, 0, 65535),
+      confirmWrites:
+        patch.agent?.confirmWrites !== undefined
+          ? patch.agent.confirmWrites
+          : current.agent.confirmWrites,
+      confirmUnknownCommands:
+        patch.agent?.confirmUnknownCommands !== undefined
+          ? patch.agent.confirmUnknownCommands
+          : current.agent.confirmUnknownCommands,
+      allowedLocalRoots: normalizeLocalRoots(
+        patch.agent?.allowedLocalRoots,
+        current.agent.allowedLocalRoots
+      ),
+      execTimeoutSec: normalizeBoundedInt(
+        patch.agent?.execTimeoutSec,
+        current.agent.execTimeoutSec,
+        1,
+        3600
+      )
     }
   };
 };

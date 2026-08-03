@@ -69,6 +69,7 @@ interface ConnectionRow {
   notes: string | null;
   favorite: number;
   monitor_session: number;
+  agent_access: string | null;
   created_at: string;
   updated_at: string;
   last_connected_at: string | null;
@@ -415,6 +416,8 @@ const rowToConnection = (row: ConnectionRow): ConnectionProfile => {
     notes: row.notes ?? undefined,
     favorite: row.favorite === 1,
     monitorSession: (row as ConnectionRow & { monitor_session?: number }).monitor_session === 1,
+    agentAccess:
+      row.agent_access === "readonly" || row.agent_access === "full" ? row.agent_access : "off",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastConnectedAt: row.last_connected_at ?? undefined,
@@ -583,7 +586,11 @@ const cloneDefaultPreferences = (): AppPreferences => {
     backup: { ...DEFAULT_APP_PREFERENCES_VALUE.backup },
     window: { ...DEFAULT_APP_PREFERENCES_VALUE.window },
     traceroute: { ...DEFAULT_APP_PREFERENCES_VALUE.traceroute },
-    audit: { ...DEFAULT_APP_PREFERENCES_VALUE.audit }
+    audit: { ...DEFAULT_APP_PREFERENCES_VALUE.audit },
+    agent: {
+      ...DEFAULT_APP_PREFERENCES_VALUE.agent,
+      allowedLocalRoots: [...DEFAULT_APP_PREFERENCES_VALUE.agent.allowedLocalRoots]
+    }
   };
 };
 
@@ -889,6 +896,47 @@ const parseAppPreferences = (value: string | null): AppPreferences => {
           parsed.audit.retentionDays <= 365
             ? parsed.audit.retentionDays
             : fallback.audit.retentionDays
+      },
+      agent: {
+        enabled:
+          typeof parsed.agent?.enabled === "boolean"
+            ? parsed.agent.enabled
+            : fallback.agent.enabled,
+        socketEnabled:
+          typeof parsed.agent?.socketEnabled === "boolean"
+            ? parsed.agent.socketEnabled
+            : fallback.agent.socketEnabled,
+        tcpEnabled:
+          typeof parsed.agent?.tcpEnabled === "boolean"
+            ? parsed.agent.tcpEnabled
+            : fallback.agent.tcpEnabled,
+        tcpPort:
+          typeof parsed.agent?.tcpPort === "number" &&
+          Number.isInteger(parsed.agent.tcpPort) &&
+          parsed.agent.tcpPort >= 0 &&
+          parsed.agent.tcpPort <= 65535
+            ? parsed.agent.tcpPort
+            : fallback.agent.tcpPort,
+        confirmWrites:
+          typeof parsed.agent?.confirmWrites === "boolean"
+            ? parsed.agent.confirmWrites
+            : fallback.agent.confirmWrites,
+        confirmUnknownCommands:
+          typeof parsed.agent?.confirmUnknownCommands === "boolean"
+            ? parsed.agent.confirmUnknownCommands
+            : fallback.agent.confirmUnknownCommands,
+        allowedLocalRoots: Array.isArray(parsed.agent?.allowedLocalRoots)
+          ? parsed.agent.allowedLocalRoots.filter(
+              (root): root is string => typeof root === "string" && root.trim().length > 0
+            )
+          : fallback.agent.allowedLocalRoots,
+        execTimeoutSec:
+          typeof parsed.agent?.execTimeoutSec === "number" &&
+          Number.isInteger(parsed.agent.execTimeoutSec) &&
+          parsed.agent.execTimeoutSec >= 1 &&
+          parsed.agent.execTimeoutSec <= 3600
+            ? parsed.agent.execTimeoutSec
+            : fallback.agent.execTimeoutSec
       }
     };
   } catch {
@@ -1480,6 +1528,18 @@ const migrations: MigrationDefinition[] = [
         );
       `);
     }
+  },
+  {
+    version: 24,
+    name: "add_connection_agent_access_column",
+    apply: (db) => {
+      ensureColumn(
+        db,
+        "connections",
+        "agent_access",
+        "agent_access TEXT NOT NULL DEFAULT 'off'"
+      );
+    }
   }
 ];
 
@@ -1722,6 +1782,7 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
             notes,
             favorite,
             monitor_session,
+            agent_access,
             created_at,
             updated_at,
             last_connected_at,
@@ -1777,6 +1838,7 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
             notes,
             favorite,
             monitor_session,
+            agent_access,
             created_at,
             updated_at,
             last_connected_at,
@@ -1809,6 +1871,7 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
             @notes,
             @favorite,
             @monitor_session,
+            @agent_access,
             @created_at,
             @updated_at,
             @last_connected_at,
@@ -1841,6 +1904,7 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
             notes = excluded.notes,
             favorite = excluded.favorite,
             monitor_session = excluded.monitor_session,
+            agent_access = excluded.agent_access,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             last_connected_at = excluded.last_connected_at,
@@ -1876,6 +1940,7 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
         notes: connection.notes ?? null,
         favorite: connection.favorite ? 1 : 0,
         monitor_session: connection.monitorSession ? 1 : 0,
+        agent_access: connection.agentAccess ?? "off",
         created_at: connection.createdAt,
         updated_at: connection.updatedAt,
         last_connected_at: connection.lastConnectedAt ?? null,
@@ -1919,6 +1984,7 @@ export class SQLiteConnectionRepository implements ConnectionRepository {
             notes,
             favorite,
             monitor_session,
+            agent_access,
             created_at,
             updated_at,
             last_connected_at,

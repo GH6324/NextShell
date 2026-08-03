@@ -24,6 +24,7 @@ import type { PreferencesDialogService } from "./preferences-dialog-service";
 import type { TerminalIntegrationService } from "./terminal-integration-service";
 import type { CloudSyncManager } from "./cloud-sync-manager";
 import type { ResourceOperationsService } from "./resource-operations-service";
+import type { AgentMcpService } from "./mcp";
 
 // ─── Active session types ──────────────────────────────────────────────────
 export interface ActiveRemoteSession {
@@ -49,7 +50,14 @@ export type ActiveSession = ActiveRemoteSession | ActiveLocalSession;
 
 // ─── Factory options ───────────────────────────────────────────────────────
 export interface CreateServiceContainerOptions {
-  dataDir: string;
+  /**
+   * Electron `app.getPath("userData")` — the profile root, not a subdirectory.
+   * SQLite lives in `<userDataDir>/storage`, the MCP endpoint discovery file in
+   * `<userDataDir>/mcp` (the path `@nextshell/mcp-bridge` probes). Passing the
+   * storage subdirectory here would move the discovery file out of the bridge's
+   * search path, so the container derives both locations from this one root.
+   */
+  userDataDir: string;
   keytarServiceName?: string;
   /**
    * Keychain service to adopt secrets from when `keytarServiceName` has no item
@@ -118,6 +126,8 @@ export interface ServiceContainer {
   readonly terminalIntegration: TerminalIntegrationService;
   readonly cloudSync: CloudSyncManager;
   readonly resourceOps: ResourceOperationsService;
+  /** MCP endpoint for agents. Dark until `preferences.agent.enabled` is true. */
+  readonly agentMcp: AgentMcpService;
 
   // Orchestration
   /** Recycle-bin snapshot + tombstone (ResourceOperationsService) followed by

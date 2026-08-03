@@ -206,7 +206,8 @@ export class ConnectionService {
       tags: connection.tags,
       notes: connection.notes,
       favorite: connection.favorite,
-      monitorSession: connection.monitorSession
+      monitorSession: connection.monitorSession,
+      agentAccess: connection.agentAccess ?? "off"
     };
   }
 
@@ -306,6 +307,8 @@ export class ConnectionService {
       notes: input.notes,
       favorite: input.favorite,
       monitorSession: input.monitorSession,
+      // Absent input never grants access; it falls back to the stored level and finally to "off".
+      agentAccess: input.agentAccess ?? current?.agentAccess ?? "off",
       createdAt: current?.createdAt ?? now,
       updatedAt: now,
       lastConnectedAt: current?.lastConnectedAt,
@@ -683,7 +686,8 @@ export class ConnectionService {
       tags: latest.tags,
       notes: latest.notes,
       favorite: latest.favorite,
-      monitorSession: latest.monitorSession
+      monitorSession: latest.monitorSession,
+      agentAccess: latest.agentAccess ?? "off"
     };
 
     try {

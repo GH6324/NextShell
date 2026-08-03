@@ -35,6 +35,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.0
+        version: 1.30.0(supports-color@7.2.0)(zod@4.4.3)
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.11.1
@@ -211,29 +214,14 @@ importers:
         specifier: ^5.0.11
         version: 5.0.14(@types/react@19.2.17)(react@19.2.7)
 
-  apps/mcp-ssh-proxy:
+  apps/mcp-bridge:
     dependencies:
       '@modelcontextprotocol/sdk':
-        specifier: ^1.29.0
-        version: 1.29.0(supports-color@7.2.0)(zod@4.4.3)
-      '@nextshell/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@nextshell/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      '@nextshell/security':
-        specifier: workspace:*
-        version: link:../../packages/security
-      '@nextshell/ssh':
-        specifier: workspace:*
-        version: link:../../packages/ssh
-      '@nextshell/storage':
-        specifier: workspace:*
-        version: link:../../packages/storage
-      ssh2:
-        specifier: ^1.17.0
-        version: 1.17.0
+        specifier: ^1.30.0
+        version: 1.30.0(supports-color@7.2.0)(zod@4.4.3)
+      undici:
+        specifier: ^7.19.0
+        version: 7.28.0
       zod:
         specifier: ^4.3.6
         version: 4.4.3
@@ -241,46 +229,18 @@ importers:
       '@types/node':
         specifier: ^24.13.2
         version: 24.13.3
-      '@types/ssh2':
-        specifier: ^1.15.5
-        version: 1.15.5
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
-      tsx:
-        specifier: ^4.20.6
-        version: 4.23.1
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@24.13.3)(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.1))
 
   packages/core:
     devDependencies:
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-
-  packages/runtime:
-    dependencies:
-      '@nextshell/core':
-        specifier: workspace:*
-        version: link:../core
-      '@nextshell/security':
-        specifier: workspace:*
-        version: link:../security
-      '@nextshell/ssh':
-        specifier: workspace:*
-        version: link:../ssh
-      '@nextshell/storage':
-        specifier: workspace:*
-        version: link:../storage
-    devDependencies:
-      '@types/node':
-        specifier: ^24.13.2
-        version: 24.13.3
-      tsx:
-        specifier: ^4.20.6
-        version: 4.23.1
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -884,8 +844,8 @@ packages:
   '@marijn/find-cluster-break@1.0.3':
     resolution: {integrity: sha512-FY+MKLBoTsLNJF/eLWaOsXGdz6uh3Iu1axjPf6TUq92IYumcTcXWHoS747JARLkcdlJ/Waiaxc5wQfFO8jC6NA==}
 
-  '@modelcontextprotocol/sdk@1.29.0':
-    resolution: {integrity: sha512-zo37mZA9hJWpULgkRpowewez1y6ML5GsXJPY8FI0tBBCd77HEvza4jDqRKOXgHNn867PVGCyTdzqpz0izu5ZjQ==}
+  '@modelcontextprotocol/sdk@1.30.0':
+    resolution: {integrity: sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==}
     engines: {node: '>=18'}
     peerDependencies:
       '@cfworker/json-schema': ^4.1.1
@@ -4170,7 +4130,7 @@ snapshots:
 
   '@marijn/find-cluster-break@1.0.3': {}
 
-  '@modelcontextprotocol/sdk@1.29.0(supports-color@7.2.0)(zod@4.4.3)':
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 1.19.14(hono@4.12.31)
       ajv: 8.20.0
@@ -6758,6 +6718,7 @@ snapshots:
       esbuild: 0.28.1
     optionalDependencies:
       fsevents: 2.3.3
+    optional: true
 
   tunnel-agent@0.6.0:
     dependencies:
@@ -6799,8 +6760,7 @@ snapshots:
 
   undici@6.27.0: {}
 
-  undici@7.28.0:
-    optional: true
+  undici@7.28.0: {}
 
   universalify@0.1.2: {}
 

@@ -241,6 +241,9 @@ export interface ProxyProfile {
   copiedFromResourceId?: string;
 }
 
+/** Agent（MCP）对单台主机的授权级别，缺省等同 "off"。 */
+export type AgentAccessLevel = "off" | "readonly" | "full";
+
 export interface ConnectionProfile {
   id: string;
   name: string;
@@ -269,6 +272,8 @@ export interface ConnectionProfile {
   notes?: string;
   favorite: boolean;
   monitorSession: boolean;
+  /** 缺省（undefined）按 "off" 处理：未授权主机对 agent 完全不可见 */
+  agentAccess?: AgentAccessLevel;
   createdAt: string;
   updatedAt: string;
   lastConnectedAt?: string;
@@ -501,13 +506,6 @@ export interface CommandHistoryEntry {
 
 export const MAX_COMMAND_HISTORY_ENTRIES = 500;
 
-/**
- * Env var the desktop app uses to hand the device key to out-of-process helpers
- * such as the MCP SSH proxy. Those run headless under someone else's process
- * tree, so they must never reach for the OS keychain themselves.
- */
-export const DEVICE_KEY_ENV_VAR = "NEXTSHELL_DEVICE_KEY";
-
 export interface SavedCommand {
   id: string;
   name: string;
@@ -647,6 +645,27 @@ export interface AppPreferences {
     /** 审计日志保留天数，0 表示永不清理 */
     retentionDays: number;
   };
+  agent: {
+    /**
+     * Agent（MCP）端点总开关。默认关闭：关闭时主进程不监听任何 socket 或端口，
+     * 下面的监听开关全部无效。
+     */
+    enabled: boolean;
+    /** 是否监听 Unix socket / 命名管道（0600，靠 OS 授权，无 token 可泄） */
+    socketEnabled: boolean;
+    /** 是否额外监听 127.0.0.1 TCP（需 Bearer token），默认关闭 */
+    tcpEnabled: boolean;
+    /** TCP 监听端口，0 表示由系统分配 */
+    tcpPort: number;
+    /** 写操作（文件写入 / 传输 / PTY 注入）是否需要应用内确认 */
+    confirmWrites: boolean;
+    /** exec 命中未知命令（不在只读白名单也不在危险黑名单）时是否需要应用内确认 */
+    confirmUnknownCommands: boolean;
+    /** 允许 agent 读取的本地根目录，空数组表示不额外限制（默认拒绝清单仍生效） */
+    allowedLocalRoots: string[];
+    /** 单条 exec 的默认超时（秒） */
+    execTimeoutSec: number;
+  };
 }
 
 export interface AppPreferencesPatch {
@@ -722,6 +741,16 @@ export interface AppPreferencesPatch {
   audit?: {
     enabled?: boolean;
     retentionDays?: number;
+  };
+  agent?: {
+    enabled?: boolean;
+    socketEnabled?: boolean;
+    tcpEnabled?: boolean;
+    tcpPort?: number;
+    confirmWrites?: boolean;
+    confirmUnknownCommands?: boolean;
+    allowedLocalRoots?: string[];
+    execTimeoutSec?: number;
   };
 }
 
@@ -893,6 +922,16 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   audit: {
     enabled: false,
     retentionDays: 7
+  },
+  agent: {
+    enabled: false,
+    socketEnabled: true,
+    tcpEnabled: false,
+    tcpPort: 0,
+    confirmWrites: true,
+    confirmUnknownCommands: true,
+    allowedLocalRoots: [],
+    execTimeoutSec: 60
   }
 };
 
