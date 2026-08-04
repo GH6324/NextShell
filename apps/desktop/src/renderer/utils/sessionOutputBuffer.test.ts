@@ -1,4 +1,13 @@
-import { appendWithLimit, createEmptyBuffer, toReplayChunks } from "./sessionOutputBuffer";
+import { describe, expect, it } from "vitest";
+import {
+  REPLAY_MAX_BYTES,
+  REPLAY_TRUNCATION_NOTICE,
+  appendWithLimit,
+  buildReplayPayload,
+  createEmptyBuffer,
+  toReplayChunks,
+  type SessionOutputChunk
+} from "./sessionOutputBuffer";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -118,3 +127,94 @@ const utf8Length = (text: string): number => new TextEncoder().encode(text).leng
   );
   assertEqual(buffer.totalBytes, 6, "totalBytes should match the surviving chunks");
 }
+
+// ─── buildReplayPayload ─────────────────────────────────────────────────────
+// Registered cases rather than collection-time assertions: the truncation rules
+// are worth naming individually.
+
+describe("buildReplayPayload", () => {
+  const chunk = (text: string): SessionOutputChunk => ({ text, bytes: utf8Length(text) });
+
+  it("returns nothing for an empty buffer", () => {
+    expect(buildReplayPayload([], 1024)).toEqual({
+      text: "",
+      truncated: false,
+      totalBytes: 0,
+      writtenBytes: 0,
+      chunkCount: 0
+    });
+  });
+
+  it("passes an under-budget buffer through untouched", () => {
+    const chunks = [chunk("first\r\n"), chunk("second\r\n")];
+    const payload = buildReplayPayload(chunks, 1024);
+
+    expect(payload.text).toBe("first\r\nsecond\r\n");
+    expect(payload.truncated).toBe(false);
+    expect(payload.totalBytes).toBe(15);
+    expect(payload.writtenBytes).toBe(15);
+    expect(payload.chunkCount).toBe(2);
+  });
+
+  it("keeps whole chunks from the tail and never splits one to fit", () => {
+    // Budget 12 fits the last two chunks (10 bytes) but not the third (15).
+    const chunks = [chunk("aaaa\n"), chunk("bbbb\n"), chunk("cccc\n")];
+    const payload = buildReplayPayload(chunks, 12);
+
+    expect(payload.truncated).toBe(true);
+    expect(payload.chunkCount).toBe(2);
+    // First kept chunk starts at the line boundary, so its own line is gone.
+    expect(payload.text).toBe(`${REPLAY_TRUNCATION_NOTICE}cccc\n`);
+    expect(payload.totalBytes).toBe(15);
+    expect(payload.writtenBytes).toBe(5);
+  });
+
+  it("advances the first kept chunk past its first newline", () => {
+    const chunks = [chunk("dropped\n"), chunk("tail of a line\nkept line\n")];
+    const payload = buildReplayPayload(chunks, 25);
+
+    expect(payload.truncated).toBe(true);
+    expect(payload.chunkCount).toBe(1);
+    expect(payload.text).toBe(`${REPLAY_TRUNCATION_NOTICE}kept line\n`);
+    expect(payload.writtenBytes).toBe(utf8Length("kept line\n"));
+  });
+
+  it("keeps the first kept chunk whole when it has no newline", () => {
+    const chunks = [chunk("dropped\n"), chunk("no newline here")];
+    const payload = buildReplayPayload(chunks, 20);
+
+    expect(payload.truncated).toBe(true);
+    expect(payload.text).toBe(`${REPLAY_TRUNCATION_NOTICE}no newline here`);
+    expect(payload.writtenBytes).toBe(utf8Length("no newline here"));
+  });
+
+  it("prepends no notice when a single over-budget chunk is all there is", () => {
+    // Nothing can be dropped without losing the screen being switched to, so
+    // the chunk is replayed whole and the result is honest about it.
+    const chunks = [chunk("line one\nline two\n")];
+    const payload = buildReplayPayload(chunks, 4);
+
+    expect(payload.truncated).toBe(false);
+    expect(payload.text).toBe("line one\nline two\n");
+    expect(payload.writtenBytes).toBe(18);
+  });
+
+  it("measures kept bytes in UTF-8, like the ring buffer does", () => {
+    const chunks = [chunk("drop\n"), chunk("头\n中文尾巴")];
+    const payload = buildReplayPayload(chunks, 16);
+
+    expect(payload.truncated).toBe(true);
+    expect(payload.text).toBe(`${REPLAY_TRUNCATION_NOTICE}中文尾巴`);
+    expect(payload.writtenBytes).toBe(12);
+    expect(payload.totalBytes).toBe(utf8Length("drop\n头\n中文尾巴"));
+  });
+
+  it("defaults the budget to REPLAY_MAX_BYTES", () => {
+    const chunks = [chunk("x".repeat(REPLAY_MAX_BYTES)), chunk("y\nz")];
+    const payload = buildReplayPayload(chunks);
+
+    expect(payload.truncated).toBe(true);
+    expect(payload.chunkCount).toBe(1);
+    expect(payload.text).toBe(`${REPLAY_TRUNCATION_NOTICE}z`);
+  });
+});

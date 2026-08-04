@@ -1,33 +1,25 @@
 /**
  * Pure decision helpers for TerminalPane's session switching. They live outside
- * the component so the rapid-cycling and scroll-restore rules can be tested
- * without an xterm instance.
+ * the component so the scroll-restore rules can be tested without an xterm
+ * instance.
  */
 
 /**
- * True while the user is still cycling tabs (the previous switch landed inside
- * `windowMs`), which is the signal to postpone the incoming session's replay
- * instead of parsing a backlog the user is about to leave behind.
+ * Whether the outgoing session's viewport position may be recorded, given which
+ * session the shared xterm buffer is actually showing right now.
  *
- * A first switch (`lastSwitchAt === undefined`) and a backwards clock both
- * answer "no": the fallback must be the zero-latency synchronous replay.
+ * A replay is queued behind the pending writes (`runLatestScreenChange` /
+ * `runAfterPendingWrites`), so a switch A→B→C that happens before B's replay
+ * reaches the front of the queue supersedes it: B never repaints, and when the
+ * switch away from B runs the buffer still holds A's content. Snapshotting then
+ * would file A's viewport under B and dump the user somewhere they never
+ * scrolled to. Only the session whose content is on screen may write a snapshot
+ * — an unpainted (`undefined`) buffer belongs to nobody.
  */
-export const shouldDeferReplay = (
-  lastSwitchAt: number | undefined,
-  now: number,
-  windowMs: number
-): boolean => {
-  if (lastSwitchAt === undefined) {
-    return false;
-  }
-
-  const elapsed = now - lastSwitchAt;
-  if (elapsed < 0) {
-    return false;
-  }
-
-  return elapsed < windowMs;
-};
+export const shouldRememberSessionScroll = (
+  outgoingSessionId: string,
+  displayedSessionId: string | undefined
+): boolean => displayedSessionId !== undefined && displayedSessionId === outgoingSessionId;
 
 /**
  * How far up to scroll after a replay, given the distance from the bottom that

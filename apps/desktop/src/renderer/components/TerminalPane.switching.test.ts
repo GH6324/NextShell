@@ -1,25 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { clampScrollLinesFromBottom, shouldDeferReplay } from "./TerminalPane.switching";
+import { clampScrollLinesFromBottom, shouldRememberSessionScroll } from "./TerminalPane.switching";
 
-describe("shouldDeferReplay", () => {
-  it("replays immediately for the first switch", () => {
-    expect(shouldDeferReplay(undefined, 1_000, 150)).toBe(false);
+describe("shouldRememberSessionScroll", () => {
+  it("records the snapshot when the buffer shows the session being left", () => {
+    expect(shouldRememberSessionScroll("b", "b")).toBe(true);
   });
 
-  it("defers while the user is still cycling tabs", () => {
-    expect(shouldDeferReplay(1_000, 1_060, 150)).toBe(true);
+  it("skips the snapshot when the buffer still shows an earlier session", () => {
+    // A→B→C: B's replay was still queued behind pending writes when C
+    // superseded it, so leaving B would otherwise store A's viewport under B.
+    expect(shouldRememberSessionScroll("b", "a")).toBe(false);
   });
 
-  it("replays immediately for an isolated switch", () => {
-    expect(shouldDeferReplay(1_000, 1_400, 150)).toBe(false);
-  });
-
-  it("treats the window boundary as isolated", () => {
-    expect(shouldDeferReplay(1_000, 1_150, 150)).toBe(false);
-  });
-
-  it("falls back to immediate replay when the clock goes backwards", () => {
-    expect(shouldDeferReplay(2_000, 1_000, 150)).toBe(false);
+  it("skips the snapshot when nothing has been painted yet", () => {
+    expect(shouldRememberSessionScroll("b", undefined)).toBe(false);
   });
 });
 

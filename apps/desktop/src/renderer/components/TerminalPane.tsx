@@ -9,9 +9,12 @@ import type { ConnectionProfile, SessionDescriptor } from "@nextshell/core";
 import type { SessionAuthOverrideInput } from "@nextshell/shared";
 import {
   MAX_SESSION_OUTPUT_BYTES,
+  REPLAY_MAX_BYTES,
   appendWithLimit,
+  buildReplayPayload,
   createEmptyBuffer,
   toReplayChunks,
+  type ReplayPayload,
   type SessionOutputBuffer
 } from "../utils/sessionOutputBuffer";
 import {
@@ -42,8 +45,9 @@ import {
 import { installOscRuntime, type OscRuntimeHandle } from "../terminal/oscRuntime";
 import { installParserHandlerGuards } from "../terminal/parserGuards";
 import { openExternalLink } from "../terminal/osc/linkOpening";
-import { clampScrollLinesFromBottom, shouldDeferReplay } from "./TerminalPane.switching";
+import { clampScrollLinesFromBottom, shouldRememberSessionScroll } from "./TerminalPane.switching";
 import { setSessionBacklogProvider } from "../terminal/sessionBacklogProvider";
+import { createSwitchFreezeFrame, type SwitchFreezeFrame } from "../terminal/switchFreezeFrame";
 
 type LocalAwareSessionDescriptor = SessionDescriptor & {
   target?: "remote" | "local";
@@ -113,18 +117,6 @@ const MAX_PENDING_SESSION_BYTES = 256 * 1024;
 const ACK_FLUSH_THRESHOLD_BYTES = 128 * 1024;
 const ACK_FLUSH_INTERVAL_MS = 50;
 
-/**
- * Holding Ctrl+Tab walks through every tab on the way to the one the user
- * actually wants, and each stop currently re-parses that session's whole
- * backlog (up to 2MB) into the single shared xterm. Two switches closer
- * together than the window mean the cycling is still in progress, so the replay
- * waits out the short delay and only the tab the user lands on pays for a
- * parse. A first or isolated switch is never delayed — it replays synchronously
- * exactly as before.
- */
-const RAPID_SWITCH_WINDOW_MS = 150;
-const RAPID_SWITCH_REPLAY_DELAY_MS = 60;
-
 interface SessionAckAccumulator {
   /** Delta of consumed bytes since the last flushed ack. */
   bytes: number;
@@ -132,6 +124,43 @@ interface SessionAckAccumulator {
   lastDeliveryId: number;
   timer: ReturnType<typeof setTimeout> | undefined;
 }
+
+/**
+ * Replay instrumentation switch. Vite statically replaces `import.meta.env.DEV`,
+ * so a production bundle drops both helpers below and every call site with them
+ * — the only cost left in production is the two `performance.now()` reads being
+ * eliminated too.
+ */
+const REPLAY_DEBUG = import.meta.env.DEV;
+/** Measure name to look for in the DevTools Performance timings track. */
+const REPLAY_MEASURE_NAME = "nextshell:replay";
+
+const beginReplayMeasurement = (requestId: number): string => {
+  // Per-request mark name: two rapid switches can have replays in flight at
+  // once, and a shared mark would let the second one close the first's measure.
+  const startMark = `${REPLAY_MEASURE_NAME}:start:${requestId}`;
+  performance.mark(startMark);
+  return startMark;
+};
+
+const endReplayMeasurement = (
+  sessionId: string,
+  payload: ReplayPayload,
+  startMark: string,
+  startedAt: number
+): void => {
+  const parseMs = performance.now() - startedAt;
+  try {
+    performance.measure(REPLAY_MEASURE_NAME, startMark);
+  } catch {
+    // The start mark is gone (entry buffer cleared mid-replay); the console
+    // line below still carries the duration.
+  }
+  performance.clearMarks(startMark);
+  console.debug(
+    `[${REPLAY_MEASURE_NAME}] session=${sessionId} bytes=${payload.writtenBytes}/${payload.totalBytes} chunks=${payload.chunkCount} truncated=${payload.truncated} parse=${parseMs.toFixed(1)}ms`
+  );
+};
 
 const sequenceByBackspaceMode = (mode: ConnectionProfile["backspaceMode"]): string => {
   if (mode === "ascii-delete") {
@@ -280,6 +309,11 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
     const frozenSessionIdRef = useRef<string | undefined>(undefined);
     const oscRuntimeRef = useRef<OscRuntimeHandle | null>(null);
     /**
+     * Holds the outgoing session's pixels on screen while the incoming replay
+     * parses, so a switch does not flash the bare background.
+     */
+    const switchFreezeFrameRef = useRef<SwitchFreezeFrame | null>(null);
+    /**
      * Monotonic id of the newest requested replay. A replay repaints only if it
      * is still the newest one by the time xterm's write queue has drained.
      */
@@ -311,9 +345,14 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
      * bottom, which is also the state of every session that was never scrolled.
      */
     const scrollLinesFromBottomBySessionRef = useRef<Map<string, number>>(new Map());
-    /** Timestamp of the last active-session change, for rapid-cycling detection. */
-    const lastSessionSwitchAtRef = useRef<number | undefined>(undefined);
-    const deferredReplayTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    /**
+     * Which session's content the shared xterm buffer is currently painted with.
+     * Only a replay (or a clear) that actually ran may move it — a replay runs
+     * behind the write queue, so a switch that supersedes a still-queued replay
+     * leaves the previous session's screen in place, and the scroll snapshot has
+     * to know.
+     */
+    const displayedSessionIdRef = useRef<string | undefined>(undefined);
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
     const ctxMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -640,6 +679,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       }
       runLatestScreenChange(() => {
         terminalRef.current?.reset();
+        displayedSessionIdRef.current = undefined;
+        // A blank screen is the intended result here, so any frame still frozen
+        // from an earlier switch has to go instead of hiding it.
+        switchFreezeFrameRef.current?.release();
         // No incoming session: markers and decorations the reset just
         // invalidated still have to be dropped.
         oscRuntimeRef.current?.notifyReplayStart(undefined);
@@ -654,6 +697,13 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
     const rememberSessionScroll = useCallback((targetSessionId: string) => {
       const terminal = terminalRef.current;
       if (!terminal) {
+        return;
+      }
+
+      // The buffer may still show a session the user left two tabs ago (its
+      // replay was superseded on the write queue before it ever painted), and
+      // that screen's offset is not this session's to store.
+      if (!shouldRememberSessionScroll(targetSessionId, displayedSessionIdRef.current)) {
         return;
       }
 
@@ -705,6 +755,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
           // this replay's own id.
           const requestId = replayRequestIdRef.current;
           terminalRef.current?.reset();
+          // From here the screen belongs to the incoming session, even if it has
+          // nothing buffered to paint.
+          displayedSessionIdRef.current = targetSessionId;
 
           // Fired before the early returns: reset() already invalidated every
           // marker and decoration the OSC runtime was holding, so the
@@ -714,6 +767,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
 
           const buffer = bufferBySessionRef.current.get(targetSessionId);
           if (!buffer) {
+            // Nothing to paint: the blank screen *is* this session's content,
+            // so a frozen frame of the previous one may not outlive this point.
+            switchFreezeFrameRef.current?.release();
             return;
           }
 
@@ -725,19 +781,34 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
             [targetSessionId]
           );
 
-          const replay = toReplayChunks(buffer).join("");
-          if (!replay) {
+          // Only the newest slice of the ring buffer is re-parsed; see
+          // REPLAY_MAX_BYTES for why the rest is dropped on the floor here.
+          const payload = buildReplayPayload(buffer.chunks, REPLAY_MAX_BYTES);
+          if (!payload.text) {
+            switchFreezeFrameRef.current?.release();
             return;
           }
+
+          const startedAt = REPLAY_DEBUG ? performance.now() : 0;
+          const startMark = REPLAY_DEBUG ? beginReplayMeasurement(requestId) : "";
 
           // Buffered output may contain OSC sequences with side effects; tagging
           // the write as a replay for this session keeps them silent and, when
           // rapid tab switches leave two replays queued at once, keeps each
           // one's sequences credited to its own session.
-          writeSessionText(targetSessionId, replay, {
+          writeSessionText(targetSessionId, payload.text, {
             replay: true,
             onParsed: () => {
               restoreSessionScroll(targetSessionId, requestId);
+              // The incoming frame is on screen now — but only this replay's
+              // own frozen frame may be dropped: a newer switch has already
+              // captured a fresh one that its own replay will release.
+              if (replayRequestIdRef.current === requestId) {
+                switchFreezeFrameRef.current?.release();
+              }
+              if (REPLAY_DEBUG) {
+                endReplayMeasurement(targetSessionId, payload, startMark, startedAt);
+              }
             }
           });
         });
@@ -1016,6 +1087,14 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       terminal.open(containerRef.current);
       fitAddon.fit();
 
+      switchFreezeFrameRef.current = createSwitchFreezeFrame(containerRef.current, {
+        onCaptureFailure: (reason) => {
+          if (REPLAY_DEBUG) {
+            console.debug(`[nextshell:switch-freeze] capture unavailable — ${reason}`);
+          }
+        }
+      });
+
       terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
         if (oscRuntimeRef.current?.handleKeyEvent(event)) {
           return false;
@@ -1226,6 +1305,8 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         resizeSub.dispose();
         oscRuntimeRef.current?.dispose();
         oscRuntimeRef.current = null;
+        switchFreezeFrameRef.current?.dispose();
+        switchFreezeFrameRef.current = null;
         compatibilityGuard.dispose();
         terminal.dispose();
         terminalRef.current = null;
@@ -1403,24 +1484,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         if (previousSessionId) {
           // Don't leave the outgoing session's delta to the batching timer:
           // its stream keeps flowing in the background and the dispatcher's
-          // window should reopen promptly. Unconditional, including while a
-          // deferred replay is pending — acks must never wait on the debounce.
+          // window should reopen promptly.
           flushSessionAck(previousSessionId);
           rememberSessionScroll(previousSessionId);
-        }
-
-        const switchedAt = Date.now();
-        const deferReplay = shouldDeferReplay(
-          lastSessionSwitchAtRef.current,
-          switchedAt,
-          RAPID_SWITCH_WINDOW_MS
-        );
-        lastSessionSwitchAtRef.current = switchedAt;
-
-        // Whatever was scheduled belongs to a tab the user has already left.
-        if (deferredReplayTimerRef.current !== undefined) {
-          clearTimeout(deferredReplayTimerRef.current);
-          deferredReplayTimerRef.current = undefined;
         }
 
         if (!currentSessionId) {
@@ -1429,6 +1495,13 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
           // must also supersede any replay still waiting on the queue.
           clearTerminalScreen();
         } else {
+          if (previousSessionId) {
+            // Synchronously, before anything can enqueue the reset: this reads
+            // the pixels that are on screen right now and pins them over the
+            // viewport until the incoming replay has parsed.
+            switchFreezeFrameRef.current?.capture();
+          }
+
           if (session?.status === "connecting") {
             const connectingEventKey = `${currentSessionId}:connecting:`;
             if (lastStatusKeyBySessionRef.current.get(currentSessionId) !== connectingEventKey) {
@@ -1440,20 +1513,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
             }
           }
 
-          if (deferReplay) {
-            deferredReplayTimerRef.current = setTimeout(() => {
-              deferredReplayTimerRef.current = undefined;
-              // Re-read the active session at fire time: the effect's captured
-              // id may be a tab the cycling has already passed through.
-              const landedSessionId = sessionIdRef.current;
-              if (!landedSessionId || landedSessionId !== currentSessionId) {
-                return;
-              }
-              replaySessionOutput(landedSessionId);
-            }, RAPID_SWITCH_REPLAY_DELAY_MS);
-          } else {
-            replaySessionOutput(currentSessionId);
-          }
+          // Every activation is now a deliberate landing (Ctrl+Tab cycling only
+          // moves the switcher's selection and activates once, on release), so
+          // there is no cycling to debounce: replay straight away.
+          replaySessionOutput(currentSessionId);
         }
       }
 
@@ -1507,17 +1570,6 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       replaySessionOutput,
       session
     ]);
-
-    // A deferred replay outliving the component would fire into a disposed
-    // terminal (and keep the timer alive on its own).
-    useEffect(() => {
-      return () => {
-        if (deferredReplayTimerRef.current !== undefined) {
-          clearTimeout(deferredReplayTimerRef.current);
-          deferredReplayTimerRef.current = undefined;
-        }
-      };
-    }, []);
 
     const prevSessionStatusRef = useRef<string | undefined>(undefined);
     useEffect(() => {

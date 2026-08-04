@@ -10,6 +10,43 @@ export interface SessionOutputBuffer {
 
 export const MAX_SESSION_OUTPUT_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Byte budget for one tab-switch replay.
+ *
+ * A session keeps up to {@link MAX_SESSION_OUTPUT_BYTES} of raw stream, but the
+ * whole ring buffer used to go back through xterm's parser on every switch, and
+ * that parse *is* the cost of a switch — a session that dumped megabytes while
+ * in the background made landing on it visibly slow.
+ *
+ * The tradeoff: fidelity of the *deepest* scrollback (only reachable by
+ * scrolling up, and only ever that deep for high-output background sessions)
+ * against switch latency. The ring buffer itself is untouched — nothing is
+ * dropped from the stream, from the search index of the live session, or from
+ * the backlog handed to monitor grids; only the slice re-parsed on a switch is
+ * capped.
+ */
+export const REPLAY_MAX_BYTES = 512 * 1024;
+
+/**
+ * Dim marker that replaces the scrollback a capped replay could not carry, so
+ * the top of the buffer is not mistaken for the true start of the stream.
+ */
+export const REPLAY_TRUNCATION_NOTICE =
+  "\x1b[2m[NextShell] 更早的输出已省略(缓冲过长),完整滚动缓冲以此处为起点\x1b[0m\r\n";
+
+export interface ReplayPayload {
+  /** Exactly what should be handed to the parser, notice line included. */
+  text: string;
+  /** Whether any buffered output was left out of `text`. */
+  truncated: boolean;
+  /** Bytes the ring buffer holds (matches `SessionOutputBuffer.totalBytes`). */
+  totalBytes: number;
+  /** Buffered bytes that survived into `text`, excluding the notice line. */
+  writtenBytes: number;
+  /** Chunks that survived; a partially skipped head chunk still counts as one. */
+  chunkCount: number;
+}
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -125,4 +162,103 @@ export const appendWithLimit = (
 
 export const toReplayChunks = (buffer: SessionOutputBuffer): string[] => {
   return buffer.chunks.map((chunk) => chunk.text);
+};
+
+const joinChunkText = (chunks: readonly SessionOutputChunk[]): string => {
+  let text = "";
+  for (const chunk of chunks) {
+    text += chunk.text;
+  }
+  return text;
+};
+
+/**
+ * Build the text a tab switch should replay, keeping the newest `maxBytes` of
+ * buffered output.
+ *
+ * Chunks are kept whole from the tail: each one is a single data event and may
+ * already begin mid escape sequence, so cutting *inside* one buys nothing — it
+ * only strands a second half-parsed sequence. Once the cut is chosen, the first
+ * kept chunk is advanced past its first newline so the replay starts on a line
+ * boundary (a chunk with no newline is kept whole rather than dropped).
+ *
+ * The newest chunk is always kept, even alone over budget: it holds the screen
+ * the user is switching to. In that case nothing is actually dropped, so the
+ * result reports `truncated: false` and carries no notice.
+ *
+ * Byte counts come from the chunks' own `bytes` fields — encoded UTF-8 bytes,
+ * the same unit `appendWithLimit` caps the ring buffer with — so no re-encode of
+ * the backlog happens here; only a skipped head prefix is measured.
+ */
+export const buildReplayPayload = (
+  chunks: readonly SessionOutputChunk[],
+  maxBytes: number = REPLAY_MAX_BYTES
+): ReplayPayload => {
+  let totalBytes = 0;
+  for (const chunk of chunks) {
+    totalBytes += chunk.bytes;
+  }
+
+  if (chunks.length === 0) {
+    return { text: "", truncated: false, totalBytes: 0, writtenBytes: 0, chunkCount: 0 };
+  }
+
+  if (totalBytes <= maxBytes) {
+    return {
+      text: joinChunkText(chunks),
+      truncated: false,
+      totalBytes,
+      writtenBytes: totalBytes,
+      chunkCount: chunks.length
+    };
+  }
+
+  let startIndex = chunks.length - 1;
+  let keptBytes = chunks[startIndex]?.bytes ?? 0;
+  while (startIndex > 0) {
+    const previous = chunks[startIndex - 1];
+    if (!previous || keptBytes + previous.bytes > maxBytes) {
+      break;
+    }
+    keptBytes += previous.bytes;
+    startIndex -= 1;
+  }
+
+  const kept = chunks.slice(startIndex);
+  if (startIndex === 0) {
+    // A single chunk larger than the whole budget: kept intact, nothing lost.
+    return {
+      text: joinChunkText(kept),
+      truncated: false,
+      totalBytes,
+      writtenBytes: keptBytes,
+      chunkCount: kept.length
+    };
+  }
+
+  const head = kept[0];
+  let headText = head?.text ?? "";
+  let writtenBytes = keptBytes;
+  const newlineIndex = headText.indexOf("\n");
+  if (newlineIndex >= 0) {
+    const skipped = headText.slice(0, newlineIndex + 1);
+    headText = headText.slice(newlineIndex + 1);
+    writtenBytes -= encoder.encode(skipped).length;
+  }
+
+  const parts: string[] = [REPLAY_TRUNCATION_NOTICE, headText];
+  for (let index = 1; index < kept.length; index += 1) {
+    const chunk = kept[index];
+    if (chunk) {
+      parts.push(chunk.text);
+    }
+  }
+
+  return {
+    text: parts.join(""),
+    truncated: true,
+    totalBytes,
+    writtenBytes,
+    chunkCount: kept.length
+  };
 };
