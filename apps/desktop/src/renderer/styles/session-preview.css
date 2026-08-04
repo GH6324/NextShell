@@ -1,0 +1,88 @@
+/* Session Preview Grid — 同屏只读盯多个会话 */
+.session-preview-grid {
+  position: absolute;
+  /* 顶部让出标签条(36px + 2px 上边距),网格打开时标签仍可点击 */
+  inset: 38px 0 0 0;
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  background: #0a121a;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: 1fr;
+}
+
+.session-preview-grid[data-count="1"] {
+  grid-template-columns: 1fr;
+}
+
+.session-preview-grid[data-count="2"] {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+
+.session-preview-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0b141d;
+}
+
+.session-preview-cell--active {
+  border-color: var(--accent);
+}
+
+.session-preview-cell-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: none;
+  background: rgba(255, 255, 255, 0.04);
+  color: #9ba8be;
+  font-size: 12px;
+  font-family: var(--sans);
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-preview-cell-head:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #dde4f0;
+}
+
+.session-preview-cell-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.session-preview-cell-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--t3, #576070);
+}
+
+.session-preview-cell-term {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 6px 6px;
+}
+
+.session-preview-cell-term .xterm {
+  height: 100%;
+}
+
+.session-preview-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--t3, #576070);
+  font-size: 13px;
+}

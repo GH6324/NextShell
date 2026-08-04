@@ -57,6 +57,8 @@ const resetStore = (): void => {
     processSnapshots: {},
     networkSnapshots: {},
     networkRateHistory: {},
+    sessionMruIds: [],
+    lastActiveRemoteTerminalByConnection: {},
     bottomTab: "files"
   });
 };
@@ -432,4 +434,78 @@ const resetStore = (): void => {
   useWorkspaceStore.getState().setBottomTab("files");
   const state = useWorkspaceStore.getState();
   assertEqual(state.bottomTab, "files", "setBottomTab should accept files");
+})();
+
+(() => {
+  // setActiveSession maintains the MRU stack: most recent first, no duplicates.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [
+      createSession("s1", "c1", "connected"),
+      createSession("s2", "c2", "connected"),
+      createSession("s3", "c3", "connected")
+    ]
+  });
+  const store = useWorkspaceStore.getState();
+  store.setActiveSession("s1");
+  useWorkspaceStore.getState().setActiveSession("s2");
+  useWorkspaceStore.getState().setActiveSession("s3");
+  useWorkspaceStore.getState().setActiveSession("s2");
+  const state = useWorkspaceStore.getState();
+  assertEqual(state.sessionMruIds.join(","), "s2,s3,s1", "MRU should be most-recent-first, deduped");
+})();
+
+(() => {
+  // Closing the active tab lands on the previously used tab, not the last tab.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [
+      createSession("s1", "c1", "connected"),
+      createSession("s2", "c2", "connected"),
+      createSession("s3", "c3", "connected")
+    ]
+  });
+  useWorkspaceStore.getState().setActiveSession("s1");
+  useWorkspaceStore.getState().setActiveSession("s2");
+  useWorkspaceStore.getState().removeSession("s2");
+  const state = useWorkspaceStore.getState();
+  assertEqual(state.activeSessionId, "s1", "closing active tab should return to MRU predecessor");
+  assertEqual(state.sessionMruIds.includes("s2"), false, "closed session should leave the MRU");
+})();
+
+(() => {
+  // Without MRU history, closing falls back to the neighbor that slides into place.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [
+      createSession("s1", "c1", "connected"),
+      createSession("s2", "c2", "connected"),
+      createSession("s3", "c3", "connected")
+    ],
+    activeSessionId: "s2",
+    activeConnectionId: "c2",
+    sessionMruIds: []
+  });
+  useWorkspaceStore.getState().removeSession("s2");
+  const state = useWorkspaceStore.getState();
+  assertEqual(state.activeSessionId, "s3", "no-MRU close should activate the right neighbor");
+})();
+
+(() => {
+  // Bulk close of a connection also consults the MRU for the next active tab.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [
+      createSession("a1", "c1", "connected"),
+      createSession("b1", "c2", "connected"),
+      createSession("b2", "c2", "connected"),
+      createSession("z1", "c3", "connected")
+    ]
+  });
+  useWorkspaceStore.getState().setActiveSession("b1");
+  useWorkspaceStore.getState().setActiveSession("a1");
+  useWorkspaceStore.getState().setActiveSession("b2");
+  useWorkspaceStore.getState().removeSessionsByConnection("c2");
+  const state = useWorkspaceStore.getState();
+  assertEqual(state.activeSessionId, "a1", "bulk close should land on the MRU survivor");
 })();

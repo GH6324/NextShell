@@ -15,8 +15,18 @@
   background: color-mix(in srgb, #0d1822 calc(var(--app-background-opacity, 60) * 1%), transparent);
 }
 
+/* 溢出时给一条纤细但可见的滚动条:几十个标签时,完全隐藏会让折叠区不可达 */
 .session-tabs::-webkit-scrollbar {
-  display: none;
+  height: 3px;
+}
+
+.session-tabs::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 2px;
+}
+
+.session-tabs:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .session-tab {
@@ -76,6 +86,44 @@
 }
 .status-pill.disconnected {
   background: #3d4f63;
+}
+
+/* 标签条尾部的监视网格开关 */
+.session-tabs-grid-btn {
+  margin-left: auto;
+  /* 标签溢出滚动时钉在可视区右端,不随内容滚走 */
+  position: sticky;
+  right: 0;
+  background: #0d1822;
+  align-self: center;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  color: #576070;
+  cursor: pointer;
+}
+
+.session-tabs-grid-btn:hover {
+  color: #9ba8be;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.session-tabs-grid-btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* 每连接稳定标识色:同主机的多个标签共享一个色点 */
+.tab-connection-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .session-title {

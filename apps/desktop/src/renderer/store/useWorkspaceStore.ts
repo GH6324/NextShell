@@ -131,6 +131,8 @@ interface WorkspaceState {
   networkSnapshots: Record<string, NetworkSnapshot>;
   networkRateHistory: Record<string, NetworkPoint[]>;
   lastActiveRemoteTerminalByConnection: Record<string, string | undefined>;
+  /** 会话激活历史,最近使用在前。Ctrl+Tab 切换与关闭标签后的落点都用它。 */
+  sessionMruIds: string[];
   bottomTab: BottomTab;
   setConnections: (connections: ConnectionProfile[]) => void;
   setSshKeys: (keys: SshKeyProfile[]) => void;
@@ -154,6 +156,34 @@ interface WorkspaceState {
   clearNetworkRateHistory: (connectionId: string) => void;
   setBottomTab: (tab: BottomTab) => void;
 }
+
+const MAX_MRU_ENTRIES = 128;
+
+const promoteMru = (mruIds: string[], sessionId: string): string[] =>
+  [sessionId, ...mruIds.filter((id) => id !== sessionId)].slice(0, MAX_MRU_ENTRIES);
+
+const pruneMru = (mruIds: string[], removedIds: ReadonlySet<string>): string[] =>
+  mruIds.filter((id) => !removedIds.has(id));
+
+/**
+ * 关闭标签后的落点：优先回到最近用过的仍存活的标签(视线不跳),
+ * 其次是被关标签原位置右侧的邻居,最后才是末尾标签。
+ */
+export const pickNextActiveSessionId = (
+  remainingSessions: readonly SessionDescriptor[],
+  removedIndex: number,
+  mruIds: readonly string[]
+): string | undefined => {
+  const alive = new Set(remainingSessions.map((session) => session.id));
+  for (const id of mruIds) {
+    if (alive.has(id)) {
+      return id;
+    }
+  }
+  const neighbor =
+    remainingSessions[Math.min(Math.max(removedIndex, 0), remainingSessions.length - 1)];
+  return neighbor?.id;
+};
 
 const omitLastActiveTerminalForSession = (
   lastActiveRemoteTerminalByConnection: Record<string, string | undefined>,
@@ -187,6 +217,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   networkSnapshots: {},
   networkRateHistory: {},
   lastActiveRemoteTerminalByConnection: {},
+  sessionMruIds: [],
   setConnections: (connections) => set({ connections }),
   setSshKeys: (sshKeys) => set({ sshKeys }),
   setProxies: (proxies) => set({ proxies }),
@@ -227,9 +258,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   removeSession: (sessionId) =>
     set((state) => {
       const target = state.sessions.find((session) => session.id === sessionId);
+      const removedIndex = state.sessions.findIndex((session) => session.id === sessionId);
       const sessions = state.sessions.filter((session) => session.id !== sessionId);
+      const sessionMruIds = pruneMru(state.sessionMruIds, new Set([sessionId]));
       const candidateActiveSessionId =
-        state.activeSessionId === sessionId ? sessions.at(-1)?.id : state.activeSessionId;
+        state.activeSessionId === sessionId
+          ? pickNextActiveSessionId(sessions, removedIndex, sessionMruIds)
+          : state.activeSessionId;
       const nextActiveSession = candidateActiveSessionId
         ? sessions.find((session) => session.id === candidateActiveSessionId)
         : undefined;
@@ -247,6 +282,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
       return {
         sessions,
+        sessionMruIds,
         activeSessionId: nextActiveSession?.id,
         activeConnectionId: nextActiveConnectionId,
         processSnapshots,
@@ -263,12 +299,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         (session) => session.connectionId === connectionId
       );
       const sessions = state.sessions.filter((session) => session.connectionId !== connectionId);
+      const sessionMruIds = pruneMru(
+        state.sessionMruIds,
+        new Set(removedSessions.map((session) => session.id))
+      );
       const hasCurrentActiveSession = Boolean(
         state.activeSessionId && sessions.some((session) => session.id === state.activeSessionId)
       );
       const candidateActiveSessionId = hasCurrentActiveSession
         ? state.activeSessionId
-        : sessions.at(-1)?.id;
+        : pickNextActiveSessionId(sessions, sessions.length - 1, sessionMruIds);
       const nextActiveSession = candidateActiveSessionId
         ? sessions.find((session) => session.id === candidateActiveSessionId)
         : undefined;
@@ -300,6 +340,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
       return {
         sessions,
+        sessionMruIds,
         activeSessionId: nextActiveSession?.id,
         activeConnectionId: nextActiveConnectionId,
         processSnapshots,
@@ -350,6 +391,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
       return {
         activeSessionId,
+        sessionMruIds: promoteMru(state.sessionMruIds, activeSessionId),
         activeConnectionId: isLocalSession(activeSession)
           ? state.activeConnectionId
           : getSessionConnectionId(activeSession),

@@ -303,19 +303,25 @@ export function useSessionLifecycle() {
   }, [setSessionStatus]);
 
   const startSession = useCallback(
-    async (connectionId: string): Promise<SessionDescriptor | undefined> => {
+    async (
+      connectionId: string,
+      options?: { forceNewTab?: boolean }
+    ): Promise<SessionDescriptor | undefined> => {
       // Opening several tabs on one server is a supported workflow, so calls are
       // de-duplicated by the freshly minted session id rather than by
       // connection. The one exception is a repeat that lands within a
       // double-click of the previous one: that is one intent, and letting it
       // through costs a second tab plus a second SSH channel on the same host.
+      // An explicit "duplicate session" action is always a new tab.
       const startedAt = Date.now();
-      const coalesced = resolveCoalescedStart(
-        recentStartByConnectionRef.current.get(connectionId),
-        startedAt
-      );
-      if (coalesced) {
-        return coalesced;
+      if (!options?.forceNewTab) {
+        const coalesced = resolveCoalescedStart(
+          recentStartByConnectionRef.current.get(connectionId),
+          startedAt
+        );
+        if (coalesced) {
+          return coalesced;
+        }
       }
 
       const sessionId = crypto.randomUUID();

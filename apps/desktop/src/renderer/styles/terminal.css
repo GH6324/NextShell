@@ -7,6 +7,8 @@
   flex-direction: column;
   background: #0b1829;
   overflow: hidden;
+  /* 监视网格以 absolute 覆盖在标签条以下的区域 */
+  position: relative;
 }
 
 .app-shell--with-wallpaper .terminal-shell {

@@ -698,6 +698,24 @@ export const App = () => {
     [startSession]
   );
 
+  // 「再开一个终端」：同一主机新开一个标签,绕过双击合并器。
+  const handleDuplicateSession = useCallback(
+    (sessionId: string) => {
+      const session = useWorkspaceStore.getState().sessions.find((item) => item.id === sessionId);
+      if (!session || session.type !== "terminal") {
+        return;
+      }
+      if (session.target === "local") {
+        void startLocalSession();
+        return;
+      }
+      if (session.connectionId) {
+        void startSession(session.connectionId, { forceNewTab: true });
+      }
+    },
+    [startLocalSession, startSession]
+  );
+
   const handleRetryTransfer = useCallback(
     (taskId: string) => {
       void handleRetryTransferTask(taskId);
@@ -791,6 +809,7 @@ export const App = () => {
           onTitlebarQuickCreateConnection={handleTitlebarQuickCreateConnection}
           onCloseSession={handleCloseSession}
           onReconnectSession={handleReconnectSession}
+          onDuplicateSession={handleDuplicateSession}
           onRenameSession={handleRenameSession}
           onOpenProcessManager={handleOpenProcessManager}
           onOpenNetworkMonitor={handleOpenNetworkMonitor}

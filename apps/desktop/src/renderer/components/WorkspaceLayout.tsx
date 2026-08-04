@@ -12,7 +12,11 @@ import {
 import { App as AntdApp, Tabs } from "antd";
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { sessionStatusLabel } from "../utils/sessionStatus";
-import { isOscTitleEligibleStatus, resolveSessionBaseTitle } from "../utils/sessionTitle";
+import {
+  applySessionIndexSuffix,
+  isOscTitleEligibleStatus,
+  resolveSessionBaseTitle
+} from "../utils/sessionTitle";
 import type {
   ConnectionProfile,
   SessionDescriptor,
@@ -32,10 +36,14 @@ import { PingCard } from "./PingCard";
 import { SystemInfoPanel } from "./SystemInfoPanel";
 import { SystemStaticInfoPane } from "./SystemStaticInfoPane";
 import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
+import { SessionPreviewGrid } from "./SessionPreviewGrid";
 import { TransferQueuePanel } from "./TransferQueuePanel";
 import { AgentActivityPanel } from "./AgentActivityPanel";
 import { TraceroutePane } from "./TraceroutePane";
 import { useCommandHistory } from "../hooks/useCommandHistory";
+import { useSessionTabShortcuts } from "../hooks/useSessionTabShortcuts";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
+import { connectionColor } from "../utils/connectionColor";
 import { recordSentCommand } from "../hooks/commandHistoryBus";
 import { useAgentActivityStore } from "../store/useAgentActivityStore";
 import { useEditorTabStore } from "../store/useEditorTabStore";
@@ -140,7 +148,11 @@ const AgentControlBadge = ({ sessionId }: { sessionId: string }) => {
 const SessionTabTitle = ({ session }: { session: SessionDescriptor }) => {
   const oscTitle = useSessionOscStore((state) => state.titleBySession[session.id]);
 
-  const title = oscTitle && isOscTitleEligibleStatus(session.status) ? oscTitle : session.title;
+  // OSC 标题接管时保留存储标题上的 (n) 序号,同主机多标签不至于变成同名
+  const title =
+    oscTitle && isOscTitleEligibleStatus(session.status)
+      ? applySessionIndexSuffix(oscTitle, session.title)
+      : session.title;
 
   return <span className="session-title">{title}</span>;
 };
@@ -151,7 +163,10 @@ const SessionTabContextMenu = ({
   displayTitle,
   onClose,
   onOpenManager,
-  onRename
+  onRename,
+  onDuplicate,
+  onReconnect,
+  onCloseTab
 }: {
   state: SessionTabContextMenuState;
   session: SessionDescriptor;
@@ -159,6 +174,9 @@ const SessionTabContextMenu = ({
   onClose: () => void;
   onOpenManager: () => void;
   onRename: (session: SessionDescriptor) => void;
+  onDuplicate: (session: SessionDescriptor) => void;
+  onReconnect: (session: SessionDescriptor) => void;
+  onCloseTab: (session: SessionDescriptor) => void;
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number }>({
@@ -249,6 +267,44 @@ const SessionTabContextMenu = ({
         </span>
         重命名当前标签
       </button>
+      <button
+        className="session-tab-menu-item"
+        onClick={() => {
+          onDuplicate(session);
+          onClose();
+        }}
+      >
+        <span className="session-tab-menu-icon">
+          <i className="ri-add-box-line" aria-hidden="true" />
+        </span>
+        再开一个终端
+      </button>
+      {session.status === "disconnected" || session.status === "failed" ? (
+        <button
+          className="session-tab-menu-item"
+          onClick={() => {
+            onReconnect(session);
+            onClose();
+          }}
+        >
+          <span className="session-tab-menu-icon">
+            <i className="ri-refresh-line" aria-hidden="true" />
+          </span>
+          重新连接
+        </button>
+      ) : null}
+      <button
+        className="session-tab-menu-item"
+        onClick={() => {
+          onCloseTab(session);
+          onClose();
+        }}
+      >
+        <span className="session-tab-menu-icon">
+          <i className="ri-close-line" aria-hidden="true" />
+        </span>
+        关闭标签
+      </button>
       <div className="session-tab-menu-hint" title={displayTitle}>
         {displayTitle}
       </div>
@@ -283,6 +339,7 @@ interface WorkspaceLayoutProps {
   onTitlebarQuickCreateConnection: (input: QuickCreateConnectionInput) => Promise<boolean>;
   onCloseSession: (sessionId: string) => void;
   onReconnectSession: (sessionId: string) => void;
+  onDuplicateSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, title: string) => void;
   onOpenProcessManager: (connectionId: string) => void;
   onOpenNetworkMonitor: (connectionId: string) => void;
@@ -332,6 +389,7 @@ const WorkspaceLayoutComponent = ({
   onTitlebarQuickCreateConnection,
   onCloseSession,
   onReconnectSession,
+  onDuplicateSession,
   onRenameSession,
   onOpenProcessManager,
   onOpenNetworkMonitor,
@@ -505,6 +563,29 @@ const WorkspaceLayoutComponent = ({
 
   const sessionTabElementsRef = useRef(new Map<string, HTMLDivElement>());
 
+  const connectionById = useMemo(
+    () => new Map(connections.map((connection) => [connection.id, connection])),
+    [connections]
+  );
+
+  // 监视网格:同屏只读并排最近使用的至多 4 个终端会话
+  const [previewGridOpen, setPreviewGridOpen] = useState(false);
+  const sessionMruIds = useWorkspaceStore((state) => state.sessionMruIds);
+  const previewSessions = useMemo(() => {
+    if (!previewGridOpen) {
+      return [];
+    }
+    const rank = new Map(sessionMruIds.map((id, index) => [id, index]));
+    return sessions
+      .filter((session) => isTerminalSession(session))
+      .sort(
+        (a, b) =>
+          (rank.get(a.id) ?? Number.POSITIVE_INFINITY) -
+          (rank.get(b.id) ?? Number.POSITIVE_INFINITY)
+      )
+      .slice(0, 4);
+  }, [previewGridOpen, sessionMruIds, sessions]);
+
   const activateSessionTab = useCallback(
     (session: SessionDescriptor) => {
       setSessionContextMenu(null);
@@ -526,6 +607,44 @@ const WorkspaceLayoutComponent = ({
     },
     [onCloseMonitorTab, onCloseSession]
   );
+
+  // 全局标签快捷键。getter 走 store 的 getState,监听器不随 props 重建。
+  useSessionTabShortcuts({
+    getSessionIds: useCallback(
+      () => useWorkspaceStore.getState().sessions.map((session) => session.id),
+      []
+    ),
+    getMruSessionIds: useCallback(() => {
+      const { sessions: storeSessions, sessionMruIds } = useWorkspaceStore.getState();
+      const alive = new Set(storeSessions.map((session) => session.id));
+      return sessionMruIds.filter((id) => alive.has(id));
+    }, []),
+    getActiveSessionId: useCallback(() => useWorkspaceStore.getState().activeSessionId, []),
+    activateSession: useCallback(
+      (sessionId: string) => {
+        const session = useWorkspaceStore
+          .getState()
+          .sessions.find((item) => item.id === sessionId);
+        if (session) {
+          activateSessionTab(session);
+        }
+      },
+      [activateSessionTab]
+    ),
+    closeActiveSession: useCallback(() => {
+      const { sessions: storeSessions, activeSessionId: activeId } = useWorkspaceStore.getState();
+      const session = storeSessions.find((item) => item.id === activeId);
+      if (session) {
+        closeSessionTab(session);
+      }
+    }, [closeSessionTab]),
+    duplicateActiveSession: useCallback(() => {
+      const activeId = useWorkspaceStore.getState().activeSessionId;
+      if (activeId) {
+        onDuplicateSession(activeId);
+      }
+    }, [onDuplicateSession])
+  });
 
   // roving tabindex:方向键/Home/End 移动焦点并切换激活标签;仅在标签上获得焦点时触发,不影响终端按键
   const handleSessionTabKeyDown = useCallback(
@@ -915,6 +1034,18 @@ const WorkspaceLayoutComponent = ({
                   {sessions.map((session) => {
                     const isTerminal = isTerminalSession(session);
                     const iconClass = SESSION_TYPE_ICON[session.type ?? "terminal"];
+                    const sessionConnection = session.connectionId
+                      ? connectionById.get(session.connectionId)
+                      : undefined;
+                    const tabTooltip = sessionConnection
+                      ? `${
+                          sessionConnection.username.trim()
+                            ? `${sessionConnection.username}@`
+                            : ""
+                        }${sessionConnection.host}:${sessionConnection.port}`
+                      : session.target === "local"
+                        ? "本地终端"
+                        : undefined;
                     return (
                       <div
                         key={session.id}
@@ -951,7 +1082,15 @@ const WorkspaceLayoutComponent = ({
                           onReorderSession(draggingSessionId, session.id);
                           setDraggingSessionId(undefined);
                         }}
+                        title={tabTooltip}
                       >
+                        {session.connectionId ? (
+                          <span
+                            className="tab-connection-dot"
+                            style={{ background: connectionColor(session.connectionId) }}
+                            aria-hidden="true"
+                          />
+                        ) : null}
                         <i className={`tab-type-icon ${iconClass}`} aria-hidden="true" />
                         <SessionTabTitle session={session} />
                         <AgentControlBadge sessionId={session.id} />
@@ -986,7 +1125,33 @@ const WorkspaceLayoutComponent = ({
                       </div>
                     );
                   })}
+                  {sessions.some((session) => isTerminalSession(session)) ? (
+                    <button
+                      type="button"
+                      className={`session-tabs-grid-btn${previewGridOpen ? " active" : ""}`}
+                      title="监视网格：同屏预览最近的多个会话"
+                      aria-label="监视网格"
+                      aria-pressed={previewGridOpen}
+                      onClick={() => setPreviewGridOpen((open) => !open)}
+                    >
+                      <i className="ri-layout-grid-line" aria-hidden="true" />
+                    </button>
+                  ) : null}
                 </div>
+                {previewGridOpen ? (
+                  <SessionPreviewGrid
+                    sessions={previewSessions}
+                    activeSessionId={activeSessionId}
+                    onActivateSession={(sessionId) => {
+                      const session = sessions.find((item) => item.id === sessionId);
+                      if (session) {
+                        activateSessionTab(session);
+                      }
+                      setPreviewGridOpen(false);
+                    }}
+                    onClose={() => setPreviewGridOpen(false)}
+                  />
+                ) : null}
                 {sessionContextMenu && contextMenuSession ? (
                   <SessionTabContextMenu
                     state={sessionContextMenu}
@@ -997,6 +1162,9 @@ const WorkspaceLayoutComponent = ({
                     onRename={(session) => {
                       void handlePromptRenameSession(session);
                     }}
+                    onDuplicate={(session) => onDuplicateSession(session.id)}
+                    onReconnect={(session) => void onReconnectSession(session.id)}
+                    onCloseTab={closeSessionTab}
                   />
                 ) : null}
                 <div

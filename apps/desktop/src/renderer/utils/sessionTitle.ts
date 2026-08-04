@@ -68,3 +68,18 @@ export const formatSessionTitle = (baseTitle: string, index: number): string => 
 
   return `${normalizedBaseTitle} (${normalizedIndex})`;
 };
+
+/**
+ * OSC 标题会把同主机多标签变成一模一样的字符串(如 `user@host:~`),
+ * 把存储标题上的 ` (n)` 序号搬过来,保住"第几个标签"的辨识度。
+ */
+export const applySessionIndexSuffix = (displayTitle: string, storedTitle: string): string => {
+  const suffixMatch = / \((\d+)\)$/.exec(storedTitle);
+  if (!suffixMatch) {
+    return displayTitle;
+  }
+  if (displayTitle.endsWith(suffixMatch[0])) {
+    return displayTitle;
+  }
+  return `${displayTitle} (${suffixMatch[1]})`;
+};

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  applySessionIndexSuffix,
   claimNextSessionIndex,
   formatSessionTitle,
   isOscTitleEligibleStatus,
@@ -85,5 +86,16 @@ describe("claimNextSessionIndex / formatSessionTitle", () => {
     expect(first).toBe("prod-web");
     expect(second).toBe("prod-web (2)");
     expect(first).not.toBe(second);
+  });
+});
+
+describe("applySessionIndexSuffix", () => {
+  test("carries the stored (n) suffix onto an OSC title", () => {
+    expect(applySessionIndexSuffix("user@host:~", "prod-web (3)")).toBe("user@host:~ (3)");
+  });
+
+  test("leaves titles alone when there is no suffix or it is already present", () => {
+    expect(applySessionIndexSuffix("user@host:~", "prod-web")).toBe("user@host:~");
+    expect(applySessionIndexSuffix("vim main.go (2)", "prod-web (2)")).toBe("vim main.go (2)");
   });
 });

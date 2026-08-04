@@ -42,6 +42,8 @@ import {
 import { installOscRuntime, type OscRuntimeHandle } from "../terminal/oscRuntime";
 import { installParserHandlerGuards } from "../terminal/parserGuards";
 import { openExternalLink } from "../terminal/osc/linkOpening";
+import { clampScrollLinesFromBottom, shouldDeferReplay } from "./TerminalPane.switching";
+import { setSessionBacklogProvider } from "../terminal/sessionBacklogProvider";
 
 type LocalAwareSessionDescriptor = SessionDescriptor & {
   target?: "remote" | "local";
@@ -110,6 +112,18 @@ const MAX_PENDING_SESSION_BYTES = 256 * 1024;
  */
 const ACK_FLUSH_THRESHOLD_BYTES = 128 * 1024;
 const ACK_FLUSH_INTERVAL_MS = 50;
+
+/**
+ * Holding Ctrl+Tab walks through every tab on the way to the one the user
+ * actually wants, and each stop currently re-parses that session's whole
+ * backlog (up to 2MB) into the single shared xterm. Two switches closer
+ * together than the window mean the cycling is still in progress, so the replay
+ * waits out the short delay and only the tab the user lands on pays for a
+ * parse. A first or isolated switch is never delayed — it replays synchronously
+ * exactly as before.
+ */
+const RAPID_SWITCH_WINDOW_MS = 150;
+const RAPID_SWITCH_REPLAY_DELAY_MS = 60;
 
 interface SessionAckAccumulator {
   /** Delta of consumed bytes since the last flushed ack. */
@@ -288,6 +302,18 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
     const sessionStatusBySessionRef = useRef<Map<string, SessionDescriptor["status"]>>(new Map());
     const reconnectPendingSessionIdsRef = useRef<Set<string>>(new Set());
     const ackAccumulatorBySessionRef = useRef<Map<string, SessionAckAccumulator>>(new Map());
+    /**
+     * Per-session viewport position, kept as "lines above the bottom" rather
+     * than an absolute row: the replayed buffer is a different height than the
+     * one the user scrolled in (output kept arriving while the tab was
+     * inactive, and the byte cap drops old lines), so the distance from the
+     * bottom is the only offset that survives a replay. 0 means pinned to the
+     * bottom, which is also the state of every session that was never scrolled.
+     */
+    const scrollLinesFromBottomBySessionRef = useRef<Map<string, number>>(new Map());
+    /** Timestamp of the last active-session change, for rapid-cycling detection. */
+    const lastSessionSwitchAtRef = useRef<number | undefined>(undefined);
+    const deferredReplayTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
     const ctxMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -408,6 +434,16 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         MAX_BUFFERED_SESSION_COUNT,
         sessionIdRef.current ? [sessionIdRef.current] : []
       );
+    }, []);
+
+    // 把会话缓冲以只读方式暴露给监视网格等旁观者(模块级注册表,
+    // 不经过 React 状态)。组件卸载时撤销,避免悬挂引用。
+    useEffect(() => {
+      setSessionBacklogProvider((targetSessionId) => {
+        const buffer = bufferBySessionRef.current.get(targetSessionId);
+        return buffer ? toReplayChunks(buffer).join("") : undefined;
+      });
+      return () => setSessionBacklogProvider(undefined);
     }, []);
 
     /** Park output for a session this component has not been told about yet. */
@@ -610,6 +646,53 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       });
     }, [runLatestScreenChange]);
 
+    /**
+     * Snapshot where the outgoing session was looking, so switching back does
+     * not dump the user at the bottom of the stream they had scrolled away
+     * from.
+     */
+    const rememberSessionScroll = useCallback((targetSessionId: string) => {
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        return;
+      }
+
+      const buffer = terminal.buffer.active;
+      const linesFromBottom = Math.max(0, buffer.baseY - buffer.viewportY);
+      setBoundedSessionMapEntry(
+        scrollLinesFromBottomBySessionRef.current,
+        targetSessionId,
+        linesFromBottom,
+        MAX_BUFFERED_SESSION_COUNT,
+        [targetSessionId]
+      );
+    }, []);
+
+    /**
+     * Runs once the replayed backlog has been parsed, so the buffer it scrolls
+     * in is the finished one. `requestId` is the replay this restore belongs
+     * to: a newer switch bumps `replayRequestIdRef`, and scrolling then would
+     * move a screen that now belongs to a different session.
+     */
+    const restoreSessionScroll = useCallback((targetSessionId: string, requestId: number) => {
+      const terminal = terminalRef.current;
+      if (!terminal || replayRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      const stored = scrollLinesFromBottomBySessionRef.current.get(targetSessionId);
+      if (!stored) {
+        return;
+      }
+
+      const lines = clampScrollLinesFromBottom(stored, terminal.buffer.active.baseY);
+      if (lines <= 0) {
+        return;
+      }
+
+      terminal.scrollLines(-lines);
+    }, []);
+
     const replaySessionOutput = useCallback(
       (targetSessionId: string) => {
         if (!terminalRef.current) {
@@ -617,6 +700,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         }
 
         runLatestScreenChange(() => {
+          // Read inside the guarded body: `runLatestScreenChange` only calls it
+          // while this replay is still the newest one, so the current value is
+          // this replay's own id.
+          const requestId = replayRequestIdRef.current;
           terminalRef.current?.reset();
 
           // Fired before the early returns: reset() already invalidated every
@@ -647,10 +734,15 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
           // the write as a replay for this session keeps them silent and, when
           // rapid tab switches leave two replays queued at once, keeps each
           // one's sequences credited to its own session.
-          writeSessionText(targetSessionId, replay, { replay: true });
+          writeSessionText(targetSessionId, replay, {
+            replay: true,
+            onParsed: () => {
+              restoreSessionScroll(targetSessionId, requestId);
+            }
+          });
         });
       },
-      [runLatestScreenChange, writeSessionText]
+      [restoreSessionScroll, runLatestScreenChange, writeSessionText]
     );
 
     const findNext = useCallback(() => {
@@ -824,7 +916,8 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         sessionStatusBySessionRef.current,
         terminalQueryReplyStateBySessionRef.current,
         terminalQuerySuppressionCountBySessionRef.current,
-        reconnectPendingSessionIdsRef.current
+        reconnectPendingSessionIdsRef.current,
+        scrollLinesFromBottomBySessionRef.current
       ]);
 
       // Deliberately after the retain pass and deliberately not part of it: the
@@ -1310,8 +1403,24 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
         if (previousSessionId) {
           // Don't leave the outgoing session's delta to the batching timer:
           // its stream keeps flowing in the background and the dispatcher's
-          // window should reopen promptly.
+          // window should reopen promptly. Unconditional, including while a
+          // deferred replay is pending — acks must never wait on the debounce.
           flushSessionAck(previousSessionId);
+          rememberSessionScroll(previousSessionId);
+        }
+
+        const switchedAt = Date.now();
+        const deferReplay = shouldDeferReplay(
+          lastSessionSwitchAtRef.current,
+          switchedAt,
+          RAPID_SWITCH_WINDOW_MS
+        );
+        lastSessionSwitchAtRef.current = switchedAt;
+
+        // Whatever was scheduled belongs to a tab the user has already left.
+        if (deferredReplayTimerRef.current !== undefined) {
+          clearTimeout(deferredReplayTimerRef.current);
+          deferredReplayTimerRef.current = undefined;
         }
 
         if (!currentSessionId) {
@@ -1331,7 +1440,20 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
             }
           }
 
-          replaySessionOutput(currentSessionId);
+          if (deferReplay) {
+            deferredReplayTimerRef.current = setTimeout(() => {
+              deferredReplayTimerRef.current = undefined;
+              // Re-read the active session at fire time: the effect's captured
+              // id may be a tab the cycling has already passed through.
+              const landedSessionId = sessionIdRef.current;
+              if (!landedSessionId || landedSessionId !== currentSessionId) {
+                return;
+              }
+              replaySessionOutput(landedSessionId);
+            }, RAPID_SWITCH_REPLAY_DELAY_MS);
+          } else {
+            replaySessionOutput(currentSessionId);
+          }
         }
       }
 
@@ -1381,9 +1503,21 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(
       clearTerminalScreen,
       connection,
       flushSessionAck,
+      rememberSessionScroll,
       replaySessionOutput,
       session
     ]);
+
+    // A deferred replay outliving the component would fire into a disposed
+    // terminal (and keep the timer alive on its own).
+    useEffect(() => {
+      return () => {
+        if (deferredReplayTimerRef.current !== undefined) {
+          clearTimeout(deferredReplayTimerRef.current);
+          deferredReplayTimerRef.current = undefined;
+        }
+      };
+    }, []);
 
     const prevSessionStatusRef = useRef<string | undefined>(undefined);
     useEffect(() => {

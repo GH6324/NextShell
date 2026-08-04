@@ -7,6 +7,8 @@ import {
   isQuickConnectShortcut,
   shouldIgnoreQuickConnectShortcutTarget
 } from "../utils/quickConnectShortcut";
+import { buildQuickConnectSessionResults, type SessionResultItem } from "../utils/quickConnectSessions";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 interface QuickConnectBarProps {
   connections: ConnectionProfile[];
@@ -35,6 +37,7 @@ interface QuickCreateFormValues {
 type DisplayItem =
   | { type: "create-action"; id: "create-action" }
   | { type: "quick-input-action"; id: "quick-input-action" }
+  | { type: "session"; item: SessionResultItem }
   | { type: "connection"; item: ResultItem };
 
 const MAX_RECENT = 6;
@@ -64,6 +67,11 @@ export const QuickConnectBar = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const isPlusPrefixed = keyword.trimStart().startsWith("+");
   const shortcutLabel = getQuickConnectShortcutLabel(window.nextshell.platform);
+
+  const openSessions = useWorkspaceStore((state) => state.sessions);
+  const sessionMruIds = useWorkspaceStore((state) => state.sessionMruIds);
+  const activeSessionId = useWorkspaceStore((state) => state.activeSessionId);
+  const setActiveSession = useWorkspaceStore((state) => state.setActiveSession);
 
   const connectedIds = useMemo(
     () =>
@@ -98,6 +106,17 @@ export const QuickConnectBar = ({
       .map((c) => ({ connection: c, isConnected: connectedIds.has(c.id) }));
   }, [keyword, connections, connectedIds, recentConnections]);
 
+  const sessionResults = useMemo<SessionResultItem[]>(() => {
+    if (isPlusPrefixed) return [];
+    return buildQuickConnectSessionResults({
+      sessions: openSessions,
+      sessionMruIds,
+      activeSessionId,
+      connections,
+      keyword
+    });
+  }, [activeSessionId, connections, isPlusPrefixed, keyword, openSessions, sessionMruIds]);
+
   const displayItems = useMemo<DisplayItem[]>(() => {
     if (quickInputMode) {
       return [];
@@ -107,21 +126,30 @@ export const QuickConnectBar = ({
       return [{ type: "quick-input-action", id: "quick-input-action" }];
     }
 
+    const sessionItems: DisplayItem[] = sessionResults.map((item) => ({
+      type: "session",
+      item
+    }));
+
     if (keyword.trim()) {
-      return filteredResults.map((item) => ({
-        type: "connection",
-        item
-      }));
+      return [
+        ...sessionItems,
+        ...filteredResults.map((item) => ({
+          type: "connection" as const,
+          item
+        }))
+      ];
     }
 
     return [
+      ...sessionItems,
       { type: "create-action", id: "create-action" },
       ...filteredResults.map((item) => ({
         type: "connection" as const,
         item
       }))
     ];
-  }, [filteredResults, isPlusPrefixed, keyword, quickInputMode]);
+  }, [filteredResults, isPlusPrefixed, keyword, quickInputMode, sessionResults]);
 
   const focusInput = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -150,6 +178,14 @@ export const QuickConnectBar = ({
       handleClose();
     },
     [handleClose, onConnect]
+  );
+
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      setActiveSession(sessionId);
+      handleClose();
+    },
+    [handleClose, setActiveSession]
   );
 
   const handleOpenQuickCreateDialog = useCallback(() => {
@@ -275,6 +311,10 @@ export const QuickConnectBar = ({
           handleOpenQuickInputMode();
           return;
         }
+        if (item?.type === "session") {
+          handleSelectSession(item.item.session.id);
+          return;
+        }
         if (item?.type === "connection") {
           handleSelect(item.item.connection.id);
           return;
@@ -307,6 +347,7 @@ export const QuickConnectBar = ({
       handleOpenQuickCreateDialog,
       handleOpenQuickInputMode,
       handleSelect,
+      handleSelectSession,
       keyword,
       onQuickConnectInput,
       open,
@@ -329,6 +370,8 @@ export const QuickConnectBar = ({
 
   const sectionLabel = keyword.trim() ? `${filteredResults.length} 个结果` : "最近连接";
   const firstConnectionIndex = displayItems.findIndex((item) => item.type === "connection");
+  const firstSessionIndex = displayItems.findIndex((item) => item.type === "session");
+  const sessionSectionLabel = keyword.trim() ? `${sessionResults.length} 个打开的会话` : "切换到";
   const inputPlaceholder = quickInputMode
     ? "输入 username@host[:port] 后按 Enter 连接…"
     : "快速连接服务器…";
@@ -382,7 +425,10 @@ export const QuickConnectBar = ({
                 <span>Esc 关闭</span>
               </div>
             </>
-          ) : keyword.trim() && filteredResults.length === 0 && !isPlusPrefixed ? (
+          ) : keyword.trim() &&
+            filteredResults.length === 0 &&
+            sessionResults.length === 0 &&
+            !isPlusPrefixed ? (
             <div className="qcb-empty">
               <i className="ri-server-line" aria-hidden="true" />
               <span>未找到匹配的服务器</span>
@@ -409,6 +455,30 @@ export const QuickConnectBar = ({
                       onMouseEnter={() => setActiveIndex(idx)}
                     />
                   );
+                }
+
+                if (item.type === "session") {
+                  const sessionNode = (
+                    <QuickConnectSessionItem
+                      key={item.item.session.id}
+                      item={item.item}
+                      isActive={idx === activeIndex}
+                      keyword={keyword}
+                      onSelect={() => handleSelectSession(item.item.session.id)}
+                      onMouseEnter={() => setActiveIndex(idx)}
+                    />
+                  );
+
+                  if (idx === firstSessionIndex) {
+                    return (
+                      <div key={`session-section-${item.item.session.id}`}>
+                        <div className="qcb-section-label">{sessionSectionLabel}</div>
+                        {sessionNode}
+                      </div>
+                    );
+                  }
+
+                  return sessionNode;
                 }
 
                 const node = (
@@ -627,6 +697,53 @@ const QuickConnectItem = ({
       </span>
       <span className="qcb-item-action" title="新建终端连接" aria-label="新建终端连接">
         <i className="ri-terminal-box-line" aria-hidden="true" />
+      </span>
+    </button>
+  );
+};
+
+interface QuickConnectSessionItemProps {
+  item: SessionResultItem;
+  isActive: boolean;
+  keyword: string;
+  onSelect: () => void;
+  onMouseEnter: () => void;
+}
+
+const QuickConnectSessionItem = ({
+  item,
+  isActive,
+  keyword,
+  onSelect,
+  onMouseEnter
+}: QuickConnectSessionItemProps) => {
+  const { session, connection } = item;
+  const isDisconnected = session.status === "disconnected" || session.status === "failed";
+  const suffix = connection ? `${connection.username}@${connection.host}` : null;
+
+  return (
+    <button
+      type="button"
+      className={`qcb-item${isActive ? " active" : ""}`}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onSelect}
+      onMouseEnter={onMouseEnter}
+      style={isDisconnected ? { opacity: 0.6 } : undefined}
+    >
+      <span className="qcb-dot-quick-input">
+        <i className="ri-window-2-line" aria-hidden="true" />
+      </span>
+      <span className="qcb-item-body">
+        <span className="qcb-item-name">{highlight(session.title, keyword)}</span>
+        {suffix && <span className="qcb-item-group">{highlight(suffix, keyword)}</span>}
+      </span>
+      {isDisconnected && (
+        <span className="qcb-item-host" style={{ color: "var(--t3)" }}>
+          已断开
+        </span>
+      )}
+      <span className="qcb-item-action" title="切换到该会话" aria-label="切换到该会话">
+        <i className="ri-arrow-right-line" aria-hidden="true" />
       </span>
     </button>
   );
