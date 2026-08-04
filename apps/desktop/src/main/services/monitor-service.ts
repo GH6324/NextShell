@@ -68,6 +68,25 @@ const HIDDEN_CONNECT_BACKOFF_MAX_MS = 300_000; // cap at 5 minutes
 const HIDDEN_MONITOR_TAGS = ["SystemMonitor", "ProcessMonitor", "NetworkMonitor"] as const;
 
 /**
+ * Grace period between a system monitor losing its last subscriber and the
+ * hidden SSH session actually being torn down.
+ *
+ * The sidebar monitor follows the *active connection*, so ordinary tab flipping
+ * (A → B → A within seconds) unsubscribes A and re-subscribes it right after.
+ * Stopping on the spot closed A's hidden SSH connection, and coming back had to
+ * redial, re-handshake and re-warm the probe baselines — seconds of an empty
+ * panel for a detour the user experienced as instant. Keeping the session warm
+ * for one human detour costs ~1 probe/s against a host we are still connected to
+ * anyway; anything longer is a real "left this host" and gets stopped.
+ *
+ * This is a *demand* delay only. Teardown paths (visible terminal gone,
+ * connection removed, renderer destroyed/reloaded, app shutdown, legacy
+ * connection-level stop) must never linger: they cancel a pending timer and stop
+ * immediately.
+ */
+const SYSTEM_MONITOR_LINGER_MS = 30_000;
+
+/**
  * One in-flight hidden-SSH establish attempt.
  *
  * Cancellation is bound to the attempt object instead of the connection id, so
@@ -98,6 +117,8 @@ export interface MonitorServiceOptions {
   emitSystemSnapshot: (sender: WebContents, snapshot: MonitorSnapshot) => void;
   emitProcessSnapshot: (sender: WebContents, snapshot: ProcessSnapshot) => void;
   emitNetworkSnapshot: (sender: WebContents, snapshot: NetworkSnapshot) => void;
+  /** Override for `SYSTEM_MONITOR_LINGER_MS` (tests only). */
+  systemMonitorLingerMs?: number;
 }
 
 // ─── Service ────────────────────────────────────────────────────────────────
@@ -129,6 +150,13 @@ export class MonitorService {
   // reference counted per subscriber (= renderer session id), so closing one
   // pane no longer kills the monitors of the other tabs on the same host.
   private readonly systemMonitorSubscribers = new MonitorSubscriberRegistry<WebContents>();
+  /**
+   * Connections whose system monitor lost its last subscriber and is waiting out
+   * `systemMonitorLingerMs` before the hidden SSH session is really closed. A
+   * pending entry also counts as "demand" for the controller, which is what keeps
+   * its poll loop from stopping itself while nobody is listening.
+   */
+  private readonly systemMonitorLingerTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly processMonitorSubscribers = new MonitorSubscriberRegistry<WebContents>();
   private readonly networkMonitorSubscribers = new MonitorSubscriberRegistry<WebContents>();
   /** Renderers already hooked for reload/destroy purges (see `watchSender`). */
@@ -163,6 +191,7 @@ export class MonitorService {
   private readonly emitSystemSnapshot: (sender: WebContents, snapshot: MonitorSnapshot) => void;
   private readonly emitProcessSnapshot: (sender: WebContents, snapshot: ProcessSnapshot) => void;
   private readonly emitNetworkSnapshot: (sender: WebContents, snapshot: NetworkSnapshot) => void;
+  private readonly systemMonitorLingerMs: number;
 
   constructor(options: MonitorServiceOptions) {
     this.connections = options.connections;
@@ -175,6 +204,7 @@ export class MonitorService {
     this.emitSystemSnapshot = options.emitSystemSnapshot;
     this.emitProcessSnapshot = options.emitProcessSnapshot;
     this.emitNetworkSnapshot = options.emitNetworkSnapshot;
+    this.systemMonitorLingerMs = options.systemMonitorLingerMs ?? SYSTEM_MONITOR_LINGER_MS;
   }
 
   // ─── Guard helpers ────────────────────────────────────────────────────────
@@ -233,12 +263,18 @@ export class MonitorService {
     const processIdle = this.processMonitorSubscribers.removeSender(sender);
     const networkIdle = this.networkMonitorSubscribers.removeSender(sender);
 
+    // A page that is gone can never come back to a lingering monitor, so its
+    // grace period is void: sweep those connections here too — `removeSender`
+    // cannot report them, they have had no subscribers since the switch away.
+    const systemToStop = Array.from(new Set([...systemIdle, ...this.lingeringSystemMonitorIds()]));
+
     // Each hard stop goes through the per-monitor chain, so a start racing the
     // reload is serialized against it instead of being torn down half-way.
     await Promise.all([
-      ...systemIdle.map((connectionId) =>
+      ...systemToStop.map((connectionId) =>
         this.runExclusive(`system:${connectionId}`, async () => {
           if (this.systemMonitorSubscribers.count(connectionId) > 0) return;
+          this.cancelSystemMonitorLinger(connectionId);
           await this.hardStopSystemMonitor(connectionId);
         })
       ),
@@ -296,6 +332,8 @@ export class MonitorService {
   // ─── Session ① System Monitor: dispose ──────────────────────────────────
 
   async disposeSystemMonitorRuntime(connectionId: string): Promise<void> {
+    // Teardown, not a demand change: kill the grace period with the runtime.
+    this.cancelSystemMonitorLinger(connectionId);
     this.systemMonitorSubscribers.clear(connectionId);
     const runtime = this.systemMonitorRuntimes.get(connectionId);
     if (runtime) {
@@ -361,6 +399,7 @@ export class MonitorService {
   /** Return all connection IDs that have any active monitor/adhoc state. */
   getAllConnectionIds(): string[] {
     const ids = new Set<string>();
+    for (const id of this.systemMonitorLingerTimers.keys()) ids.add(id);
     for (const id of this.systemMonitorRuntimes.keys()) ids.add(id);
     for (const id of this.systemMonitorConnections.keys()) ids.add(id);
     for (const id of this.processMonitorRuntimes.keys()) ids.add(id);
@@ -736,8 +775,7 @@ export class MonitorService {
       getConnection: () => this.ensureSystemMonitorConnection(connectionId),
       closeConnection: () => this.closeSystemMonitorConnection(connectionId),
       isVisibleTerminalAlive: () => this.hasVisibleTerminalAlive(connectionId),
-      isReceiverAlive: () =>
-        this.liveSubscriberSenders(this.systemMonitorSubscribers, connectionId).length > 0,
+      isReceiverAlive: () => this.hasSystemMonitorDemand(connectionId),
       emitSnapshot: (snapshot) => {
         for (const sender of this.liveSubscriberSenders(
           this.systemMonitorSubscribers,
@@ -1023,6 +1061,10 @@ export class MonitorService {
     this.assertVisibleTerminalAlive(connectionId);
     const id = subscriberId ?? LEGACY_MONITOR_SUBSCRIBER_ID;
     return this.runExclusive(`system:${connectionId}`, async () => {
+      // Demand is back: disarm the pending teardown before touching the runtime,
+      // so a monitor that is still RUNNING from the linger window is reused as-is
+      // (controller.start() is a no-op then — no second SSH dial).
+      this.cancelSystemMonitorLinger(connectionId);
       // Register before starting so the controller never sees "no receiver".
       this.watchSender(sender);
       this.systemMonitorSubscribers.add(connectionId, id, sender);
@@ -1031,6 +1073,7 @@ export class MonitorService {
         return await runtime.controller.start();
       } catch (error) {
         if (this.systemMonitorSubscribers.remove(connectionId, id)) {
+          this.cancelSystemMonitorLinger(connectionId);
           await this.hardStopSystemMonitor(connectionId);
         }
         throw error;
@@ -1040,23 +1083,106 @@ export class MonitorService {
 
   /**
    * @param subscriberId renderer session id. When omitted the call keeps the
-   * legacy connection-level semantics and drops every subscriber.
+   * legacy connection-level semantics and drops every subscriber — that variant
+   * is a teardown, so it never lingers.
    */
   async stopSystemMonitor(connectionId: string, subscriberId?: string): Promise<{ ok: true }> {
     return this.runExclusive(`system:${connectionId}`, async () => {
-      let idle: boolean;
-      if (subscriberId) {
-        idle = this.systemMonitorSubscribers.remove(connectionId, subscriberId);
-      } else {
+      if (!subscriberId) {
         this.systemMonitorSubscribers.clear(connectionId);
-        idle = true;
+        this.cancelSystemMonitorLinger(connectionId);
+        await this.hardStopSystemMonitor(connectionId);
+        return { ok: true } as const;
       }
+
+      const idle = this.systemMonitorSubscribers.remove(connectionId, subscriberId);
       if (!idle) {
         return { ok: true } as const;
       }
-      await this.hardStopSystemMonitor(connectionId);
+
+      // Lingering only pays off when there is a warm runtime to keep *and* the
+      // host still has a visible terminal — a re-subscribe could not start the
+      // monitor without one, so there would be nothing to come back to.
+      const runtime = this.systemMonitorRuntimes.get(connectionId);
+      if (!runtime || runtime.disposed || !this.hasVisibleTerminalAlive(connectionId)) {
+        this.cancelSystemMonitorLinger(connectionId);
+        await this.hardStopSystemMonitor(connectionId);
+        return { ok: true } as const;
+      }
+
+      this.scheduleSystemMonitorLinger(connectionId);
       return { ok: true } as const;
     });
+  }
+
+  /**
+   * Does anything still want this system monitor's snapshots?
+   *
+   * A pending linger timer counts: the controller stops itself as soon as it
+   * sees no receiver, which would close the hidden SSH connection one poll tick
+   * into the grace period and defeat the whole point. Snapshots produced while
+   * lingering are emitted to the (empty) subscriber list, i.e. dropped.
+   */
+  private hasSystemMonitorDemand(connectionId: string): boolean {
+    if (this.liveSubscriberSenders(this.systemMonitorSubscribers, connectionId).length > 0) {
+      return true;
+    }
+    return this.systemMonitorLingerTimers.has(connectionId);
+  }
+
+  /**
+   * Arm the delayed hard stop for an idle system monitor.
+   *
+   * Only the *timer* is created here (inside the caller's `runExclusive` turn);
+   * the stop itself re-enters `runExclusive("system:<id>")` when the timer fires,
+   * so it can never interleave with a start. The fire-time re-check of the
+   * subscriber count is what makes a lost cancellation race harmless: whoever
+   * subscribed meanwhile is already registered by the time our turn runs.
+   */
+  private scheduleSystemMonitorLinger(connectionId: string): void {
+    this.cancelSystemMonitorLinger(connectionId);
+
+    const timer = setTimeout(() => {
+      if (this.systemMonitorLingerTimers.get(connectionId) !== timer) {
+        return;
+      }
+      this.systemMonitorLingerTimers.delete(connectionId);
+
+      void this.runExclusive(`system:${connectionId}`, async () => {
+        // Someone came back inside the window, or a newer linger owns the
+        // connection now — either way this timer is no longer in charge.
+        if (this.systemMonitorSubscribers.count(connectionId) > 0) {
+          return;
+        }
+        if (this.systemMonitorLingerTimers.has(connectionId)) {
+          return;
+        }
+        logger.info("[SystemMonitor] linger expired, stopping idle monitor", { connectionId });
+        await this.hardStopSystemMonitor(connectionId);
+      }).catch((error) => {
+        logger.warn("[SystemMonitor] delayed idle stop failed", {
+          connectionId,
+          reason: normalizeError(error)
+        });
+      });
+    }, this.systemMonitorLingerMs);
+
+    this.systemMonitorLingerTimers.set(connectionId, timer);
+  }
+
+  /** Disarm a pending linger; every teardown path must call this. */
+  private cancelSystemMonitorLinger(connectionId: string): void {
+    const timer = this.systemMonitorLingerTimers.get(connectionId);
+    if (!timer) {
+      return;
+    }
+    clearTimeout(timer);
+    this.systemMonitorLingerTimers.delete(connectionId);
+  }
+
+  /** Connections currently waiting out their linger window (no subscribers). */
+  private lingeringSystemMonitorIds(): string[] {
+    return Array.from(this.systemMonitorLingerTimers.keys());
   }
 
   /** Really stop the controller and close the hidden SSH connection. */
