@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { App as AntdApp } from "antd";
 import type { ConnectionUpsertInput } from "@nextshell/shared";
+import { deleteExplorerCache } from "../components/FileExplorerPane/explorerStateCache";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { formatErrorMessage } from "../utils/errorMessage";
 
@@ -48,6 +49,8 @@ export function useConnectionManager() {
     const prevConnections = [...connections];
     setConnections(connections.filter((c) => c.id !== connectionId));
     removeSessionsByConnection(connectionId);
+    // 连接没了，SFTP 面板缓存的那份目录快照也别留着占内存。
+    deleteExplorerCache(connectionId);
 
     try {
       await window.nextshell.connection.remove({ id: connectionId });
