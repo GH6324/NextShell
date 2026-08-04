@@ -8,3 +8,7 @@
 docs/**
 pnpm-lock.yaml
 IPC_OPTIMIZATION_PLAN.md
+# Playwright MCP driver scripts: each file must stay one bare
+# `async (page) => {...}` expression with no trailing semicolon (the runner
+# wraps it as `await (<file>)(page)`), which is exactly what prettier would add.
+apps/desktop/scripts/renderer-repro/*.mjs

@@ -123,6 +123,20 @@ async (page) => {
     };
 
     const ok = Promise.resolve({ ok: true });
+    // Agent endpoint is off in the repro: App.tsx polls `agent.status()` on
+    // mount and subscribes to all four event streams, so every one of them has
+    // to exist or the renderer throws before the workspace ever renders.
+    const agentStatus = {
+      enabled: false,
+      listening: false,
+      socketPath: null,
+      tcpPort: null,
+      token: null,
+      endpointFilePath: "/tmp/fake/mcp/endpoint.json",
+      clients: [],
+      lastError: null,
+      halted: false
+    };
     const api = {
       getFilePathForDrop: () => "",
       platform: "darwin",
@@ -283,6 +297,22 @@ async (page) => {
         passwordStatus: async () => ({ configured: false, unlocked: false, remembered: false }),
         getCached: async () => ({ cached: false }),
         reauthorizeCredentialStore: async () => ({ ok: true, status: "available" })
+      },
+      agent: {
+        status: async () => agentStatus,
+        enable: async () => agentStatus,
+        disable: async () => agentStatus,
+        rotateToken: async () => agentStatus,
+        setHalted: async () => agentStatus,
+        copyClientConfig: async () => ({ ok: true, command: "", json: "" }),
+        installCursor: async () => ({ ok: true, deeplink: "cursor://mock" }),
+        installClaudeDesktop: async () => ({ ok: true, configPath: "/tmp/fake/config.json" }),
+        exportMcpb: async () => ({ ok: false, canceled: true }),
+        respondPrompt: () => ok,
+        onPrompt: () => () => {},
+        onActivity: () => () => {},
+        onSessionControl: () => () => {},
+        onSessionFocus: () => () => {}
       },
       sshKey: { list: async () => [], upsert: async (p) => p, remove: () => ok },
       proxy: { list: async () => [], upsert: async (p) => p, remove: () => ok },
