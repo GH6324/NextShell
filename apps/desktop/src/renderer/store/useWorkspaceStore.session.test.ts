@@ -456,6 +456,30 @@ const resetStore = (): void => {
 })();
 
 (() => {
+  // 每次激活都进 MRU:Ctrl+Tab 循环期间不再有「途经的激活」,松开 Ctrl 的那一次
+  // 就是唯一一次激活,所以 setActiveSession 没有不提升 MRU 的分支。
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [
+      createSession("s1", "c1", "connected"),
+      createSession("s2", "c2", "connected"),
+      createSession("s3", "c3", "connected")
+    ]
+  });
+  useWorkspaceStore.getState().setActiveSession("s1");
+  useWorkspaceStore.getState().setActiveSession("s2");
+  useWorkspaceStore.getState().setActiveSession("s3");
+  const state = useWorkspaceStore.getState();
+  assertEqual(state.activeSessionId, "s3", "activation should switch tabs");
+  assertEqual(state.activeConnectionId, "c3", "activation should follow the connection");
+  assertEqual(
+    state.sessionMruIds.join(","),
+    "s3,s2,s1",
+    "the landed tab should end up in front of the MRU"
+  );
+})();
+
+(() => {
   // Closing the active tab lands on the previously used tab, not the last tab.
   resetStore();
   useWorkspaceStore.setState({

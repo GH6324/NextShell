@@ -41,7 +41,9 @@ import { TransferQueuePanel } from "./TransferQueuePanel";
 import { AgentActivityPanel } from "./AgentActivityPanel";
 import { TraceroutePane } from "./TraceroutePane";
 import { useCommandHistory } from "../hooks/useCommandHistory";
-import { useSessionTabShortcuts } from "../hooks/useSessionTabShortcuts";
+import { useSessionTabShortcuts, type SessionSwitcherState } from "../hooks/useSessionTabShortcuts";
+import { SessionSwitcherOverlay } from "./SessionSwitcherOverlay";
+import { resolveSwitcherSelection } from "./SessionSwitcherOverlay.selection";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { connectionColor } from "../utils/connectionColor";
 import { recordSentCommand } from "../hooks/commandHistoryBus";
@@ -608,8 +610,11 @@ const WorkspaceLayoutComponent = ({
     [onCloseMonitorTab, onCloseSession]
   );
 
+  // Ctrl+Tab 切换器:状态机只发布「本轮快照 + 选中项」,这里负责画面。
+  const [switcherState, setSwitcherState] = useState<SessionSwitcherState | null>(null);
+
   // 全局标签快捷键。getter 走 store 的 getState,监听器不随 props 重建。
-  useSessionTabShortcuts({
+  const { closeSwitcher } = useSessionTabShortcuts({
     getSessionIds: useCallback(
       () => useWorkspaceStore.getState().sessions.map((session) => session.id),
       []
@@ -622,9 +627,7 @@ const WorkspaceLayoutComponent = ({
     getActiveSessionId: useCallback(() => useWorkspaceStore.getState().activeSessionId, []),
     activateSession: useCallback(
       (sessionId: string) => {
-        const session = useWorkspaceStore
-          .getState()
-          .sessions.find((item) => item.id === sessionId);
+        const session = useWorkspaceStore.getState().sessions.find((item) => item.id === sessionId);
         if (session) {
           activateSessionTab(session);
         }
@@ -643,8 +646,39 @@ const WorkspaceLayoutComponent = ({
       if (activeId) {
         onDuplicateSession(activeId);
       }
-    }, [onDuplicateSession])
+    }, [onDuplicateSession]),
+    // useState 的 setter 身份稳定,而且 hook 是通过 ref 读回调的,不会因此重建监听。
+    onSwitcherStateChange: setSwitcherState
   });
+
+  // 快照里的 id 映射回会话;循环期间被关掉的标签直接从面板里消失,选中项跟着夹。
+  const switcherSelection = useMemo(() => {
+    if (!switcherState) {
+      return null;
+    }
+    const sessionById = new Map(sessions.map((session) => [session.id, session]));
+    return resolveSwitcherSelection(switcherState.ids, switcherState.index, (sessionId) =>
+      sessionById.get(sessionId)
+    );
+  }, [sessions, switcherState]);
+
+  // 鼠标落定:切换 + 关面板,同时把状态机里那一轮作废,免得随后的 Ctrl keyup 再切一次。
+  const handleSwitcherSelect = useCallback(
+    (sessionId: string) => {
+      const session = useWorkspaceStore.getState().sessions.find((item) => item.id === sessionId);
+      setSwitcherState(null);
+      closeSwitcher();
+      if (session) {
+        activateSessionTab(session);
+      }
+    },
+    [activateSessionTab, closeSwitcher]
+  );
+
+  const handleSwitcherCancel = useCallback(() => {
+    setSwitcherState(null);
+    closeSwitcher();
+  }, [closeSwitcher]);
 
   // roving tabindex:方向键/Home/End 移动焦点并切换激活标签;仅在标签上获得焦点时触发,不影响终端按键
   const handleSessionTabKeyDown = useCallback(
@@ -1150,6 +1184,15 @@ const WorkspaceLayoutComponent = ({
                       setPreviewGridOpen(false);
                     }}
                     onClose={() => setPreviewGridOpen(false)}
+                  />
+                ) : null}
+                {switcherSelection ? (
+                  <SessionSwitcherOverlay
+                    sessions={switcherSelection.entries}
+                    selectedIndex={switcherSelection.selectedIndex}
+                    connectionById={connectionById}
+                    onSelect={handleSwitcherSelect}
+                    onCancel={handleSwitcherCancel}
                   />
                 ) : null}
                 {sessionContextMenu && contextMenuSession ? (

@@ -12,6 +12,7 @@
 @import "./terminal.css";
 @import "./session-tabs.css";
 @import "./session-preview.css";
+@import "./session-switcher.css";
 @import "./command-input.css";
 @import "./bottom-workbench.css";
 @import "./file-explorer.css";

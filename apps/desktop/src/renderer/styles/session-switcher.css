@@ -1,0 +1,97 @@
+/* Session Switcher — Ctrl+Tab 的浮层选择器,居中盖在终端区上方 */
+.session-switcher-backdrop {
+  position: absolute;
+  /* 与监视网格一致:顶部让出标签条(36px + 2px 上边距) */
+  inset: 38px 0 0 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.session-switcher-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+  max-width: min(560px, 86%);
+  max-height: 72%;
+  padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-md);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  font-family: var(--sans);
+  user-select: none;
+}
+
+.session-switcher-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.session-switcher-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  color: var(--t1);
+  cursor: pointer;
+}
+
+.session-switcher-row:hover {
+  background: var(--bg-hover);
+}
+
+.session-switcher-row--selected,
+.session-switcher-row--selected:hover {
+  background: var(--accent-dim);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.session-switcher-row--offline {
+  opacity: 0.55;
+}
+
+.session-switcher-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.session-switcher-row-title {
+  font-size: 12.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-switcher-row-subtitle {
+  color: var(--t3);
+  font-size: 11px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-switcher-row-status {
+  flex-shrink: 0;
+  color: var(--t3);
+  font-size: 11px;
+}
+
+.session-switcher-hint {
+  flex-shrink: 0;
+  margin: 4px 6px 2px;
+  color: var(--t3);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
