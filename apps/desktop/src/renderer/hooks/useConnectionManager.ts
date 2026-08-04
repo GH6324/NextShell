@@ -11,7 +11,7 @@ export function useConnectionManager() {
   const activeConnectionId = useWorkspaceStore((state) => state.activeConnectionId);
   const setConnections = useWorkspaceStore((state) => state.setConnections);
   const setActiveConnection = useWorkspaceStore((state) => state.setActiveConnection);
-  const setMonitor = useWorkspaceStore((state) => state.setMonitor);
+  const removeMonitorSnapshot = useWorkspaceStore((state) => state.removeMonitorSnapshot);
   const removeSessionsByConnection = useWorkspaceStore((state) => state.removeSessionsByConnection);
 
   const loadConnections = useCallback(async () => {
@@ -27,12 +27,14 @@ export function useConnectionManager() {
 
       if (activeConnectionId && !list.some((connection) => connection.id === activeConnectionId)) {
         setActiveConnection(first?.id);
-        setMonitor(undefined);
+        // The connection is gone (deleted elsewhere / cloud sync): its cached
+        // monitor snapshot can never be refreshed, so drop just that entry.
+        removeMonitorSnapshot(activeConnectionId);
       }
     } catch (error) {
       message.error(`加载连接失败：${formatErrorMessage(error, "请稍后重试")}`);
     }
-  }, [activeConnectionId, setActiveConnection, setConnections, setMonitor]);
+  }, [activeConnectionId, setActiveConnection, setConnections, removeMonitorSnapshot]);
 
   const handleConnectionSaved = async (payload: ConnectionUpsertInput): Promise<void> => {
     try {
@@ -51,6 +53,8 @@ export function useConnectionManager() {
     removeSessionsByConnection(connectionId);
     // 连接没了，SFTP 面板缓存的那份目录快照也别留着占内存。
     deleteExplorerCache(connectionId);
+    // 同理，侧栏系统监控那份缓存快照也一起清掉。
+    removeMonitorSnapshot(connectionId);
 
     try {
       await window.nextshell.connection.remove({ id: connectionId });

@@ -23,6 +23,18 @@ export interface NetworkPoint {
 }
 
 const NETWORK_RATE_HISTORY_CAP = 50;
+/**
+ * How many (connectionId, iface) series the chart history keeps at once.
+ *
+ * Snapshots of *every* monitored connection are recorded now (not just the
+ * active one), and `removeSession` deliberately never prunes the history, so
+ * without a cap a long-lived window that visits many hosts — or a host whose
+ * probes report several interfaces — would accumulate series forever. Eviction
+ * is least-recently-appended: keys are re-inserted on every append, and plain
+ * string keys keep JS object insertion order, so the front of `Object.keys` is
+ * the oldest series. 32 series ≈ 32×50 points, far more than any sidebar shows.
+ */
+const NETWORK_RATE_HISTORY_KEY_CAP = 32;
 
 function networkRateHistoryKey(connectionId: string, iface: string): string {
   return `${connectionId}:${iface}`;
@@ -73,21 +85,29 @@ function hasSessionForConnection(
   );
 }
 
+function hasAnySessionForConnection(sessions: SessionDescriptor[], connectionId: string): boolean {
+  return sessions.some((session) => getSessionConnectionId(session) === connectionId);
+}
+
 interface MonitorSnapshotState {
+  monitorSnapshots: Record<string, MonitorSnapshot>;
   processSnapshots: Record<string, ProcessSnapshot>;
   networkSnapshots: Record<string, NetworkSnapshot>;
 }
 
 /**
- * Drop a connection's monitor snapshot only when the removed session was the *last*
- * pane of that kind for the connection. Multiple tabs against the same host share one
- * snapshot entry, so clearing eagerly blanks the panes that are still open.
+ * Drop a connection's monitor snapshots only once nothing displays them any more:
+ * the process/network snapshot when the removed session was the *last* pane of that
+ * kind, the sidebar system snapshot when the connection has no session left at all.
+ * Multiple tabs against the same host share one snapshot entry, so clearing eagerly
+ * blanks the panes that are still open.
  */
 function pruneMonitorSnapshots(
   state: MonitorSnapshotState,
   remainingSessions: SessionDescriptor[],
   removedSessions: SessionDescriptor[]
 ): MonitorSnapshotState {
+  let monitorSnapshots = state.monitorSnapshots;
   let processSnapshots = state.processSnapshots;
   let networkSnapshots = state.networkSnapshots;
 
@@ -95,6 +115,14 @@ function pruneMonitorSnapshots(
     const connectionId = getSessionConnectionId(removed);
     if (!connectionId) {
       continue;
+    }
+
+    // The sidebar system monitor follows the *connection*, not one pane kind:
+    // its cached snapshot must survive every tab close that leaves any other
+    // tab on the host (that cache is what makes switching back instant) and
+    // only dies once nothing points at the connection any more.
+    if (!hasAnySessionForConnection(remainingSessions, connectionId)) {
+      monitorSnapshots = omitConnectionSnapshot(monitorSnapshots, connectionId);
     }
 
     if (
@@ -112,7 +140,7 @@ function pruneMonitorSnapshots(
     }
   }
 
-  return { processSnapshots, networkSnapshots };
+  return { monitorSnapshots, processSnapshots, networkSnapshots };
 }
 
 function isLocalSession(session?: SessionDescriptor): boolean {
@@ -126,7 +154,8 @@ interface WorkspaceState {
   sessions: SessionDescriptor[];
   activeConnectionId?: string;
   activeSessionId?: string;
-  monitor?: MonitorSnapshot;
+  /** Last system-monitor snapshot per connection; switching back renders it instantly. */
+  monitorSnapshots: Record<string, MonitorSnapshot>;
   processSnapshots: Record<string, ProcessSnapshot>;
   networkSnapshots: Record<string, NetworkSnapshot>;
   networkRateHistory: Record<string, NetworkPoint[]>;
@@ -149,7 +178,8 @@ interface WorkspaceState {
   reorderSession: (sourceSessionId: string, targetSessionId: string) => void;
   renameSessionTitle: (sessionId: string, title: string) => void;
   setActiveSession: (sessionId?: string) => void;
-  setMonitor: (snapshot?: MonitorSnapshot) => void;
+  setMonitorSnapshot: (snapshot: MonitorSnapshot) => void;
+  removeMonitorSnapshot: (connectionId: string) => void;
   setProcessSnapshot: (connectionId: string, snapshot: ProcessSnapshot) => void;
   setNetworkSnapshot: (connectionId: string, snapshot: NetworkSnapshot) => void;
   appendNetworkRate: (connectionId: string, iface: string, point: NetworkPoint) => void;
@@ -213,6 +243,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   proxies: [],
   sessions: [],
   bottomTab: "files",
+  monitorSnapshots: {},
   processSnapshots: {},
   networkSnapshots: {},
   networkRateHistory: {},
@@ -274,7 +305,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           : getSessionConnectionId(nextActiveSession)
         : undefined;
 
-      const { processSnapshots, networkSnapshots } = pruneMonitorSnapshots(
+      const { monitorSnapshots, processSnapshots, networkSnapshots } = pruneMonitorSnapshots(
         state,
         sessions,
         target ? [target] : []
@@ -285,6 +316,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         sessionMruIds,
         activeSessionId: nextActiveSession?.id,
         activeConnectionId: nextActiveConnectionId,
+        monitorSnapshots,
         processSnapshots,
         networkSnapshots,
         lastActiveRemoteTerminalByConnection: omitLastActiveTerminalForSession(
@@ -326,15 +358,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         );
       }
 
-      const { processSnapshots, networkSnapshots } = pruneMonitorSnapshots(
+      const { monitorSnapshots, processSnapshots, networkSnapshots } = pruneMonitorSnapshots(
         state,
         sessions,
         removedSessions
       );
       // Only wipe the rate history once nothing else references the connection.
-      const networkRateHistory = sessions.some(
-        (session) => getSessionConnectionId(session) === connectionId
-      )
+      const networkRateHistory = hasAnySessionForConnection(sessions, connectionId)
         ? state.networkRateHistory
         : pruneNetworkRateHistory(state.networkRateHistory, connectionId);
 
@@ -343,6 +373,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         sessionMruIds,
         activeSessionId: nextActiveSession?.id,
         activeConnectionId: nextActiveConnectionId,
+        monitorSnapshots,
         processSnapshots,
         networkSnapshots,
         networkRateHistory,
@@ -406,7 +437,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
             : state.lastActiveRemoteTerminalByConnection
       };
     }),
-  setMonitor: (monitor) => set({ monitor }),
+  setMonitorSnapshot: (snapshot) =>
+    set((state) => ({
+      monitorSnapshots: { ...state.monitorSnapshots, [snapshot.connectionId]: snapshot }
+    })),
+  removeMonitorSnapshot: (connectionId) =>
+    set((state) => ({
+      monitorSnapshots: omitConnectionSnapshot(state.monitorSnapshots, connectionId)
+    })),
   setProcessSnapshot: (connectionId, snapshot) =>
     set((state) => ({
       processSnapshots: { ...state.processSnapshots, [connectionId]: snapshot }
@@ -427,9 +465,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         merged = [...existing, point];
       }
       const trimmed = merged.slice(-NETWORK_RATE_HISTORY_CAP);
-      return {
-        networkRateHistory: { ...state.networkRateHistory, [key]: trimmed }
-      };
+
+      // Delete-then-set moves the touched series to the end of the key order,
+      // which turns `Object.keys` into a least-recently-appended list and lets
+      // the cap evict from the front. The just-touched key is always last, so
+      // it can never be the one evicted.
+      const networkRateHistory = { ...state.networkRateHistory };
+      delete networkRateHistory[key];
+      networkRateHistory[key] = trimmed;
+      const keys = Object.keys(networkRateHistory);
+      if (keys.length > NETWORK_RATE_HISTORY_KEY_CAP) {
+        for (const staleKey of keys.slice(0, keys.length - NETWORK_RATE_HISTORY_KEY_CAP)) {
+          delete networkRateHistory[staleKey];
+        }
+      }
+
+      return { networkRateHistory };
     }),
   clearNetworkRateHistory: (connectionId) =>
     set((state) => {

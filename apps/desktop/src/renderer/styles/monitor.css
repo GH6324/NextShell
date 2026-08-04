@@ -61,6 +61,24 @@
   padding-top: 2px;
 }
 
+/* Cached snapshot older than the probe cadence: still readable (that is the
+   point of keeping it), just visibly not live. Cleared by the next frame. */
+.monitor-panel-body-stale {
+  opacity: 0.55;
+  transition: opacity 0.2s ease-out;
+}
+
+.monitor-stale-hint {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--t3);
+  white-space: nowrap;
+}
+
 .monitor-manager-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

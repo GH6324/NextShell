@@ -11,7 +11,7 @@ export function useMonitorLifecycle(
   sessions: SessionDescriptor[]
 ) {
   const { message } = AntdApp.useApp();
-  const setMonitor = useWorkspaceStore((state) => state.setMonitor);
+  const setMonitorSnapshot = useWorkspaceStore((state) => state.setMonitorSnapshot);
   const appendNetworkRate = useWorkspaceStore((state) => state.appendNetworkRate);
   const removeSession = useWorkspaceStore((state) => state.removeSession);
   // Stable subscriber key for this hook instance: the main process reference
@@ -19,29 +19,38 @@ export function useMonitorLifecycle(
   // never the system monitor another window/tab still needs.
   const [subscriberId] = useState(() => crypto.randomUUID());
 
-  // Receive system monitor snapshots
+  // Receive system monitor snapshots.
+  //
+  // Every snapshot is stored under its own connectionId — no active-connection
+  // filter. Snapshots of the connection we just switched away from used to be
+  // thrown away, which is precisely why coming back showed an empty panel; the
+  // store keeps one entry per connection and the rate history is already keyed
+  // by (connectionId, iface). Not depending on activeConnectionId also keeps
+  // this subscription alive across switches instead of re-registering it.
   useEffect(() => {
     const unsubscribe = window.nextshell.monitor.onSystemData((snapshot) => {
-      if (snapshot.connectionId === activeConnectionId) {
-        setMonitor(snapshot);
-        if (snapshot.networkInterface) {
-          appendNetworkRate(snapshot.connectionId, snapshot.networkInterface, {
-            inMbps: snapshot.networkInMbps,
-            outMbps: snapshot.networkOutMbps,
-            capturedAt: snapshot.capturedAt
-          });
-        }
+      setMonitorSnapshot(snapshot);
+      if (snapshot.networkInterface) {
+        appendNetworkRate(snapshot.connectionId, snapshot.networkInterface, {
+          inMbps: snapshot.networkInMbps,
+          outMbps: snapshot.networkOutMbps,
+          capturedAt: snapshot.capturedAt
+        });
       }
     });
     return () => {
       unsubscribe();
     };
-  }, [activeConnectionId, setMonitor, appendNetworkRate]);
+  }, [setMonitorSnapshot, appendNetworkRate]);
 
-  // Start/stop system monitor when connection or terminal status changes
+  // Start/stop system monitor when connection or terminal status changes.
+  //
+  // The stop on switch-away stays: it is the demand signal the main process
+  // reference counts. Main keeps the hidden SSH session warm for a short linger
+  // window (see SYSTEM_MONITOR_LINGER_MS) so A→B→A no longer redials, and the
+  // cached snapshot keeps the panel populated meanwhile.
   useEffect(() => {
     if (!activeConnectionId) {
-      setMonitor(undefined);
       return;
     }
 
@@ -50,7 +59,6 @@ export function useMonitorLifecycle(
     );
 
     if (!shouldStartSystemMonitor) {
-      setMonitor(undefined);
       void window.nextshell.monitor
         .stopSystem({ connectionId: activeConnectionId, sessionId: subscriberId })
         .catch(() => {});
@@ -63,7 +71,6 @@ export function useMonitorLifecycle(
       .catch((error) => {
         if (disposed) return;
         message.error(`启动系统监控失败：${formatErrorMessage(error, "请检查连接状态")}`);
-        setMonitor(undefined);
       });
 
     return () => {
@@ -76,7 +83,6 @@ export function useMonitorLifecycle(
     monitorSessionEnabled,
     activeConnectionId,
     isActiveConnectionTerminalConnected,
-    setMonitor,
     subscriberId
   ]);
 
@@ -103,22 +109,25 @@ export function useMonitorLifecycle(
     });
   }, [sessions, removeSession]);
 
+  /**
+   * Focus (or create) the process/network monitor tab of a connection.
+   *
+   * Reads and dispatches through the workspace store itself — callers used to
+   * have to thread `connections`, `setActiveSession`, `setActiveConnection` and
+   * `upsertSession` in on every call, which put store internals in their
+   * dependency arrays for no reason.
+   */
   const openMonitorTab = useCallback(
-    (
-      connectionId: string,
-      type: "processManager" | "networkMonitor",
-      connections: { id: string; name?: string; host?: string; monitorSession?: boolean }[],
-      setActiveSession: (id: string) => void,
-      setActiveConnection: (id: string) => void,
-      upsertSession: (session: SessionDescriptor) => void
-    ) => {
-      const connection = connections.find((c) => c.id === connectionId);
+    (connectionId: string, type: "processManager" | "networkMonitor") => {
+      const store = useWorkspaceStore.getState();
+
+      const connection = store.connections.find((item) => item.id === connectionId);
       if (!connection?.monitorSession) {
         message.warning("当前连接未启用监控会话。");
         return;
       }
 
-      const hasConnectedTerminal = sessions.some(
+      const hasConnectedTerminal = store.sessions.some(
         (session) =>
           session.connectionId === connectionId &&
           session.type === "terminal" &&
@@ -130,10 +139,12 @@ export function useMonitorLifecycle(
         return;
       }
 
-      const existing = sessions.find((s) => s.connectionId === connectionId && s.type === type);
+      const existing = store.sessions.find(
+        (session) => session.connectionId === connectionId && session.type === type
+      );
       if (existing) {
-        setActiveSession(existing.id);
-        setActiveConnection(connectionId);
+        store.setActiveSession(existing.id);
+        store.setActiveConnection(connectionId);
         return;
       }
 
@@ -152,11 +163,11 @@ export function useMonitorLifecycle(
         reconnectable: false
       };
 
-      upsertSession(session);
-      setActiveSession(session.id);
-      setActiveConnection(connectionId);
+      store.upsertSession(session);
+      store.setActiveSession(session.id);
+      store.setActiveConnection(connectionId);
     },
-    [sessions]
+    [message]
   );
 
   return { openMonitorTab };

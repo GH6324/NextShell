@@ -418,29 +418,13 @@ export const App = () => {
   );
 
   const handleOpenProcessManager = useCallback(
-    (connectionId: string) =>
-      openMonitorTab(
-        connectionId,
-        "processManager",
-        connections,
-        setActiveSession,
-        setActiveConnection,
-        upsertSession
-      ),
-    [openMonitorTab, connections, setActiveSession, setActiveConnection, upsertSession]
+    (connectionId: string) => openMonitorTab(connectionId, "processManager"),
+    [openMonitorTab]
   );
 
   const handleOpenNetworkMonitor = useCallback(
-    (connectionId: string) =>
-      openMonitorTab(
-        connectionId,
-        "networkMonitor",
-        connections,
-        setActiveSession,
-        setActiveConnection,
-        upsertSession
-      ),
-    [openMonitorTab, connections, setActiveSession, setActiveConnection, upsertSession]
+    (connectionId: string) => openMonitorTab(connectionId, "networkMonitor"),
+    [openMonitorTab]
   );
 
   const handleOpenQuickTransfer = useCallback(() => {

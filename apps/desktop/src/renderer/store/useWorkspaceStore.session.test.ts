@@ -1,4 +1,4 @@
-import type { SessionDescriptor } from "@nextshell/core";
+import type { MonitorSnapshot, SessionDescriptor } from "@nextshell/core";
 import { useWorkspaceStore } from "./useWorkspaceStore";
 
 const assertEqual = <T>(actual: T, expected: T, message: string): void => {
@@ -45,6 +45,27 @@ const createLocalTerminalSession = (
     target: "local"
   }) as unknown as SessionDescriptor;
 
+const createMonitorSnapshot = (connectionId: string, cpuPercent = 10): MonitorSnapshot => ({
+  connectionId,
+  loadAverage: [0.1, 0.2, 0.3],
+  cpuPercent,
+  memoryPercent: 20,
+  memoryUsedMb: 200,
+  memoryTotalMb: 1000,
+  swapPercent: 0,
+  swapUsedMb: 0,
+  swapTotalMb: 0,
+  diskPercent: 30,
+  diskUsedGb: 3,
+  diskTotalGb: 10,
+  networkInMbps: 1,
+  networkOutMbps: 2,
+  networkInterface: "eth0",
+  networkInterfaceOptions: ["eth0"],
+  processes: [],
+  capturedAt: "2026-01-01T00:00:00.000Z"
+});
+
 const resetStore = (): void => {
   useWorkspaceStore.setState({
     connections: [],
@@ -53,7 +74,7 @@ const resetStore = (): void => {
     sessions: [],
     activeConnectionId: undefined,
     activeSessionId: undefined,
-    monitor: undefined,
+    monitorSnapshots: {},
     processSnapshots: {},
     networkSnapshots: {},
     networkRateHistory: {},
@@ -452,7 +473,11 @@ const resetStore = (): void => {
   useWorkspaceStore.getState().setActiveSession("s3");
   useWorkspaceStore.getState().setActiveSession("s2");
   const state = useWorkspaceStore.getState();
-  assertEqual(state.sessionMruIds.join(","), "s2,s3,s1", "MRU should be most-recent-first, deduped");
+  assertEqual(
+    state.sessionMruIds.join(","),
+    "s2,s3,s1",
+    "MRU should be most-recent-first, deduped"
+  );
 })();
 
 (() => {
@@ -532,4 +557,165 @@ const resetStore = (): void => {
   useWorkspaceStore.getState().removeSessionsByConnection("c2");
   const state = useWorkspaceStore.getState();
   assertEqual(state.activeSessionId, "a1", "bulk close should land on the MRU survivor");
+})();
+
+(() => {
+  // System monitor snapshots are per connection: switching hosts must not blank
+  // the other host's cached data.
+  resetStore();
+  useWorkspaceStore.getState().setMonitorSnapshot(createMonitorSnapshot("c1", 11));
+  useWorkspaceStore.getState().setMonitorSnapshot(createMonitorSnapshot("c2", 22));
+  let state = useWorkspaceStore.getState();
+  assertEqual(state.monitorSnapshots.c1?.cpuPercent, 11, "c1 snapshot should be stored under c1");
+  assertEqual(state.monitorSnapshots.c2?.cpuPercent, 22, "c2 snapshot should be stored under c2");
+
+  useWorkspaceStore.getState().setMonitorSnapshot(createMonitorSnapshot("c1", 33));
+  state = useWorkspaceStore.getState();
+  assertEqual(state.monitorSnapshots.c1?.cpuPercent, 33, "a newer snapshot should replace its own");
+  assertEqual(state.monitorSnapshots.c2?.cpuPercent, 22, "the other connection must be untouched");
+
+  useWorkspaceStore.getState().removeMonitorSnapshot("c1");
+  state = useWorkspaceStore.getState();
+  assertEqual(state.monitorSnapshots.c1, undefined, "removeMonitorSnapshot should drop its entry");
+  assert(state.monitorSnapshots.c2 !== undefined, "removeMonitorSnapshot should drop only one key");
+
+  // Failure path: removing an unknown connection is a no-op.
+  const before = useWorkspaceStore.getState().monitorSnapshots;
+  useWorkspaceStore.getState().removeMonitorSnapshot("nope");
+  assertEqual(
+    useWorkspaceStore.getState().monitorSnapshots,
+    before,
+    "removing an unknown connection should not even rebuild the record"
+  );
+})();
+
+(() => {
+  // The cached snapshot outlives single tab closes and dies with the last tab of
+  // the connection — the sidebar panel keeps rendering while any tab remains.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [
+      createSession("s1", "c1", "connected"),
+      createSession("pm1", "c1", "connected", undefined, "processManager"),
+      createSession("s2", "c2", "connected")
+    ],
+    activeSessionId: "s1",
+    activeConnectionId: "c1",
+    monitorSnapshots: {
+      c1: createMonitorSnapshot("c1"),
+      c2: createMonitorSnapshot("c2")
+    }
+  });
+
+  useWorkspaceStore.getState().removeSession("s1");
+  let state = useWorkspaceStore.getState();
+  assert(
+    state.monitorSnapshots.c1 !== undefined,
+    "closing one tab of a connection should keep its monitor snapshot"
+  );
+
+  useWorkspaceStore.getState().removeSession("pm1");
+  state = useWorkspaceStore.getState();
+  assertEqual(
+    state.monitorSnapshots.c1,
+    undefined,
+    "closing the last tab of a connection should drop its monitor snapshot"
+  );
+  assert(
+    state.monitorSnapshots.c2 !== undefined,
+    "another connection's monitor snapshot must survive"
+  );
+})();
+
+(() => {
+  // Bulk removal (connection removed / disconnected) prunes exactly one entry.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [createSession("s1", "c1", "connected"), createSession("s2", "c2", "connected")],
+    activeSessionId: "s1",
+    activeConnectionId: "c1",
+    monitorSnapshots: {
+      c1: createMonitorSnapshot("c1"),
+      c2: createMonitorSnapshot("c2")
+    }
+  });
+  useWorkspaceStore.getState().removeSessionsByConnection("c1");
+  const state = useWorkspaceStore.getState();
+  assertEqual(
+    state.monitorSnapshots.c1,
+    undefined,
+    "bulk remove should clear the connection's monitor snapshot"
+  );
+  assert(state.monitorSnapshots.c2 !== undefined, "bulk remove should keep other snapshots");
+})();
+
+(() => {
+  // Failure path: removing an unknown session must not touch monitor snapshots.
+  resetStore();
+  useWorkspaceStore.setState({
+    sessions: [createSession("s1", "c1", "connected")],
+    monitorSnapshots: { c1: createMonitorSnapshot("c1") }
+  });
+  useWorkspaceStore.getState().removeSession("ghost");
+  assert(
+    useWorkspaceStore.getState().monitorSnapshots.c1 !== undefined,
+    "removing an unknown session should not clear monitor snapshots"
+  );
+})();
+
+(() => {
+  // Rate history now records background connections too, so the number of
+  // (connectionId, iface) series is capped least-recently-appended.
+  resetStore();
+  const point = { inMbps: 1, outMbps: 1, capturedAt: "2026-01-01T00:00:00.000Z" };
+  const append = (connectionId: string, iface: string): void => {
+    useWorkspaceStore.getState().appendNetworkRate(connectionId, iface, point);
+  };
+
+  for (let index = 0; index < 32; index += 1) {
+    append(`conn-${index}`, "eth0");
+  }
+  assertEqual(
+    Object.keys(useWorkspaceStore.getState().networkRateHistory).length,
+    32,
+    "the history should hold the full cap without evicting"
+  );
+
+  // Touch the oldest series so it is no longer the eviction candidate.
+  append("conn-0", "eth0");
+  append("conn-32", "eth0");
+  const state = useWorkspaceStore.getState();
+  assertEqual(
+    Object.keys(state.networkRateHistory).length,
+    32,
+    "exceeding the cap should evict instead of growing"
+  );
+  assert(
+    state.networkRateHistory["conn-0:eth0"] !== undefined,
+    "a re-appended series should count as recently used and survive"
+  );
+  assertEqual(
+    state.networkRateHistory["conn-1:eth0"],
+    undefined,
+    "the least recently appended series should be the one evicted"
+  );
+  assert(
+    state.networkRateHistory["conn-32:eth0"] !== undefined,
+    "the series just appended must always be kept"
+  );
+})();
+
+(() => {
+  // Per-series cap: only the newest 50 points are kept, newest last.
+  resetStore();
+  for (let index = 0; index < 60; index += 1) {
+    useWorkspaceStore.getState().appendNetworkRate("c1", "eth0", {
+      inMbps: index,
+      outMbps: index,
+      capturedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`
+    });
+  }
+  const series = useWorkspaceStore.getState().networkRateHistory["c1:eth0"] ?? [];
+  assertEqual(series.length, 50, "a series should be trimmed to the point cap");
+  assertEqual(series[series.length - 1]?.inMbps, 59, "the newest point should be last");
 })();

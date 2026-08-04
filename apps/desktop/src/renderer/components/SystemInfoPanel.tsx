@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "antd";
 import type { MonitorSnapshot } from "@nextshell/core";
-import { useWorkspaceStore } from "../store/useWorkspaceStore";
+import { useWorkspaceStore, type NetworkPoint } from "../store/useWorkspaceStore";
+import { isMonitorSnapshotStale, msUntilMonitorSnapshotStale } from "./monitorSnapshotStaleness";
 
 interface SystemInfoPanelProps {
   monitorSessionEnabled?: boolean;
@@ -16,6 +17,9 @@ interface SystemInfoPanelProps {
 const NETWORK_CHART_HEIGHT = 84;
 const NETWORK_HISTORY_CAP = 50;
 const NETWORK_CHART_WIDTH = NETWORK_HISTORY_CAP * 10 + 8;
+
+/** Shared empty series: a fresh `[]` from a selector would re-render forever. */
+const EMPTY_NETWORK_POINTS: NetworkPoint[] = [];
 
 function getMetricFillClass(percent: number, normalFillClassName: string): string {
   if (percent > 90) {
@@ -69,9 +73,12 @@ export const SystemInfoPanel = ({
   monitorActionsDisabled
 }: SystemInfoPanelProps) => {
   const [collapsed, setCollapsed] = useState(false);
-  const storeSnapshot = useWorkspaceStore((state) => state.monitor);
+  // Per-connection cache: switching back to a host renders its last snapshot
+  // immediately instead of blanking out until the next probe lands.
+  const storeSnapshot = useWorkspaceStore((state) =>
+    state.activeConnectionId ? state.monitorSnapshots[state.activeConnectionId] : undefined
+  );
   const snapshot = snapshotOverride ?? storeSnapshot;
-  const networkRateHistory = useWorkspaceStore((s) => s.networkRateHistory);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
 
@@ -100,6 +107,24 @@ export const SystemInfoPanel = ({
     }
   }, [collapsed, hasVisibleTerminal]);
 
+  // Staleness flips exactly once per snapshot, so one timer per snapshot is
+  // enough — no clock polling. `isStale` itself is derived during render, which
+  // keeps the very first frame after a switch-back honest.
+  const capturedAt = snapshot?.capturedAt;
+  const [, bumpStaleCheck] = useState(0);
+  useEffect(() => {
+    const delayMs = msUntilMonitorSnapshotStale(capturedAt, Date.now());
+    if (delayMs <= 0) {
+      return;
+    }
+    const timer = setTimeout(() => bumpStaleCheck((token) => token + 1), delayMs);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [capturedAt]);
+  const isStaleSnapshot =
+    Boolean(snapshot) && hasVisibleTerminal && isMonitorSnapshotStale(capturedAt, Date.now());
+
   const interfaceOptions = useMemo(() => {
     if (!snapshot) {
       return [];
@@ -120,17 +145,22 @@ export const SystemInfoPanel = ({
     [interfaceOptions]
   );
 
+  // Subscribe to this one series, not the whole history map: snapshots of every
+  // monitored connection land in the store now, and a map-level subscription
+  // would re-render the sidebar for background hosts too.
+  const historyKey =
+    snapshot?.connectionId && snapshot.networkInterface
+      ? `${snapshot.connectionId}:${snapshot.networkInterface}`
+      : undefined;
   const chartPoints =
-    snapshot?.connectionId && snapshot?.networkInterface
-      ? (networkRateHistory[`${snapshot.connectionId}:${snapshot.networkInterface}`] ?? [])
-      : [];
+    useWorkspaceStore((state) => (historyKey ? state.networkRateHistory[historyKey] : undefined)) ??
+    EMPTY_NETWORK_POINTS;
   const chartMax = Math.max(
     1,
     ...chartPoints.map((point) => Math.max(point.inMbps, point.outMbps))
   );
 
   // Fixed 50-slot queue: always render 50 columns, right-aligned (newest on right)
-  type NetworkPoint = (typeof chartPoints)[number];
   const emptyPoint: NetworkPoint = { inMbps: 0, outMbps: 0, capturedAt: "" };
   const networkSlots: NetworkPoint[] = Array.from<NetworkPoint>({
     length: NETWORK_HISTORY_CAP
@@ -187,10 +217,20 @@ export const SystemInfoPanel = ({
         {collapsed && snapshot ? (
           <span className="monitor-summary">{summaryLine(snapshot)}</span>
         ) : null}
+        {isStaleSnapshot ? (
+          <span className="monitor-stale-hint" title="显示的是缓存数据，正在等待新的采样">
+            <i className="ri-history-line" aria-hidden="true" />
+            缓存数据
+          </span>
+        ) : null}
       </button>
 
       {!collapsed ? (
-        <div className="monitor-panel-body">
+        <div
+          className={
+            isStaleSnapshot ? "monitor-panel-body monitor-panel-body-stale" : "monitor-panel-body"
+          }
+        >
           {!hasVisibleTerminal ? (
             <div className="monitor-placeholder">请先连接 SSH 终端以启动监控会话</div>
           ) : snapshot ? (

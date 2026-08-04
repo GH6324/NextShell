@@ -41,6 +41,40 @@ describe("SystemInfoPanel", () => {
     expect(html).toMatch("下行");
   });
 
+  test("renders a cached snapshot immediately, dimmed and flagged as not live", () => {
+    const html = renderToStaticMarkup(
+      <SystemInfoPanel monitorSessionEnabled hasVisibleTerminal snapshot={snapshot} />
+    );
+
+    // The whole point of the per-connection cache: values, not a placeholder.
+    expect(html).not.toMatch("等待监控数据...");
+    expect(html).toMatch("716M");
+    expect(html).toMatch("monitor-panel-body-stale");
+    expect(html).toMatch("缓存数据");
+  });
+
+  test("a fresh snapshot renders without the staleness treatment", () => {
+    const html = renderToStaticMarkup(
+      <SystemInfoPanel
+        monitorSessionEnabled
+        hasVisibleTerminal
+        snapshot={{ ...snapshot, capturedAt: new Date().toISOString() }}
+      />
+    );
+
+    expect(html).toMatch("716M");
+    expect(html).not.toMatch("monitor-panel-body-stale");
+    expect(html).not.toMatch("缓存数据");
+  });
+
+  test("falls back to the waiting placeholder only when no snapshot exists at all", () => {
+    const html = renderToStaticMarkup(<SystemInfoPanel monitorSessionEnabled hasVisibleTerminal />);
+
+    expect(html).toMatch("等待监控数据...");
+    expect(html).not.toMatch("monitor-panel-body-stale");
+    expect(html).not.toMatch("缓存数据");
+  });
+
   test("explains why monitor manager actions are disabled", () => {
     const html = renderToStaticMarkup(
       <SystemInfoPanel
